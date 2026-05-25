@@ -1,0 +1,4 @@
+name = "DeltaVMap"
+
+[StarMap]
+EntryAssembly = "DeltaVMap"
