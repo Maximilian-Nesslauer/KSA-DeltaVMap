@@ -64,7 +64,8 @@ internal static class DeltaVCalculator
         return Math.Clamp(factor, 1.0, 2.0);
     }
 
-    // Surface gravity g = mu / r^2, used to derive the gravity ratio in 4.5.
+    // Surface gravity g = mu / r^2, used to derive the gravity ratio in the
+    // atmospheric ascent factor.
     public static double SurfaceGravity(double mu, double rSurface)
     {
         return mu / (rSurface * rSurface);

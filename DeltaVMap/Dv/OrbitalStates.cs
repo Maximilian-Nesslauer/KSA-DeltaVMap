@@ -4,14 +4,20 @@ using KSA;
 
 namespace DeltaVMap.Dv;
 
-// The kind of state a node represents on a body's ladder.
+// The kind of state a node represents on a body's ladder, or its role in the
+// re-rooted graph. Surface through YouAreHere are physical ladder rungs (built by
+// BuildLadder, classified by StateClassifier). Hub is an ancestor body rendered as
+// a horizontal bus (the star is the topmost one); Intercept is the arrival node for
+// a body too small to hold an orbit (a flyby/landing-only destination).
 internal enum StateKind
 {
     Surface,
     LowOrbit,
     Stationary,
     SoiEdge,
-    YouAreHere
+    YouAreHere,
+    Hub,
+    Intercept
 }
 
 // One rung of a body's vertical ladder: a place you can be, expressed as a
@@ -122,6 +128,19 @@ internal static class OrbitalStates
     {
         double soi = body.SphereOfInfluence;
         return (double.IsFinite(soi) && soi > 0.0) ? soi : null;
+    }
+
+    // The orbital radius to use for a Hohmann-style transfer. For closed orbits this
+    // matches the EffectiveRadius the game itself uses. Open orbits (comets, e >= 1)
+    // have no apoapsis, so (Apoapsis + Periapsis) / 2 would be garbage (a hyperbolic
+    // apoapsis is negative); fall back to the periapsis distance instead. This is a
+    // coarse approximation for open orbits that just keeps the number finite, and the
+    // caller flags such transfers as approximate.
+    public static double TransferRadius(Orbit orbit)
+    {
+        if (orbit.Eccentricity >= 1.0)
+            return orbit.Periapsis;
+        return DeltaVCalculator.EffectiveRadius(orbit.Eccentricity, orbit.SemiMajorAxis, orbit.Apoapsis, orbit.Periapsis);
     }
 
     // Build the per-body ladder. Rungs are ordered bottom to top: Surface (if

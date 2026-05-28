@@ -1,5 +1,6 @@
 using DeltaVMap.Core;
 using DeltaVMap.Dv;
+using DeltaVMap.Model;
 using Brutal.Logging;
 using HarmonyLib;
 using KSA;
@@ -45,6 +46,7 @@ public sealed class Mod
         try
         {
             DvValidationDump.Run();
+            VisualTreeDump.Run();
         }
         catch (Exception ex)
         {

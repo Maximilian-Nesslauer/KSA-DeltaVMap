@@ -80,26 +80,13 @@ internal sealed class DvCache
                 $"Transfer requires two bodies sharing one hub, got '{from.Id}' (parent '{fromOrbit.Parent?.Id}') and '{to.Id}' (parent '{toOrbit.Parent?.Id}').");
 
         double muHub = fromOrbit.Parent.Mu;
-        double r1 = TransferRadius(fromOrbit);
-        double r2 = TransferRadius(toOrbit);
+        double r1 = OrbitalStates.TransferRadius(fromOrbit);
+        double r2 = OrbitalStates.TransferRadius(toOrbit);
 
         DeltaVCalculator.Hohmann(muHub, r1, r2, out double departDv, out double arriveDv);
         double transferTime = DeltaVCalculator.TransferTimeSeconds(muHub, r1, r2);
         bool isApproximate = fromOrbit.Eccentricity >= 1.0 || toOrbit.Eccentricity >= 1.0;
 
         return new EdgeDv(departDv, arriveDv, transferTime, isApproximate);
-    }
-
-    // The orbital radius used for a Hohmann-style transfer. For closed orbits this
-    // matches the EffectiveRadius the game itself uses. Open orbits (comets, e >= 1)
-    // have no apoapsis, so (Apoapsis + Periapsis) / 2 would be garbage; fall back to
-    // the periapsis (perihelion) distance instead. This is a coarse approximation
-    // for open orbits that just keeps the number finite, and the caller always
-    // flags such transfers as approximate.
-    private static double TransferRadius(Orbit orbit)
-    {
-        if (orbit.Eccentricity >= 1.0)
-            return orbit.Periapsis;
-        return DeltaVCalculator.EffectiveRadius(orbit.Eccentricity, orbit.SemiMajorAxis, orbit.Apoapsis, orbit.Periapsis);
     }
 }
