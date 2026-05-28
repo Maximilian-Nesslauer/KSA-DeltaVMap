@@ -1,4 +1,5 @@
 using DeltaVMap.Core;
+using DeltaVMap.Dv;
 using Brutal.Logging;
 using HarmonyLib;
 using KSA;
@@ -10,6 +11,7 @@ namespace DeltaVMap;
 public sealed class Mod
 {
     private static Harmony? _harmony;
+    private static bool _validationDumped;
 
     private const string TestedGameVersion = "v2026.5.11.4462";
 
@@ -28,11 +30,36 @@ public sealed class Mod
         DefaultCategory.Log.Info("[DvMap] Loaded.");
     }
 
+    // Once a system is loaded, run the delta-v engine validation dump a single
+    // time. This is debug-only scaffolding; the real map will build its graph
+    // lazily on first window open.
+    [StarMapAfterGui]
+    public void Draw(double dt)
+    {
+        if (_validationDumped || !DebugConfig.ValidationDump)
+            return;
+        if (Universe.CurrentSystem == null)
+            return;
+
+        _validationDumped = true;
+        try
+        {
+            DvValidationDump.Run();
+        }
+        catch (Exception ex)
+        {
+            // This runs inside the game's ImGui draw via StarMap's postfix; never
+            // let a dump failure unwind into the render path.
+            LogHelper.ErrorOnce("validation-dump", $"[DvMap] Validation dump failed: {ex}");
+        }
+    }
+
     [StarMapUnload]
     public void Unload()
     {
         _harmony?.UnpatchAll(_harmony.Id);
         _harmony = null;
+        _validationDumped = false;
 
         LogHelper.Reset();
 #if DEBUG
