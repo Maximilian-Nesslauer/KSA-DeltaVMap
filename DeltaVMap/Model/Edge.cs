@@ -49,6 +49,12 @@ internal sealed class Edge
     // cost. Zero for Transfer and HubLink edges.
     public double LadderDv { get; init; }
 
+    // Descent cost for an Ascent edge (low orbit -> surface), which is cheaper than the
+    // ascent on a body with an atmosphere (drag does most of the braking). Set only for
+    // Ascent edges; the route uses it when traversing the edge downward (landing) and
+    // LadderDv when traversing it upward (ascent). Zero on every other edge.
+    public double DescentDv { get; init; }
+
     // Cross-hub transfer edges: the coupled Hohmann, both v_inf legs. Null for every
     // non-Transfer edge. The displayed and accumulated burns are derived from these
     // legs plus each endpoint's r_lo at accumulation time, so they are deliberately

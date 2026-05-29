@@ -19,6 +19,15 @@ internal static class DeltaVCalculator
     // Half a degree in radians, below which a plane change is not worth drawing.
     public const double MinPlaneChangeRad = 0.00873;
 
+    // Physical SI reference units (ISA standard atmosphere), NOT data about any body in
+    // the loaded system: standard sea-level air density (kg/m^3) and standard surface
+    // gravity (m/s^2). The atmospheric ascent/descent heuristics read each body's own
+    // density and gravity from the celestial system and normalize them against these
+    // absolute references (drag and gravity loss scale with the absolute value, so a body
+    // at 1.225 kg/m^3 behaves the same in any system, custom or stock).
+    public const double StandardSeaLevelDensity = 1.225;
+    public const double StandardSurfaceGravity = 9.81;
+
     public static double Mu(double massKg)
     {
         return massKg * G;
@@ -55,8 +64,8 @@ internal static class DeltaVCalculator
     // inherently approximate and clamped to a sane range.
     public static double AtmosphericAscentFactor(double seaLevelDensity, double surfaceGravity, double atmosphereHeight, double rSurface)
     {
-        double densityRatio = seaLevelDensity / 1.225;
-        double gravityRatio = surfaceGravity / 9.81;
+        double densityRatio = seaLevelDensity / StandardSeaLevelDensity;
+        double gravityRatio = surfaceGravity / StandardSurfaceGravity;
         double atmoDepth = atmosphereHeight / rSurface;
         double factor = 1.0
             + 0.12 * Math.Sqrt(densityRatio) * (1.0 + 2.0 * atmoDepth)

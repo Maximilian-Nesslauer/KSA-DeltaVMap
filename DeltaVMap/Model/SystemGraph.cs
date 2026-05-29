@@ -46,6 +46,14 @@ internal sealed class SystemGraph
         return _byId.TryGetValue(id, out PhysicalNode? node) ? node : null;
     }
 
+    // The cached ladder (mu, r_lo, r_soi, CanHoldOrbit) for a body Id, or null if the
+    // body is not in this system. Routing and the badge math derive Oberth burns from
+    // it, so both read radii from the one ladder the graph built per body.
+    public BodyLadder? LadderFor(string id)
+    {
+        return Find(id)?.Ladder;
+    }
+
     public IReadOnlyCollection<PhysicalNode> AllNodes => _byId.Values;
 
     // Build the physical tree from the star down. Returns null if the system has no

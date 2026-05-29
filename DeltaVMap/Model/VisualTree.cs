@@ -242,8 +242,12 @@ internal sealed class VisualTree
 
             if (nodes.LowOrbit != null && nodes.Surface != null)
             {
-                double ascent = OrbitalStates.ComputeAscent(ladder).Effective;
-                ConnectLadder(nodes.LowOrbit, nodes.Surface, SegmentKind.Ascent, ascent);
+                AscentDv ascent = OrbitalStates.ComputeAscent(ladder);
+                double descent = OrbitalStates.ComputeDescent(ladder);
+                // Atmospheric ascent is empirical, so flag the edge approximate: the badge
+                // and the route breakdown both read this one flag and show the "~" mark.
+                // Descent is the cheaper landing cost used when the route lands here.
+                ConnectLadder(nodes.LowOrbit, nodes.Surface, SegmentKind.Ascent, ascent.Effective, ascent.IsApproximate, descent);
             }
 
             if (nodes.LowOrbit != null && nodes.Stationary != null)
@@ -351,9 +355,9 @@ internal sealed class VisualTree
             return edge;
         }
 
-        private static Edge ConnectLadder(StateNode from, StateNode to, SegmentKind kind, double ladderDv)
+        private static Edge ConnectLadder(StateNode from, StateNode to, SegmentKind kind, double ladderDv, bool isApproximate = false, double descentDv = 0.0)
         {
-            var edge = new Edge { From = from, To = to, Kind = kind, LadderDv = ladderDv };
+            var edge = new Edge { From = from, To = to, Kind = kind, LadderDv = ladderDv, IsApproximate = isApproximate, DescentDv = descentDv };
             from.AddChild(edge);
             return edge;
         }

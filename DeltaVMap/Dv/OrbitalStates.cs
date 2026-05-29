@@ -217,4 +217,25 @@ internal static class OrbitalStates
         double factor = DeltaVCalculator.AtmosphericAscentFactor(seaLevelDensity, surfaceGravity, atmosphereHeight, rSurface);
         return new AscentDv(vacuum, vacuum * factor, hasAtmosphere: true);
     }
+
+    // Landing (low orbit -> surface) dV. On an airless body it equals the vacuum ascent:
+    // there is no atmosphere to brake you, so a propulsive descent costs what a propulsive
+    // ascent does. On a body with a usable atmosphere drag sheds most of the orbital
+    // energy, so the propulsive cost is only a deorbit burn plus a terminal landing burn -
+    // a fraction of the vacuum ascent that shrinks as the atmosphere thickens. The fraction
+    // is an empirical heuristic in the same spirit as the atmospheric ascent factor (a thin
+    // atmosphere like Mars leaves a fast terminal descent, a thick one like Venus brakes
+    // almost to a stop); tune it against in-game figures, mark the result approximate.
+    public static double ComputeDescent(BodyLadder ladder)
+    {
+        double vacuumAscent = DeltaVCalculator.AscentVacuum(ladder.Mu, ladder.MeanRadius, ladder.LowOrbitRadius);
+
+        AtmosphereReference? atmosphere = ladder.Body.GetAtmosphereReference();
+        if (atmosphere == null || atmosphere.Physical.SeaLevelDensity <= 0.01)
+            return vacuumAscent;
+
+        double densityRatio = atmosphere.Physical.SeaLevelDensity / DeltaVCalculator.StandardSeaLevelDensity;
+        double landingFraction = Math.Clamp(0.06 + 0.004 / (densityRatio + 0.01), 0.06, 0.35);
+        return vacuumAscent * landingFraction;
+    }
 }

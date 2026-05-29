@@ -40,6 +40,19 @@ internal sealed class LayoutEdge
     public double Dv { get; init; }
     public bool IsApproximate { get; init; }
 
+    // The dV shown on the badge. For a ladder edge this equals Dv (the exact
+    // self-contained cost). For a transfer it is the real Oberth-coupled per-leg burn
+    // (depart + capture), derived from the v_inf legs and each end's r_lo, which differs
+    // from the band-placement Dv (the representative v_inf sum) on purpose: bands stay
+    // on the frame-consistent figure, the badge shows the figure a route actually pays.
+    public double RouteDv { get; init; }
+
+    // The cheaper landing cost for an Ascent edge on an atmospheric body, so the badge can
+    // show both directions (ascent up, descent down). Zero on every other edge, and equal
+    // to RouteDv on an airless body (where landing costs the same as ascending), in which
+    // case the badge stays single-valued.
+    public double DescentDv { get; init; }
+
     // Lane index among the parallel edges leaving From, assigned by the router so
     // sibling tracks get distinct perpendicular offsets.
     public int Lane { get; set; }

@@ -1,3 +1,4 @@
+using System;
 using DeltaVMap.Dv;
 using DeltaVMap.Model;
 using KSA;
@@ -16,13 +17,20 @@ namespace DeltaVMap.Layout;
 // sits on; the badge will carry the precise number.
 internal static class VisualTreeAdapter
 {
-    public static LayoutTree ToLayoutTree(VisualTree visual)
+    // graph is optional: when supplied (the in-game path), transfer badges show the real
+    // Oberth-coupled per-leg burn derived from each end's ladder; when null (the offline
+    // dump, which has no live bodies to read r_lo from) they fall back to the
+    // representative v_inf sum, enough to verify topology.
+    public static LayoutTree ToLayoutTree(VisualTree visual, SystemGraph? graph = null)
     {
-        LayoutNode root = Convert(visual.Root);
+        Func<string, BodyLadder?>? ladderFor = null;
+        if (graph != null)
+            ladderFor = graph.LadderFor;
+        LayoutNode root = Convert(visual.Root, ladderFor);
         return LayoutTree.FromRoot($"reroot-{visual.RootBodyId}", root);
     }
 
-    private static LayoutNode Convert(StateNode source)
+    private static LayoutNode Convert(StateNode source, Func<string, BodyLadder?>? ladderFor)
     {
         var node = new LayoutNode
         {
@@ -35,18 +43,38 @@ internal static class VisualTreeAdapter
 
         foreach (Edge edge in source.Out)
         {
-            LayoutNode child = Convert(edge.To);
+            LayoutNode child = Convert(edge.To, ladderFor);
             node.AddChild(new LayoutEdge
             {
                 From = node,
                 To = child,
                 Class = MapClass(edge.Kind),
                 Dv = RepresentativeDv(edge),
+                RouteDv = BadgeDv(edge, ladderFor),
+                DescentDv = edge.DescentDv,
                 IsApproximate = edge.IsApproximate
             });
         }
 
         return node;
+    }
+
+    // The primary dV the badge displays. A transfer shows its real coupled burn (depart +
+    // capture), computed by the same rule the route accumulator uses, so the badge and the
+    // route breakdown agree. A ladder edge shows its exact self-contained cost (for an
+    // Ascent edge that is the ascent; the renderer pairs it with DescentDv to show both
+    // directions). A hub link shows nothing.
+    private static double BadgeDv(Edge edge, Func<string, BodyLadder?>? ladderFor)
+    {
+        if (edge.Kind == SegmentKind.HubLink)
+            return 0.0;
+        if (edge.Kind == SegmentKind.Transfer && edge.Transfer.HasValue)
+        {
+            if (ladderFor == null)
+                return edge.Transfer.Value.TotalDv;
+            return TransferBurns.ComputeLegs(edge, ladderFor).Total;
+        }
+        return edge.LadderDv;
     }
 
     private static double RepresentativeDv(Edge edge)

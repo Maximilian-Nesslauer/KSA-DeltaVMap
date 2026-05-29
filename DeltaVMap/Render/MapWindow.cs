@@ -6,6 +6,7 @@ using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using DeltaVMap.Layout;
 using DeltaVMap.Model;
+using DeltaVMap.Route;
 using KSA;
 
 namespace DeltaVMap.Render;
@@ -36,9 +37,9 @@ internal sealed class MapWindow : ImGuiWindow
     private DvCache? _cache;
     private ColorPalette? _palette;
 
-    // Per-root state (rebuilt on re-root or detail change).
-    // _visualTree is retained for Phase 5 routing (RouteFinder walks the StateNode
-    // tree); the layout and lookup already cover everything the renderer needs today.
+    // Per-root state (rebuilt on re-root or detail change). _visualTree backs routing:
+    // RouteFinder walks its StateNode tree from the origin to the clicked target, and
+    // _lookup resolves a clicked node Id to its StateNode.
     private VisualTree? _visualTree;
     private LayoutResult? _layout;
     private Dictionary<string, StateNode>? _lookup;
@@ -65,7 +66,14 @@ internal sealed class MapWindow : ImGuiWindow
 
     // Interaction state.
     private string? _hoverId;
+
+    // The clicked route target Id (null = no route). Plain click sets it; the route is
+    // accumulated from it into _routeSummary, and _routeNodeIds is the set of node Ids
+    // on the path, used by the renderer to highlight the route and dim everything else.
     private string? _selectedId;
+    private RouteSummary? _routeSummary;
+    private HashSet<string>? _routeNodeIds;
+    private readonly RouteOptions _options = new();
     private bool _middlePanning;
     private bool _titleApplied;
 
@@ -183,10 +191,51 @@ internal sealed class MapWindow : ImGuiWindow
         // The base class draws us between ImGui.Begin and ImGui.End. An exception
         // escaping here would skip End and leave the window/clip stacks unbalanced,
         // corrupting later frames, so contain everything (the same guarantee the
-        // debug dumps already get for the render path).
+        // debug dumps already get for the render path). Each BeginChild is paired with
+        // an EndChild in a finally so a throw inside one column cannot unbalance the
+        // child stack either.
         try
         {
-            DrawCanvas();
+            if (!EnsureBuilt())
+            {
+                ImGui.TextDisabled("Delta-V map unavailable (no system loaded)."u8);
+                return;
+            }
+
+            float2 avail = ImGui.GetContentRegionAvail();
+            // Wide enough that the longest breakdown line ("Capture at <body> (ellipse):
+            // ~X,XXX m/s") does not clip on the right.
+            float panelWidth = (float)Math.Clamp(avail.X * 0.30, 320.0, 470.0);
+            float canvasWidth = avail.X - panelWidth - 8f;
+
+            // Below a sensible width the split is not worth it; show the canvas alone.
+            if (canvasWidth < 220f)
+            {
+                DrawCanvas();
+                return;
+            }
+
+            ImGui.BeginChild("##dvmap_canvas_col"u8, new float2?(new float2(canvasWidth, 0f)));
+            try
+            {
+                DrawCanvas();
+            }
+            finally
+            {
+                ImGui.EndChild();
+            }
+
+            ImGui.SameLine();
+
+            ImGui.BeginChild("##dvmap_panel_col"u8, new float2?(new float2(panelWidth, 0f)));
+            try
+            {
+                DrawPanel();
+            }
+            finally
+            {
+                ImGui.EndChild();
+            }
         }
         catch (Exception ex)
         {
@@ -194,15 +243,26 @@ internal sealed class MapWindow : ImGuiWindow
         }
     }
 
+    // The route + options panel. A toggle here changes the options and recomputes the
+    // route, so its effect lands from the next frame. The vehicle dV bar shows whenever a
+    // vehicle is controlled: it is the vehicle's own total dV, useful context even when the
+    // map is re-rooted away from where the vehicle currently is.
+    private void DrawPanel()
+    {
+        bool changed = RoutePanelRenderer.Draw(_options, _routeSummary, TryGetAvailableDv());
+        if (changed)
+            RecomputeRoute();
+    }
+
+    // The canvas column. Assumes the build succeeded (DrawContent gates on EnsureBuilt);
+    // a defensive null check keeps a throw out of the render path regardless.
     private void DrawCanvas()
     {
-        if (!EnsureBuilt())
-        {
-            ImGui.TextDisabled("Delta-V map unavailable (no system loaded)."u8);
+        LayoutResult? built = _layout;
+        if (built == null)
             return;
-        }
 
-        LayoutResult layout = _layout!;
+        LayoutResult layout = built;
         ImDrawListPtr dl = ImGui.GetWindowDrawList();
         float2 origin = ImGui.GetCursorScreenPos();
         float2 size = ImGui.GetContentRegionAvail();
@@ -224,7 +284,7 @@ internal sealed class MapWindow : ImGuiWindow
         dl.PushClipRect(in origin, in canvasMax, intersectWithCurrentClipRect: true);
         try
         {
-            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _selectedId);
+            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _routeNodeIds);
         }
         finally
         {
@@ -293,22 +353,139 @@ internal sealed class MapWindow : ImGuiWindow
             ImGui.EndTooltip();
         }
 
-        // A click without a drag selects (or shift-clicks to re-root).
+        // A click without a drag selects a route (or shift-clicks to re-root). A plain
+        // click on a body highlights the path from "you are here" to it; clicking the
+        // same node again clears it. A click on empty space is ignored, so a stray click
+        // or a click meant to refocus the window does not throw away the selected route.
         if (clicked)
         {
             LayoutNode? hit = NearestNode(mouse, in transform, out double hitDist);
             if (hit != null && hitDist <= HoverRadiusPx)
             {
                 if (io.KeyShift)
+                {
                     ReRootTo(hit);
+                }
                 else
-                    _selectedId = hit.Id == _selectedId ? null : hit.Id;
-            }
-            else
-            {
-                _selectedId = null;
+                {
+                    bool selecting = hit.Id != _selectedId;
+                    _selectedId = selecting ? hit.Id : null;
+                    // Selecting a surface implies you want to land there, so tick the
+                    // toggle to match (it then reads correctly and the bar includes it).
+                    if (selecting && hit.Kind == LayoutKind.Surface)
+                        _options.LandAtDestination = true;
+                    RecomputeRoute();
+                }
             }
         }
+    }
+
+    // Resolve the selected target into a route from the origin and accumulate it. Called
+    // on selection and whenever a toggle changes. Clears the route when nothing valid is
+    // selected (empty space, the star hub, or a build that has not produced a tree yet).
+    private void RecomputeRoute()
+    {
+        _routeSummary = null;
+        _routeNodeIds = null;
+
+        if (_selectedId == null || _visualTree == null || _graph == null || _lookup == null)
+            return;
+        if (!_lookup.TryGetValue(_selectedId, out StateNode? clicked))
+            return;
+
+        StateNode? target = ResolveTarget(clicked);
+        if (target == null)
+            return;
+
+        StateNode origin = ResolveOrigin();
+        RoutePath? path = RouteFinder.FindPath(origin, target);
+        if (path == null)
+            return;
+
+        try
+        {
+            RouteSummary summary = RouteAccumulator.Accumulate(path, _graph, _options);
+            _routeSummary = summary;
+
+            // A zero-step path means the target is the origin; keep the summary (the panel
+            // says "already here") but do not dim the map for an empty highlight.
+            if (path.Steps.Count == 0)
+                return;
+
+            var ids = new HashSet<string>(path.Nodes.Count);
+            foreach (StateNode n in path.Nodes)
+                ids.Add(n.Id);
+            _routeNodeIds = ids;
+        }
+        catch (Exception ex)
+        {
+            // Routing must never unwind into the render path; surface and drop the route.
+            LogHelper.ErrorOnce("route-accumulate", $"[DvMap] Route accumulation failed: {ex}");
+        }
+    }
+
+    // The route origin: the root body's surface when "from surface" is on, otherwise the
+    // "you are here" state, falling back to low orbit (or the tree root) when there is no
+    // vehicle (e.g. in the editor), so the map still routes from a sensible default rather
+    // than refusing to route.
+    private StateNode ResolveOrigin()
+    {
+        VisualTree tree = _visualTree!;
+        StateNode? you = tree.YouAreHere;
+        StateNode? surface = FindBodyNode(tree.RootBodyId, StateKind.Surface);
+        StateNode? lowOrbit = FindBodyNode(tree.RootBodyId, StateKind.LowOrbit);
+
+        if (_options.FromSurface)
+            return surface ?? lowOrbit ?? you ?? tree.Root;
+        return you ?? lowOrbit ?? surface ?? tree.Root;
+    }
+
+    // Resolve the clicked node into the node the route should actually reach. A hub bus
+    // routes to that hub body's low orbit (the star hub has none, so there is nothing to
+    // route to). "Land at destination" extends an orbit click down to the body's surface.
+    private StateNode? ResolveTarget(StateNode clicked)
+    {
+        StateNode target = clicked;
+
+        if (target.Kind == StateKind.Hub)
+        {
+            StateNode? lo = FindBodyNode(target.Body.Id, StateKind.LowOrbit);
+            if (lo == null)
+                return null;
+            target = lo;
+        }
+
+        if (_options.LandAtDestination
+            && (target.Kind == StateKind.LowOrbit || target.Kind == StateKind.Intercept))
+        {
+            StateNode? surface = FindBodyNode(target.Body.Id, StateKind.Surface);
+            if (surface != null)
+                return surface;
+        }
+
+        return target;
+    }
+
+    private StateNode? FindBodyNode(string bodyId, StateKind kind)
+    {
+        if (_visualTree == null)
+            return null;
+        foreach (StateNode n in _visualTree.Nodes)
+        {
+            if (n.Kind == kind && n.Body.Id == bodyId)
+                return n;
+        }
+        return null;
+    }
+
+    // The vehicle's total staged vacuum dV for the comparison bar: the controlled vehicle
+    // in flight, else the vehicle under construction in the editor. Uses the mod's own
+    // staged analyzer, not NavBallData.DeltaVInVacuum (a single-stage blend that badly
+    // understates a staged vehicle). Null (bar shows n/a) when neither exists.
+    private static double? TryGetAvailableDv()
+    {
+        double? dv = VehicleDvAnalyzer.TryControlledVehicleDv() ?? VehicleDvAnalyzer.TryEditorVehicleDv();
+        return dv is double value && double.IsFinite(value) ? value : null;
     }
 
     private LayoutNode? NearestNode(float2 mouse, in CanvasTransform transform, out double distPx)
@@ -364,6 +541,8 @@ internal sealed class MapWindow : ImGuiWindow
             _currentRootId = null;
             _buildFailedRootId = null;
             _selectedId = null;
+            _routeSummary = null;
+            _routeNodeIds = null;
             _built = false;
         }
 
@@ -436,7 +615,7 @@ internal sealed class MapWindow : ImGuiWindow
         try
         {
             VisualTree visual = VisualTree.Build(_graph, _cache, node, egoState, _fullLadder);
-            LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual);
+            LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual, _graph);
             LayoutResult result = LayoutEngine.Run(tree, LayoutConfig.Default, MeasureText);
 
             var lookup = new Dictionary<string, StateNode>(visual.Nodes.Count);
@@ -449,6 +628,8 @@ internal sealed class MapWindow : ImGuiWindow
             _currentRootId = node.Id;
             _buildFailedRootId = null;
             _selectedId = null;
+            _routeSummary = null;
+            _routeNodeIds = null;
             _needsFit = true;
             _built = true;
         }
