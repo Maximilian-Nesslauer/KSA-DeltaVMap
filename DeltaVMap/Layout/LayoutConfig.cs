@@ -13,8 +13,8 @@ internal sealed class LayoutConfig
 
     // Vertical height of one dV band. A multiple of GridPx so band rows map cleanly
     // onto grid rows. Must be at least MinSegmentPx so every non-structural edge
-    // clears the minimum vertical gap.
-    public double BandHeightPx { get; init; } = 96.0;
+    // clears the minimum vertical gap. Generous so stacked rungs leave label room.
+    public double BandHeightPx { get; init; } = 128.0;
 
     // Floor on a single edge's vertical length. Validate() requires BandHeightPx to
     // meet it, so every one-band edge clears this minimum gap.
@@ -29,8 +29,9 @@ internal sealed class LayoutConfig
 
     // Horizontal breathing room. SiblingGap is added to the half-widths when the
     // tidy tree separates adjacent siblings; BusGap separates whole hub-bus subtrees.
-    public double SiblingGapPx { get; init; } = 30.0;
-    public double BusGapPx { get; init; } = 60.0;
+    // Both are wide so neighbouring vertical lanes leave room for their labels.
+    public double SiblingGapPx { get; init; } = 100.0;
+    public double BusGapPx { get; init; } = 160.0;
 
     // Approximate text metrics for the offline pass. Real widths come from
     // ImGui.CalcTextSize inside the draw loop later.
@@ -45,6 +46,14 @@ internal sealed class LayoutConfig
     // Perpendicular spacing between parallel edge lanes leaving one node, so several
     // siblings dropping from the same hub stay visually distinct.
     public double LaneOffsetPx { get; init; } = 6.0;
+
+    // Length (per axis) of the 45-degree diagonal the edge router inserts between the
+    // horizontal traverse and the vertical drop into a node. Capped by the available
+    // horizontal and vertical room, so it shrinks to nothing for a directly-below child
+    // or a same-band hub link. Gives the map a metro-style angled corner instead of a
+    // hard right angle. Kept below BandHeightPx so a one-band edge keeps a short
+    // vertical lane (here 128 - 96 = 32 px) rather than becoming a pure diagonal.
+    public double EdgeDiagonalPx { get; init; } = 96.0;
 
     // Dot radius by node rank. Rank 0 is the ego root, 1 a planet-level
     // body, 2 a moon-level body, 3 a minor body; hubs and the you-are-here marker

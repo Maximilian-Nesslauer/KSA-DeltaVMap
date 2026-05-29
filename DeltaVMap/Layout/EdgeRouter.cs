@@ -3,37 +3,33 @@ using System.Collections.Generic;
 
 namespace DeltaVMap.Layout;
 
-// Routes every edge as a one-bend octilinear polyline in snapped layout space: a
-// straight run along the dominant axis from the parent, then a single 45-degree
-// segment into the child. For a normal edge the dominant axis is
-// vertical, so the straight run is the part that carries the dV metric and the
-// diagonal is cosmetic; for a hub-bus link (parent and child on the same band) the
-// run is horizontal and the line is effectively straight.
+// Routes every edge as a horizontal run, a short 45-degree diagonal, then a vertical
+// drop into the child, in snapped layout space. Every node therefore sits on a clean
+// vertical lane (the metro / KSP subway look), the final drop carries the dV metric,
+// and the diagonal gives an angled corner instead of a hard right angle. A hub-bus
+// link has the child on the parent's band, so the diagonal and drop collapse and the
+// line is a straight horizontal trunk; a directly-below child collapses to a plain
+// vertical.
 //
-// Edges leaving the same node get a small per-lane perpendicular offset so parallel
-// tracks (several siblings dropping off one hub) stay visually distinct rather than
-// overprinting each other.
+// This replaces the earlier single 45-degree bend, which with variable band heights
+// produced long slopes and, combined with lane nudging, occasional up-and-over
+// detours. Keeping the diagonal short and bounded by the available room avoids both.
 internal static class EdgeRouter
 {
     public static void Route(LayoutTree tree, LayoutConfig cfg)
     {
         foreach (LayoutNode node in tree.Nodes)
         {
-            int count = node.Out.Count;
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < node.Out.Count; i++)
             {
                 LayoutEdge edge = node.Out[i];
                 edge.Lane = i;
-                // The hub bus is a single trunk line and must run straight, so a
-                // structural HubLink gets no lane offset; only parallel spoke tracks
-                // are nudged apart.
-                double laneShift = edge.IsHubLink ? 0.0 : (i - (count - 1) / 2.0) * cfg.LaneOffsetPx;
-                edge.Polyline = BuildPolyline(edge, laneShift);
+                edge.Polyline = BuildPolyline(edge, cfg.EdgeDiagonalPx);
             }
         }
     }
 
-    private static IReadOnlyList<LayoutPoint> BuildPolyline(LayoutEdge edge, double laneShift)
+    private static IReadOnlyList<LayoutPoint> BuildPolyline(LayoutEdge edge, double diagonalPx)
     {
         double fromX = edge.From.SnappedX;
         double fromY = edge.From.SnappedY;
@@ -43,29 +39,19 @@ internal static class EdgeRouter
         double dx = toX - fromX;
         double dy = toY - fromY;
 
-        LayoutPoint knee;
-        if (Math.Abs(dy) >= Math.Abs(dx))
-        {
-            // Vertical dominant: near-vertical run (nudged sideways by the lane) then
-            // a 45-degree diagonal covering the remaining horizontal distance.
-            double runX = fromX + laneShift;
-            double horizontal = Math.Abs(toX - runX);
-            double kneeY = toY - Math.Sign(dy) * horizontal;
-            knee = new LayoutPoint(runX, kneeY);
-        }
-        else
-        {
-            // Horizontal dominant (hub-bus links and wide-short edges): horizontal run
-            // then the 45-degree diagonal.
-            double runY = fromY + laneShift;
-            double vertical = Math.Abs(toY - runY);
-            double kneeX = toX - Math.Sign(dx) * vertical;
-            knee = new LayoutPoint(kneeX, runY);
-        }
+        // The diagonal covers d on both axes (so it is exactly 45 degrees), bounded by
+        // how much horizontal and vertical room the edge has. The horizontal run takes
+        // up the rest of dx at the parent's band, the vertical drop the rest of dy down
+        // the child's lane. Coincident points collapse, so a hub link becomes a plain
+        // horizontal and a directly-below child a plain vertical.
+        double d = Math.Min(diagonalPx, Math.Min(Math.Abs(dx), Math.Abs(dy)));
+        double sx = Math.Sign(dx);
+        double sy = Math.Sign(dy);
 
-        var points = new List<LayoutPoint>(3);
+        var points = new List<LayoutPoint>(4);
         AddPoint(points, new LayoutPoint(fromX, fromY));
-        AddPoint(points, knee);
+        AddPoint(points, new LayoutPoint(toX - sx * d, fromY));
+        AddPoint(points, new LayoutPoint(toX, fromY + sy * d));
         AddPoint(points, new LayoutPoint(toX, toY));
         return points;
     }

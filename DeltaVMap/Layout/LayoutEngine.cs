@@ -26,10 +26,14 @@ internal sealed class LayoutResult
 // and neither is allowed to leak into the other.
 internal static class LayoutEngine
 {
-    public static LayoutResult Run(LayoutTree tree, LayoutConfig cfg)
+    // measureText, when supplied, returns the real rendered width of a label in pixels
+    // (from ImGui.CalcTextSize). The map passes it so the tidy tree spaces nodes by
+    // their true on-screen size; the offline dump passes null and falls back to the
+    // character-count estimate, which is enough to verify topology and overlap logic.
+    public static LayoutResult Run(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText = null)
     {
         cfg.Validate();
-        MeasureNodes(tree, cfg);
+        MeasureNodes(tree, cfg, measureText);
         BandLayout.AssignBands(tree, cfg);
         TidyTree.AssignX(tree, cfg);
         GridSnap.Snap(tree, cfg);
@@ -38,14 +42,15 @@ internal static class LayoutEngine
         return BuildResult(tree, cfg, labels);
     }
 
-    // Approximate node box and dot size. Real widths come from ImGui.CalcTextSize in
-    // the draw loop later; here a character-count estimate is enough to verify the
-    // topology and the overlap logic.
-    private static void MeasureNodes(LayoutTree tree, LayoutConfig cfg)
+    // Node box and dot size. Width comes from real text metrics when measureText is
+    // given, otherwise from a character-count estimate (the offline pass cannot reach
+    // ImGui.CalcTextSize, which only exists inside the draw loop).
+    private static void MeasureNodes(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText)
     {
         foreach (LayoutNode node in tree.Nodes)
         {
-            double textWidth = Math.Max(cfg.MinNodeWidthPx, node.Label.Length * cfg.CharWidthPx);
+            double rawWidth = measureText != null ? measureText(node.Label) : node.Label.Length * cfg.CharWidthPx;
+            double textWidth = Math.Max(cfg.MinNodeWidthPx, rawWidth);
             node.Width = textWidth + cfg.BadgePaddingPx;
             node.Height = cfg.LineHeightPx;
             node.DotRadius = DotRadiusFor(node, cfg);
