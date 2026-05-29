@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using Brutal.Logging;
+using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using DeltaVMap.Model;
 using KSA;
@@ -19,7 +20,7 @@ internal static class LayoutDump
 
     internal static void Run()
     {
-        string outDir = OutputDirectory();
+        string outDir = DebugConfig.LayoutDumpDir;
         DefaultCategory.Log.Info($"{Tag} === Layout dump; writing to '{outDir}' ===");
 
         try
@@ -163,12 +164,6 @@ internal static class LayoutDump
         {
             DefaultCategory.Log.Warning($"{Tag} Could not write '{path}': {ex.Message}");
         }
-    }
-
-    private static string OutputDirectory()
-    {
-        string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        return Path.Combine(docs, "My Games", "Kitten Space Agency", "DeltaVMap");
     }
 
     // Make a filesystem-safe stem from a tree name (body Ids are usually plain words,

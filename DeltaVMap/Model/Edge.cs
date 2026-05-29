@@ -3,19 +3,22 @@ using DeltaVMap.Dv;
 
 namespace DeltaVMap.Model;
 
-// What a visual edge represents physically. Ladder edges (Ascent, Raise, Land)
-// carry a single self-contained dV in LadderDv. Transfer edges carry the coupled
-// Hohmann as an EdgeDv and never collapse it to one number, because the actual
-// departure and capture burns depend on which endpoint is the hub and on each
-// body's low-orbit radius; those are derived when a route is accumulated, not
-// baked in here. HubLink is a structural connector with no dV: it stitches a
-// body's low orbit to its parent hub bus so the tree stays connected without
-// double-counting the transfer, which lives on the hub's outgoing spokes instead.
+// What a visual edge represents physically. Ladder edges (Ascent, Raise, Land,
+// Capture) carry a single self-contained dV in LadderDv; Capture is the inbound
+// circularize from a loose capture ellipse (an arrival Intercept node) down to low
+// orbit. Transfer edges carry the coupled Hohmann as an EdgeDv and never collapse it
+// to one number, because the actual departure and capture burns depend on which
+// endpoint is the hub and on each body's low-orbit radius; those are derived when a
+// route is accumulated, not baked in here. HubLink is a structural connector with no
+// dV: it stitches a body's low orbit to its parent hub bus so the tree stays
+// connected without double-counting the transfer, which lives on the hub's outgoing
+// spokes instead.
 internal enum SegmentKind
 {
     Ascent,
     Raise,
     Land,
+    Capture,
     Transfer,
     HubLink
 }
@@ -42,8 +45,8 @@ internal sealed class Edge
     public required StateNode To { get; init; }
     public required SegmentKind Kind { get; init; }
 
-    // Within-SOI ladder edges (Ascent, Raise, Land): a single self-contained cost.
-    // Zero for Transfer and HubLink edges.
+    // Within-SOI ladder edges (Ascent, Raise, Land, Capture): a single self-contained
+    // cost. Zero for Transfer and HubLink edges.
     public double LadderDv { get; init; }
 
     // Cross-hub transfer edges: the coupled Hohmann, both v_inf legs. Null for every

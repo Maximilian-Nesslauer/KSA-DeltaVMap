@@ -178,17 +178,35 @@ internal sealed class VisualTree
                     && DetailLevel.IncludeRung(StateKind.Stationary, detail))
                     result.Stationary = NewNode(body, StateKind.Stationary, ladder.StationaryRadius.Value);
 
-                if (ladder.SoiRadius.HasValue && DetailLevel.IncludeRung(StateKind.SoiEdge, detail))
+                // The outbound SOI-edge rung (a place you climb out to) belongs to the
+                // body you are sitting at, not to one you arrive at: a destination gets
+                // an inbound Intercept capture anchor instead (picked below).
+                if (ladder.SoiRadius.HasValue && DetailLevel.IncludeRung(StateKind.SoiEdge, detail) && !asDestination)
                     result.SoiEdge = NewNode(body, StateKind.SoiEdge, ladder.SoiRadius.Value);
             }
 
-            // Pick the anchor (where an incoming transfer lands) and the local hub
-            // (what children and the spine branch from).
+            // Pick the arrival anchor (where an incoming transfer lands) and the local
+            // hub (what moons and the spine branch from). A body you arrive at from
+            // outside its SOI is captured into a loose ellipse near the SOI edge first
+            // (the Intercept anchor) and circularizes down to low orbit; low orbit stays
+            // the hub. The ego root is different: you are already there, so low orbit is
+            // the anchor and the SOI-edge ellipse is an outbound place you raise to.
             if (result.LowOrbit != null)
             {
-                result.ArrivalAnchor = result.LowOrbit;
                 result.LocalHub = result.LowOrbit;
                 result.LocalHubRadius = ladder.LowOrbitRadius;
+
+                if (asDestination && detail == NodeDetail.Full && ladder.SoiRadius.HasValue)
+                {
+                    result.Intercept = NewNode(body, StateKind.Intercept, ladder.SoiRadius.Value);
+                    result.ArrivalAnchor = result.Intercept;
+                }
+                else
+                {
+                    // Root, the hub's own ladder, or a distant body at core detail: the
+                    // transfer lands straight in low orbit.
+                    result.ArrivalAnchor = result.LowOrbit;
+                }
             }
             else if (asDestination)
             {
@@ -240,10 +258,22 @@ internal sealed class VisualTree
                 ConnectLadder(nodes.LowOrbit, nodes.SoiEdge, SegmentKind.Raise, dv);
             }
 
-            if (nodes.Intercept != null && nodes.Surface != null)
+            if (nodes.Intercept != null && nodes.LowOrbit != null)
             {
-                // Rough landing estimate on a body too small to park around: kill the
-                // near-surface circular speed. Good enough for a reference badge.
+                // Arrived in a loose ellipse near the SOI edge; circularize down to low
+                // orbit. Same magnitude as the outbound escape-to-SOI, run inward. This
+                // edge is ONLY the circularize: the hyperbolic capture into the ellipse
+                // is the transfer's arrive leg (its v_inf). The two together equal one
+                // Oberth capture straight to low orbit, so route accumulation must not
+                // also charge a separate full capture on top.
+                double dv = DeltaVCalculator.EscapeToSoi(mu, ladder.LowOrbitRadius, ladder.SoiRadius!.Value);
+                ConnectLadder(nodes.Intercept, nodes.LowOrbit, SegmentKind.Capture, dv);
+            }
+            else if (nodes.Intercept != null && nodes.Surface != null)
+            {
+                // Surface-only body, too small to park: intercept the tiny SOI and land.
+                // Rough estimate, kill the near-surface circular speed. Good enough for a
+                // reference badge.
                 double dv = DeltaVCalculator.CircularSpeed(mu, ladder.MeanRadius);
                 ConnectLadder(nodes.Intercept, nodes.Surface, SegmentKind.Land, dv);
             }

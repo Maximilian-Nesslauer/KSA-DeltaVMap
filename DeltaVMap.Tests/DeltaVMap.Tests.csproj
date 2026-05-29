@@ -19,6 +19,9 @@
   <ItemGroup>
     <Compile Include="..\DeltaVMap\Layout\*.cs"
              Exclude="..\DeltaVMap\Layout\VisualTreeAdapter.cs;..\DeltaVMap\Layout\LayoutDump.cs" />
+    <!-- Shared debug config (pure, no game deps) so the harness defaults to the same
+         dump directory as the in-game LayoutDump. -->
+    <Compile Include="..\DeltaVMap\Core\DebugConfig.cs" />
   </ItemGroup>
 
 </Project>

@@ -134,6 +134,48 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-wide-fan", root);
     }
 
+    // Demonstrates the gravity-well arrival orientation. The root keeps its fork - its
+    // surface, stationary and outbound SOI-edge all hang below its low orbit - while
+    // every destination is entered at a capture (Intercept) anchor that circularizes
+    // down to low orbit, with surface and stationary below that. Small, for eyeballing
+    // the arrival model offline; the real shapes come from VisualTree in-game.
+    public static LayoutTree BuildArrivalDemo()
+    {
+        LayoutNode root = Node("Home.LO", "Home Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        Ladder(root, "Home", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3200);
+
+        // A moon of home: capture into a loose ellipse, then circularize down.
+        Arrive(root, "Moon", "Moon", rank: 2, depart: 900, arrive: 250, circularizeDv: 410, surfaceDv: 600, stationaryDv: null);
+
+        LayoutNode star = Node("Star.Hub", "Star", LayoutKind.Hub, rank: 0);
+        HubLink(root, star);
+
+        LayoutNode marsLo = Arrive(star, "Mars", "Mars", rank: 1, depart: 3600, arrive: 2100, circularizeDv: 980, surfaceDv: 4100, stationaryDv: 1140);
+        Arrive(marsLo, "Phobos", "Phobos", rank: 2, depart: 700, arrive: 120, circularizeDv: 90, surfaceDv: 200, stationaryDv: null);
+
+        Arrive(star, "Venus", "Venus", rank: 1, depart: 3500, arrive: 2700, circularizeDv: 890, surfaceDv: 12000, stationaryDv: null);
+
+        return LayoutTree.FromRoot("synthetic-arrival", root);
+    }
+
+    // Reach a destination from `hub`: capture (Intercept) -> circularize -> low orbit ->
+    // surface (+ stationary). Returns the low orbit, the local hub this body's moons
+    // branch from. Destinations carry no outbound SoiEdge rung.
+    private static LayoutNode Arrive(LayoutNode hub, string id, string name, int rank, double depart, double arrive, double circularizeDv, double surfaceDv, double? stationaryDv)
+    {
+        LayoutNode capture = Node(id + ".Capture", name + " Intercept", LayoutKind.Intercept, rank);
+        Transfer(hub, capture, depart, arrive);
+
+        LayoutNode lo = Node(id + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank);
+        LadderEdge(capture, lo, circularizeDv);
+        LadderEdge(lo, Node(id + ".Surface", name + " Surface", LayoutKind.Surface, rank), surfaceDv);
+        if (stationaryDv.HasValue)
+            LadderEdge(lo, Node(id + ".Stationary", name + " Stationary", LayoutKind.Stationary, rank), stationaryDv.Value);
+
+        return lo;
+    }
+
     private static void AttachPlanets(LayoutNode starHub, int count)
     {
         for (int i = 0; i < count; i++)
