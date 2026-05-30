@@ -64,6 +64,12 @@ failures += RunCase(SyntheticTree.BuildCruiseRoot(), gravityWell, "gravitywell",
 failures += RunCase(SyntheticTree.BuildCruiseRootArrival(), LayoutConfig.Default, "default", outDir, minNodes: 0);
 failures += RunCase(SyntheticTree.BuildCruiseRootArrival(), gravityWell, "gravitywell", outDir, minNodes: 0);
 
+// Spring (force-directed): the tree-shape invariants do not apply, but the settled web
+// plus the grid snap must still leave no two dots (and no two labels) overlapping.
+var spring = new LayoutConfig { Mode = LayoutMode.Spring };
+failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), spring, "spring", outDir, minNodes: 100);
+failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), spring, "spring", outDir, minNodes: 0);
+
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
 return failures == 0 ? 0 : 1;

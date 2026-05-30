@@ -186,10 +186,12 @@ internal sealed class MapWindow : ImGuiWindow
             if (ImGui.BeginMenu("Layout"u8))
             {
                 // Two engine layouts as radio choices, plus a view-only "center view".
-                if (ImGui.MenuItem("Gravity-well"u8, default(ImString), _layoutMode == LayoutMode.GravityWell))
-                    SetLayoutMode(LayoutMode.GravityWell);
                 if (ImGui.MenuItem("Cumulative-down"u8, default(ImString), _layoutMode == LayoutMode.CumulativeDown))
                     SetLayoutMode(LayoutMode.CumulativeDown);
+                if (ImGui.MenuItem("Gravity-well"u8, default(ImString), _layoutMode == LayoutMode.GravityWell))
+                    SetLayoutMode(LayoutMode.GravityWell);
+                if (ImGui.MenuItem("Spring"u8, default(ImString), _layoutMode == LayoutMode.Spring))
+                    SetLayoutMode(LayoutMode.Spring);
                 ImGui.Separator();
                 if (ImGui.MenuItem("Center view on root"u8, default(ImString), _centerOnRoot))
                 {
@@ -351,10 +353,11 @@ internal sealed class MapWindow : ImGuiWindow
     }
 
     // Draw the on-canvas layout toggle: a small icon button in the top-left corner whose
-    // glyph represents the active layout (a spine of wells for GravityWell, a branching
-    // tree for CumulativeDown). Clicking flips to the other layout via RebuildAt. Returns
-    // whether the mouse is over it, so the canvas suppresses hover / pan / select beneath.
-    // Submitted after the canvas button (which allowed overlap) so it takes its own clicks.
+    // glyph represents the active layout (a branching tree for CumulativeDown, a spine of
+    // wells for GravityWell, a force-directed web for Spring). Clicking cycles to the next
+    // layout via RebuildAt. Returns whether the mouse is over it, so the canvas suppresses
+    // hover / pan / select beneath. Submitted after the canvas button (which allowed
+    // overlap) so it takes its own clicks.
     private bool DrawLayoutOverlay(float2 origin)
     {
         const float margin = 8f;
@@ -377,15 +380,16 @@ internal sealed class MapWindow : ImGuiWindow
         }
 
         if (clicked)
-            SetLayoutMode(_layoutMode == LayoutMode.GravityWell ? LayoutMode.CumulativeDown : LayoutMode.GravityWell);
+            SetLayoutMode(NextLayoutMode(_layoutMode));
 
         float2 mouse = ImGui.GetMousePos();
         return mouse.X >= min.X && mouse.X <= max.X && mouse.Y >= min.Y && mouse.Y <= max.Y;
     }
 
-    // Draw the toggle's frame plus a tiny glyph of the active layout. GravityWell is a
-    // horizontal spine with wells hanging below; CumulativeDown is a root branching down to
-    // two children. Pure DrawList primitives so it needs no font glyphs and stays ASCII.
+    // Draw the toggle's frame plus a tiny glyph of the active layout. CumulativeDown is a
+    // root branching down to two children; GravityWell is a horizontal spine with wells
+    // hanging below; Spring is a central node with spokes to a ring of nodes. Pure DrawList
+    // primitives so it needs no font glyphs and stays ASCII.
     private static void DrawLayoutIcon(ImDrawListPtr dl, float2 min, float2 max, LayoutMode mode, bool hovered)
     {
         byte4 bg = hovered ? new byte4(44, 54, 68, 245) : new byte4(28, 34, 44, 235);
@@ -406,6 +410,7 @@ internal sealed class MapWindow : ImGuiWindow
 
         if (mode == LayoutMode.GravityWell)
         {
+            // A horizontal spine with wells hanging below it.
             float midY = (min.Y + max.Y) * 0.5f;
             var a = new float2(left, midY);
             var b = new float2(right, midY);
@@ -420,8 +425,25 @@ internal sealed class MapWindow : ImGuiWindow
                 dl.AddCircleFilled(in c, dot, fg);
             }
         }
+        else if (mode == LayoutMode.Spring)
+        {
+            // A central node with spokes to a ring of nodes (a force-directed web).
+            float cx = (min.X + max.X) * 0.5f;
+            float cy = (min.Y + max.Y) * 0.5f;
+            var center = new float2(cx, cy);
+            float ringR = (right - left) * 0.42f;
+            for (int i = 0; i < 3; i++)
+            {
+                double a = -1.5707963 + i * 2.0943951; // start up, 120 deg apart
+                var outer = new float2(cx + ringR * (float)Math.Cos(a), cy + ringR * (float)Math.Sin(a));
+                dl.AddLine(in center, in outer, fg, line);
+                dl.AddCircleFilled(in outer, dot, fg);
+            }
+            dl.AddCircleFilled(in center, dot * 1.3f, fg);
+        }
         else
         {
+            // A root branching down to two children.
             float cx = (min.X + max.X) * 0.5f;
             var root = new float2(cx, top);
             var leftChild = new float2(left, bottom);
@@ -434,9 +456,24 @@ internal sealed class MapWindow : ImGuiWindow
         }
     }
 
+    private static LayoutMode NextLayoutMode(LayoutMode mode)
+    {
+        return mode switch
+        {
+            LayoutMode.CumulativeDown => LayoutMode.GravityWell,
+            LayoutMode.GravityWell => LayoutMode.Spring,
+            _ => LayoutMode.CumulativeDown
+        };
+    }
+
     private static string LayoutModeLabel(LayoutMode mode)
     {
-        return mode == LayoutMode.GravityWell ? "Gravity-well" : "Cumulative-down";
+        return mode switch
+        {
+            LayoutMode.GravityWell => "Gravity-well",
+            LayoutMode.Spring => "Spring",
+            _ => "Cumulative-down"
+        };
     }
 
     private void HandleInput(bool hovered, bool active, bool clicked, float2 origin, in CanvasTransform transform)

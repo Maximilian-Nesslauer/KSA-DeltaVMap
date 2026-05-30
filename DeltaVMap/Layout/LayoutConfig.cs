@@ -4,12 +4,17 @@ namespace DeltaVMap.Layout;
 // (Y is cumulative dV from the root growing downward, a body's rungs are X-spread
 // siblings). GravityWell hangs a row of vertical wells off a horizontal low-orbit spine
 // (every body's low orbit sits on one line at Y=0, its surface dangles below, its high
-// orbits and capture poke above), the structure the canonical KSP subway map uses. The
-// engine carries no game types, so the mode lives here and the passes branch on it.
+// orbits and capture poke above), the structure the canonical KSP subway map uses. Spring
+// is a force-directed alternative: nodes repel, edges pull, settled once into an organic
+// web with the root pinned at the center. It trades the dV-as-position meaning of the
+// other two for a free-form look, so it draws straight edges and skips the tree-shaped
+// overlap invariants. The engine carries no game types, so the mode lives here and the
+// passes branch on it.
 internal enum LayoutMode
 {
     CumulativeDown,
-    GravityWell
+    GravityWell,
+    Spring
 }
 
 // Tunable layout constants, all in pixels at 100% zoom unless noted. These are
@@ -20,7 +25,7 @@ internal sealed class LayoutConfig
 {
     // The active layout strategy. Defaults to the as-built CumulativeDown so any caller
     // that does not pick a mode (and the existing offline cases) keep their verified
-    // output unchanged; the map window selects GravityWell as its in-game default.
+    // output unchanged; the map window picks the mode explicitly (currently CumulativeDown).
     public LayoutMode Mode { get; init; } = LayoutMode.CumulativeDown;
     // Square snap grid. Must be at least the sum of the two largest dot radii so that
     // two dots in orthogonally adjacent cells never overlap; the overlap check relies
@@ -51,6 +56,13 @@ internal sealed class LayoutConfig
     // MinSegmentPx; Validate() enforces both.
     public double WellBandHeightPx { get; init; } = 64.0;
     public int WellMaxBandStep { get; init; } = 3;
+
+    // Spring (force-directed) layout. IdealLength is the rest length of an edge spring
+    // (and the scale of the all-pairs repulsion); Iterations is the fixed number of
+    // settle steps run once on build, so the result is deterministic and does not animate
+    // per frame. Both are deliberately generous so a dense root spreads into a readable web.
+    public double SpringIdealLengthPx { get; init; } = 120.0;
+    public int SpringIterations { get; init; } = 460;
 
     // Horizontal breathing room. SiblingGap is added to the half-widths when the
     // tidy tree separates adjacent siblings; BusGap separates whole hub-bus subtrees.
@@ -122,5 +134,12 @@ internal sealed class LayoutConfig
         if (System.Math.Abs(wellRows - System.Math.Round(wellRows)) > 1e-9)
             throw new System.ArgumentException(
                 $"WellBandHeightPx ({WellBandHeightPx}) must be a whole multiple of GridPx ({GridPx}).");
+
+        if (SpringIdealLengthPx <= 0.0)
+            throw new System.ArgumentException(
+                $"SpringIdealLengthPx ({SpringIdealLengthPx}) must be positive (it is the spring rest length and force scale).");
+        if (SpringIterations < 1)
+            throw new System.ArgumentException(
+                $"SpringIterations ({SpringIterations}) must be at least 1.");
     }
 }

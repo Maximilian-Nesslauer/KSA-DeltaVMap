@@ -34,11 +34,19 @@ internal static class LayoutEngine
     {
         cfg.Validate();
         MeasureNodes(tree, cfg, measureText);
-        if (cfg.Mode == LayoutMode.GravityWell)
-            WellLayout.Assign(tree, cfg);
+        if (cfg.Mode == LayoutMode.Spring)
+        {
+            // Force-directed sets both axes at once; the tidy tree and band passes do not run.
+            SpringLayout.Assign(tree, cfg);
+        }
         else
-            BandLayout.AssignBands(tree, cfg);
-        TidyTree.AssignX(tree, cfg);
+        {
+            if (cfg.Mode == LayoutMode.GravityWell)
+                WellLayout.Assign(tree, cfg);
+            else
+                BandLayout.AssignBands(tree, cfg);
+            TidyTree.AssignX(tree, cfg);
+        }
         GridSnap.Snap(tree, cfg);
         EdgeRouter.Route(tree, cfg);
         LabelPlacer.Result labels = LabelPlacer.Place(tree, cfg);

@@ -92,19 +92,31 @@ internal static class OverlapCheck
             LabelsDropped = result.Labels.Dropped
         };
 
+        // The dot-overlap and label checks are the universal no-overlap guarantee and run
+        // in every mode. The remaining checks are tree-shape invariants: the sibling-subtree
+        // X-extent guarantee is specific to the cumulative pass (GravityWell stacks a body's
+        // rungs at one X, the spring layout has no tree shape at all), the band check differs
+        // per mode, and the hub-bus check only means something for the two tidy-tree modes.
+        LayoutMode mode = result.Config.Mode;
         CheckNodes(tree, result.Config, report);
-        // The sibling-subtree X-extent guarantee is specific to the cumulative pass,
-        // where a body's rungs are X-spread siblings. GravityWell stacks a body's rungs
-        // at one X (separated in Y), so adjacent "siblings" legitimately share an X;
-        // there the dot-overlap check is the no-overlap guarantee instead.
-        if (result.Config.Mode != LayoutMode.GravityWell)
-            CheckSiblingSubtrees(tree, report);
         CheckLabels(tree, result.Config, report);
-        if (result.Config.Mode == LayoutMode.GravityWell)
-            CheckWellBands(tree, report);
-        else
-            CheckBands(tree, report);
-        CheckHubBus(tree, report, result.Config.Mode == LayoutMode.GravityWell);
+
+        switch (mode)
+        {
+            case LayoutMode.CumulativeDown:
+                CheckSiblingSubtrees(tree, report);
+                CheckBands(tree, report);
+                CheckHubBus(tree, report, gravityWell: false);
+                break;
+            case LayoutMode.GravityWell:
+                CheckWellBands(tree, report);
+                CheckHubBus(tree, report, gravityWell: true);
+                break;
+            case LayoutMode.Spring:
+                // Free-form: no band / bus / subtree shape to assert; dots and labels only.
+                break;
+        }
+
         return report;
     }
 

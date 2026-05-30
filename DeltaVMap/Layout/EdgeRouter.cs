@@ -18,15 +18,27 @@ internal static class EdgeRouter
 {
     public static void Route(LayoutTree tree, LayoutConfig cfg)
     {
+        // The spring layout is free-form, so its edges are plain straight lines rather than
+        // the octilinear metro routing the tidy-tree modes use.
+        bool straight = cfg.Mode == LayoutMode.Spring;
         foreach (LayoutNode node in tree.Nodes)
         {
             for (int i = 0; i < node.Out.Count; i++)
             {
                 LayoutEdge edge = node.Out[i];
                 edge.Lane = i;
-                edge.Polyline = BuildPolyline(edge, cfg.EdgeDiagonalPx);
+                edge.Polyline = straight ? StraightLine(edge) : BuildPolyline(edge, cfg.EdgeDiagonalPx);
             }
         }
+    }
+
+    private static IReadOnlyList<LayoutPoint> StraightLine(LayoutEdge edge)
+    {
+        return new[]
+        {
+            new LayoutPoint(edge.From.SnappedX, edge.From.SnappedY),
+            new LayoutPoint(edge.To.SnappedX, edge.To.SnappedY)
+        };
     }
 
     private static IReadOnlyList<LayoutPoint> BuildPolyline(LayoutEdge edge, double diagonalPx)
