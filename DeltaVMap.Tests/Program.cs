@@ -48,6 +48,22 @@ failures += RunCase(SyntheticTree.BuildWideFan(), LayoutConfig.Default, "default
 // The gravity-well arrival model: capture anchor above low orbit for destinations.
 failures += RunCase(SyntheticTree.BuildArrivalDemo(), LayoutConfig.Default, "default", outDir, minNodes: 0);
 
+// GravityWell mode (the in-game default): the same dense trees must stay overlap-free
+// with the spine / well / bus assertions holding, on a fresh tree instance each time
+// since the layout pass mutates node positions.
+var gravityWell = new LayoutConfig { Mode = LayoutMode.GravityWell };
+failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), gravityWell, "gravitywell", outDir, minNodes: 100);
+failures += RunCase(SyntheticTree.BuildWideFan(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildArrivalDemo(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildCruiseRoot(), gravityWell, "gravitywell", outDir, minNodes: 0);
+
+// The realistic cruise root: planets attach to the star hub via HubLink onto their
+// Intercept (above the spine). Exercises the GravityWell spine / well / relaxed-bus
+// rules on the actual in-game cruise shape, in both modes.
+failures += RunCase(SyntheticTree.BuildCruiseRootArrival(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildCruiseRootArrival(), gravityWell, "gravitywell", outDir, minNodes: 0);
+
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
 return failures == 0 ? 0 : 1;

@@ -34,7 +34,10 @@ internal static class LayoutEngine
     {
         cfg.Validate();
         MeasureNodes(tree, cfg, measureText);
-        BandLayout.AssignBands(tree, cfg);
+        if (cfg.Mode == LayoutMode.GravityWell)
+            WellLayout.Assign(tree, cfg);
+        else
+            BandLayout.AssignBands(tree, cfg);
         TidyTree.AssignX(tree, cfg);
         GridSnap.Snap(tree, cfg);
         EdgeRouter.Route(tree, cfg);

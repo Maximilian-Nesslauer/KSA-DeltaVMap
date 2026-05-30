@@ -92,12 +92,22 @@ internal sealed class SystemGraph
                 childBodies.Add(celestial);
         }
 
-        // Deterministic order by semi-major axis, innermost first, with Id as a
-        // stable tie-breaker so co-orbital bodies never reshuffle between rebuilds.
+        // Deterministic order, innermost first, with Id as a stable tie-breaker so
+        // co-orbital bodies never reshuffle between rebuilds. Bound bodies sort by
+        // semi-major axis; open (hyperbolic / parabolic, e >= 1) orbits have a negative
+        // or undefined SMA, so they would otherwise sort to the very front. They are an
+        // odd, expensive special case (interstellar comets), so push them past every
+        // bound body and order them among themselves by periapsis (closest approach).
         childBodies.Sort(static (a, b) =>
         {
-            int bySma = a.SemiMajorAxis.CompareTo(b.SemiMajorAxis);
-            return bySma != 0 ? bySma : string.CompareOrdinal(a.Id, b.Id);
+            bool aOpen = a.Orbit.Eccentricity >= 1.0;
+            bool bOpen = b.Orbit.Eccentricity >= 1.0;
+            if (aOpen != bOpen)
+                return aOpen ? 1 : -1;
+            double ka = aOpen ? a.Orbit.Periapsis : a.SemiMajorAxis;
+            double kb = bOpen ? b.Orbit.Periapsis : b.SemiMajorAxis;
+            int byKey = ka.CompareTo(kb);
+            return byKey != 0 ? byKey : string.CompareOrdinal(a.Id, b.Id);
         });
 
         foreach (Celestial child in childBodies)

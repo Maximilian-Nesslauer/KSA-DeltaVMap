@@ -23,13 +23,21 @@ internal static class TidyTree
 {
     public static void AssignX(LayoutTree tree, LayoutConfig cfg)
     {
+        if (cfg.Mode == LayoutMode.GravityWell)
+            AssignXColumns(tree, cfg);
+        else
+            AssignXCumulative(tree, cfg);
+    }
+
+    private static void AssignXCumulative(LayoutTree tree, LayoutConfig cfg)
+    {
         var busNodes = new List<LayoutNode>();
         CollectBus(tree.Root, busNodes);
 
         double cursorX = 0.0;
-        foreach (LayoutNode busNode in busNodes)
+        for (int i = 0; i < busNodes.Count; i++)
         {
-            List<LayoutNode> positioned = LayoutSubtree(busNode, cfg);
+            List<LayoutNode> positioned = LayoutSubtree(busNodes[i], cfg);
 
             // Pack this bus node's whole subtree into the next free horizontal slot.
             // Using width-aware extents keeps the gap between subtrees honest even
@@ -46,7 +54,10 @@ internal static class TidyTree
             foreach (LayoutNode n in positioned)
                 n.X += offset;
 
-            cursorX = max + offset + cfg.BusGapPx;
+            // Detach the root cluster (the first bus node and its spokes) from the rest
+            // with an extra margin, so the ego root stands out at the top-left.
+            double gap = cfg.BusGapPx + (i == 0 ? cfg.RootMarginPx : 0.0);
+            cursorX = max + offset + gap;
         }
     }
 
@@ -79,7 +90,7 @@ internal static class TidyTree
 
     private static FlexNode Build(LayoutNode node, FlexNode? parent, int number)
     {
-        var flex = new FlexNode(node, parent, number);
+        var flex = new FlexNode(node, parent, number, node.Width);
         int childNumber = 1;
         foreach (LayoutEdge edge in node.Out)
         {
@@ -270,13 +281,110 @@ internal static class TidyTree
         public FlexNode? Thread;
         public FlexNode Ancestor;
 
-        public FlexNode(LayoutNode node, FlexNode? parent, int number)
+        // Width is passed explicitly: the cumulative pass uses the node's own box width,
+        // the column pass uses the widest box in the column (so a column is wide enough
+        // for its longest rung label).
+        public FlexNode(LayoutNode node, FlexNode? parent, int number, double width)
         {
             Node = node;
-            Width = node.Width;
+            Width = width;
             Parent = parent;
             Number = number;
             Ancestor = this;
         }
     }
+
+    #region GravityWell column packing
+
+    // GravityWell lays the map out as one horizontal spine of bodies: every body's low
+    // orbit (and every hub) sits on the spine at Y=0, with the body's surface dangling
+    // below and its high orbits / capture poking above (the Y pass, WellLayout). So the X
+    // pass cannot reuse the depth-stacking tidy tree: with every anchor flattened onto one
+    // line, a parent body and its transfer children all share Y=0 and would collide if a
+    // parent were centred over them. Instead it packs whole COLUMNS (one body's rungs share
+    // one X) side by side in a pre-order walk, advancing a cursor by each column's width so
+    // no two columns overlap and a body's moons stay grouped immediately to its right. A
+    // wider gap before a hub-bus branch keeps the heliocentric junctions visually apart.
+    private sealed class Column
+    {
+        public required string Key { get; init; }
+        public readonly List<LayoutNode> Members = new();
+        public double Width;
+        public readonly List<Column> Spokes = new();      // child columns via Transfer
+        public readonly List<Column> BusChildren = new(); // child columns via HubLink
+    }
+
+    private static void AssignXColumns(LayoutTree tree, LayoutConfig cfg)
+    {
+        Dictionary<string, Column> columns = BuildColumns(tree);
+        Column rootColumn = columns[tree.Root.Column];
+        double cursorX = 0.0;
+        PlaceColumn(rootColumn, ref cursorX, cfg);
+    }
+
+    // Place a column at the cursor, then walk its children left to right: a body's own
+    // moons (Transfer spokes) first so they cluster beside it, then the hub-bus branch.
+    private static void PlaceColumn(Column col, ref double cursorX, LayoutConfig cfg)
+    {
+        double half = col.Width / 2.0;
+        double x = cursorX + half;
+        foreach (LayoutNode m in col.Members)
+            m.X = x;
+        cursorX = x + half;
+
+        foreach (Column spoke in col.Spokes)
+        {
+            cursorX += cfg.SiblingGapPx;
+            PlaceColumn(spoke, ref cursorX, cfg);
+        }
+        foreach (Column bus in col.BusChildren)
+        {
+            cursorX += cfg.BusGapPx;
+            PlaceColumn(bus, ref cursorX, cfg);
+        }
+    }
+
+    // Group the tree's nodes into columns and wire the column adjacency. Walking the
+    // tree in its existing pre-order keeps the spoke/bus child order identical to the
+    // sibling order, so the column packing is as deterministic as the cumulative pass.
+    private static Dictionary<string, Column> BuildColumns(LayoutTree tree)
+    {
+        var columns = new Dictionary<string, Column>();
+
+        Column Get(string key)
+        {
+            if (!columns.TryGetValue(key, out Column? col))
+            {
+                col = new Column { Key = key };
+                columns[key] = col;
+            }
+            return col;
+        }
+
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            Column col = Get(node.Column);
+            col.Members.Add(node);
+            col.Width = Math.Max(col.Width, node.Width);
+        }
+
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            foreach (LayoutEdge edge in node.Out)
+            {
+                if (edge.Class == EdgeClass.Ladder)
+                    continue; // intra-column, no column edge
+                Column parent = columns[node.Column];
+                Column child = columns[edge.To.Column];
+                if (edge.Class == EdgeClass.HubLink)
+                    parent.BusChildren.Add(child);
+                else
+                    parent.Spokes.Add(child);
+            }
+        }
+
+        return columns;
+    }
+
+    #endregion
 }

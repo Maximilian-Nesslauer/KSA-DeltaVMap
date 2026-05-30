@@ -114,6 +114,43 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-cruise-root", starHub);
     }
 
+    // The interplanetary-cruise root as the real VisualTree builds it: planets attach to
+    // the star hub by a HubLink that lands on the planet's arrival Intercept (full detail),
+    // not directly on its low orbit. This is the shape the in-game cruise root produces, so
+    // it exercises what BuildCruiseRoot's simplified LowOrbit-HubLink does not: in
+    // GravityWell the Intercepts ride above the spine while the low orbits anchor it, which
+    // the well-band and (relaxed) hub-bus checks must accept.
+    public static LayoutTree BuildCruiseRootArrival()
+    {
+        LayoutNode starHub = Node("Star.Hub", "Star", LayoutKind.Hub, rank: 0);
+        starHub.IsRoot = true;
+
+        LayoutNode here = Node("Star.YOU", "You Are Here", LayoutKind.YouAreHere, rank: 0);
+        here.IsYouAreHere = true;
+        HubLink(starHub, here);
+
+        for (int i = 0; i < 8; i++)
+        {
+            string id = "Planet" + i.ToString(Inv);
+            string name = PlanetName(i);
+
+            // HubLink lands on the capture anchor; circularize down to the spine low orbit.
+            LayoutNode capture = Node(id + ".Capture", name + " Intercept", LayoutKind.Intercept, rank: 1);
+            HubLink(starHub, capture);
+            LayoutNode lo = Node(id + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+            LadderEdge(capture, lo, 800 + i * 70);
+            LadderEdge(lo, Node(id + ".Surface", name + " Surface", LayoutKind.Surface, rank: 1), 3000 + i * 500);
+            if (i % 2 == 0)
+                LadderEdge(lo, Node(id + ".Stationary", name + " Stationary", LayoutKind.Stationary, rank: 1), 700 + i * 90);
+
+            int moons = i % 3;
+            for (int m = 0; m < moons; m++)
+                Arrive(lo, id + ".M" + m.ToString(Inv), name + " " + MoonSuffix(m), rank: 2, depart: 600 + m * 200, arrive: 180 + m * 60, circularizeDv: 90 + m * 20, surfaceDv: 300 + m * 120, stationaryDv: null);
+        }
+
+        return LayoutTree.FromRoot("synthetic-cruise-arrival", starHub);
+    }
+
     // A deliberately wide, shallow fan: one body with many sibling destinations that
     // all land on a narrow band, stressing sibling separation and the grid-snap
     // collision pass on a dense row (a gas giant with many moons, or a busy hub).

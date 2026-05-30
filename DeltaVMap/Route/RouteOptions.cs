@@ -1,9 +1,10 @@
 namespace DeltaVMap.Route;
 
 // The route toggles. These modify how a selected route is accumulated;
-// changing any of them recomputes the route live. Defaults match the design: only
-// land-at-destination is on. "Full ladder everywhere" is a detail/layout toggle and
-// lives on the window (it rebuilds the tree), not here.
+// changing any of them recomputes the route live. All default off, so a route shows the
+// plain cost to reach the destination (its low orbit / intercept) until the user opts into
+// landing, return trips, etc. "Full ladder everywhere" is a detail/layout toggle and lives
+// on the window (it rebuilds the tree), not here.
 internal sealed class RouteOptions
 {
     // Start the route at the root body's surface (add the ascent) instead of the
@@ -12,9 +13,10 @@ internal sealed class RouteOptions
     public bool FromSurface;
 
     // Extend the route down to the destination body's surface (the final descent /
-    // landing). On by default, matching the KSP-map convention that a body's headline
-    // figure is "to its surface".
-    public bool LandAtDestination = true;
+    // landing). Off by default, so a route stops at the destination's low orbit; clicking
+    // a body's surface still turns it on automatically (MapWindow), so an explicit
+    // surface target reads correctly.
+    public bool LandAtDestination;
 
     // Aerobrake the capture at the last atmospheric body the route enters from outside,
     // zeroing that capture burn. Outbound only. Has no effect unless the route actually

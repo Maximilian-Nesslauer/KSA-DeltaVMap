@@ -77,6 +77,19 @@ internal sealed class LayoutNode
     // purely cosmetic; it does not affect positioning.
     public int Rank { get; init; }
 
+    // The body / well this node belongs to: every rung of one body shares a column key.
+    // Assigned in FromRoot as a ladder-connected component (a node inherits its parent's
+    // column unless the connecting edge is a Transfer or HubLink, which starts a new one),
+    // so a body that is both an ancestor hub and reached as its own destination splits
+    // into two columns the way the topology demands. The GravityWell X pass packs whole
+    // columns horizontally and stacks a column's rungs at one X; CumulativeDown ignores it.
+    public string Column { get; set; } = string.Empty;
+
+    // Orbital radius from the body center, mirrored from the model (zero for hubs). Used
+    // only to sign a "you are here" node's well offset (above or below low orbit); the
+    // other rungs take their direction from their kind.
+    public double Radius { get; set; }
+
     public bool IsRoot { get; set; }
     public bool IsYouAreHere { get; set; }
 
@@ -144,11 +157,12 @@ internal sealed class LayoutTree
         return result;
     }
 
-    // Assemble a tree from a fully wired root, computing depths and the pre-order
-    // node list in one pass.
+    // Assemble a tree from a fully wired root, computing depths, column keys and the
+    // pre-order node list in one pass.
     public static LayoutTree FromRoot(string name, LayoutNode root)
     {
         root.IsRoot = true;
+        root.Column = root.Id;
         var nodes = new List<LayoutNode>();
         AssignDepth(root, 0, nodes);
         return new LayoutTree { Name = name, Root = root, Nodes = nodes };
@@ -159,6 +173,12 @@ internal sealed class LayoutTree
         node.Depth = depth;
         nodes.Add(node);
         foreach (LayoutEdge edge in node.Out)
+        {
+            // A ladder edge stays within one body's well, so the child shares the column;
+            // a Transfer or HubLink crosses into another body, so the child starts a new
+            // column keyed by its own Id (the well's entry node).
+            edge.To.Column = edge.Class == EdgeClass.Ladder ? node.Column : edge.To.Id;
             AssignDepth(edge.To, depth + 1, nodes);
+        }
     }
 }

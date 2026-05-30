@@ -57,6 +57,16 @@ internal sealed class MapWindow : ImGuiWindow
     // Detail toggle: full ladder on every body instead of core rungs on distant ones.
     private bool _fullLadder;
 
+    // Active layout strategy. CumulativeDown (the dV-down tidy tree) is the default; it
+    // read clearest in testing. GravityWell (a row of vertical wells on a horizontal
+    // low-orbit spine) stays one click away on the layout toggle. Switching rebuilds via
+    // RebuildAt, the cached relayout path the full-ladder toggle uses.
+    private LayoutMode _layoutMode = LayoutMode.CumulativeDown;
+
+    // View-only "center view": when on, auto-fit and the Fit button center the root node
+    // in the viewport rather than centering the layout bounding box. No engine change.
+    private bool _centerOnRoot;
+
     // View state.
     private double _zoom = 1.0;
     private double _panX;
@@ -173,6 +183,22 @@ internal sealed class MapWindow : ImGuiWindow
 
         if (ImGui.BeginMenu("Options"u8))
         {
+            if (ImGui.BeginMenu("Layout"u8))
+            {
+                // Two engine layouts as radio choices, plus a view-only "center view".
+                if (ImGui.MenuItem("Gravity-well"u8, default(ImString), _layoutMode == LayoutMode.GravityWell))
+                    SetLayoutMode(LayoutMode.GravityWell);
+                if (ImGui.MenuItem("Cumulative-down"u8, default(ImString), _layoutMode == LayoutMode.CumulativeDown))
+                    SetLayoutMode(LayoutMode.CumulativeDown);
+                ImGui.Separator();
+                if (ImGui.MenuItem("Center view on root"u8, default(ImString), _centerOnRoot))
+                {
+                    _centerOnRoot = !_centerOnRoot;
+                    _needsFit = true;
+                }
+                ImGui.EndMenu();
+            }
+
             if (ImGui.MenuItem("Full ladder everywhere"u8, default(ImString), _fullLadder))
             {
                 _fullLadder = !_fullLadder;
@@ -184,6 +210,17 @@ internal sealed class MapWindow : ImGuiWindow
 
         if (_currentRootId != null)
             ImGui.TextDisabled(string.Concat("Root: ", _currentRootId));
+    }
+
+    // Switch the layout strategy and relayout the current root through the cached path.
+    // A no-op if the mode is unchanged so reselecting the active radio item does nothing.
+    private void SetLayoutMode(LayoutMode mode)
+    {
+        if (mode == _layoutMode)
+            return;
+        _layoutMode = mode;
+        if (_currentRootId != null)
+            RebuildAt(_currentRootId);
     }
 
     public override void DrawContent(Viewport viewport)
@@ -295,13 +332,111 @@ internal sealed class MapWindow : ImGuiWindow
         // An invisible button over the whole canvas captures the left button, so a
         // left-drag pans the map instead of moving the window (only the title bar
         // moves it). Its return value is a click without a drag, used for selection.
+        // AllowOverlap lets the layout switcher (submitted just after, on top) take its
+        // own clicks instead of the canvas swallowing them.
+        ImGui.SetNextItemAllowOverlap();
         bool clicked = ImGui.InvisibleButton("##dvmap_canvas"u8, in size);
         bool hovered = ImGui.IsItemHovered();
         bool active = ImGui.IsItemActive();
         if (hovered)
             ImGui.SetItemKeyOwner(ImGuiKey.MouseWheelY);
 
-        HandleInput(hovered, active, clicked, origin, in transform);
+        // A compact layout switcher pinned to the top-left of the map, so the gravity-well
+        // and cumulative-down layouts can be compared in one click without diving into the
+        // Options menu. Its rect also suppresses canvas hover / pan / select underneath it,
+        // so a click on the combo never leaks through to a node or a pan.
+        bool overOverlay = DrawLayoutOverlay(origin);
+
+        HandleInput(hovered && !overOverlay, active, clicked && !overOverlay, origin, in transform);
+    }
+
+    // Draw the on-canvas layout toggle: a small icon button in the top-left corner whose
+    // glyph represents the active layout (a spine of wells for GravityWell, a branching
+    // tree for CumulativeDown). Clicking flips to the other layout via RebuildAt. Returns
+    // whether the mouse is over it, so the canvas suppresses hover / pan / select beneath.
+    // Submitted after the canvas button (which allowed overlap) so it takes its own clicks.
+    private bool DrawLayoutOverlay(float2 origin)
+    {
+        const float margin = 8f;
+        const float btn = 60f;
+
+        ImGui.SetCursorScreenPos(origin + new float2(margin, margin));
+        bool clicked = ImGui.InvisibleButton("##dvmap_layout"u8, new float2(btn, btn));
+        bool hovered = ImGui.IsItemHovered();
+        float2 min = ImGui.GetItemRectMin();
+        float2 max = ImGui.GetItemRectMax();
+
+        ImDrawListPtr dl = ImGui.GetWindowDrawList();
+        DrawLayoutIcon(dl, min, max, _layoutMode, hovered);
+
+        if (hovered)
+        {
+            ImGui.BeginTooltip();
+            ImGui.Text(string.Concat("Layout: ", LayoutModeLabel(_layoutMode), " (click to switch)"));
+            ImGui.EndTooltip();
+        }
+
+        if (clicked)
+            SetLayoutMode(_layoutMode == LayoutMode.GravityWell ? LayoutMode.CumulativeDown : LayoutMode.GravityWell);
+
+        float2 mouse = ImGui.GetMousePos();
+        return mouse.X >= min.X && mouse.X <= max.X && mouse.Y >= min.Y && mouse.Y <= max.Y;
+    }
+
+    // Draw the toggle's frame plus a tiny glyph of the active layout. GravityWell is a
+    // horizontal spine with wells hanging below; CumulativeDown is a root branching down to
+    // two children. Pure DrawList primitives so it needs no font glyphs and stays ASCII.
+    private static void DrawLayoutIcon(ImDrawListPtr dl, float2 min, float2 max, LayoutMode mode, bool hovered)
+    {
+        byte4 bg = hovered ? new byte4(44, 54, 68, 245) : new byte4(28, 34, 44, 235);
+        byte4 border = new byte4(120, 140, 160, 255);
+        byte4 fg = new byte4(212, 222, 236, 255);
+        dl.AddRectFilled(in min, in max, bg, 5f);
+        dl.AddRect(in min, in max, border, 5f);
+
+        // Glyph proportions scale with the button so doubling its size doubles the icon.
+        float size = max.X - min.X;
+        float pad = size * 0.24f;
+        float dot = size * 0.07f;
+        float line = MathF.Max(1.5f, size * 0.045f);
+        float left = min.X + pad;
+        float right = max.X - pad;
+        float top = min.Y + pad;
+        float bottom = max.Y - pad;
+
+        if (mode == LayoutMode.GravityWell)
+        {
+            float midY = (min.Y + max.Y) * 0.5f;
+            var a = new float2(left, midY);
+            var b = new float2(right, midY);
+            dl.AddLine(in a, in b, fg, line);
+            float span = right - left;
+            for (int i = 0; i < 3; i++)
+            {
+                float x = left + span * (0.15f + 0.35f * i);
+                var c = new float2(x, midY);
+                var stub = new float2(x, bottom);
+                dl.AddLine(in c, in stub, fg, line);
+                dl.AddCircleFilled(in c, dot, fg);
+            }
+        }
+        else
+        {
+            float cx = (min.X + max.X) * 0.5f;
+            var root = new float2(cx, top);
+            var leftChild = new float2(left, bottom);
+            var rightChild = new float2(right, bottom);
+            dl.AddLine(in root, in leftChild, fg, line);
+            dl.AddLine(in root, in rightChild, fg, line);
+            dl.AddCircleFilled(in root, dot, fg);
+            dl.AddCircleFilled(in leftChild, dot, fg);
+            dl.AddCircleFilled(in rightChild, dot, fg);
+        }
+    }
+
+    private static string LayoutModeLabel(LayoutMode mode)
+    {
+        return mode == LayoutMode.GravityWell ? "Gravity-well" : "Cumulative-down";
     }
 
     private void HandleInput(bool hovered, bool active, bool clicked, float2 origin, in CanvasTransform transform)
@@ -616,7 +751,8 @@ internal sealed class MapWindow : ImGuiWindow
         {
             VisualTree visual = VisualTree.Build(_graph, _cache, node, egoState, _fullLadder);
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual, _graph);
-            LayoutResult result = LayoutEngine.Run(tree, LayoutConfig.Default, MeasureText);
+            var cfg = new LayoutConfig { Mode = _layoutMode };
+            LayoutResult result = LayoutEngine.Run(tree, cfg, MeasureText);
 
             var lookup = new Dictionary<string, StateNode>(visual.Nodes.Count);
             foreach (StateNode n in visual.Nodes)
@@ -656,8 +792,22 @@ internal sealed class MapWindow : ImGuiWindow
         double zx = (size.X - 2.0 * pad) / contentW;
         double zy = (size.Y - 2.0 * pad) / contentH;
         _zoom = Math.Clamp(Math.Min(zx, zy), MinZoom, MaxZoom);
-        _panX = (size.X - contentW * _zoom) / 2.0;
-        _panY = (size.Y - contentH * _zoom) / 2.0;
+
+        if (_centerOnRoot)
+        {
+            // Put the root node at the viewport center instead of centering the bounding
+            // box. The transform maps (lx - MinX) * zoom + pan to screen-relative pixels,
+            // so solve pan to land the root on the center. In GravityWell the root sits on
+            // the spine, so this also vertically centers the whole spine.
+            LayoutNode root = layout.Tree.Root;
+            _panX = size.X / 2.0 - (root.SnappedX - layout.MinX) * _zoom;
+            _panY = size.Y / 2.0 - (root.SnappedY - layout.MinY) * _zoom;
+        }
+        else
+        {
+            _panX = (size.X - contentW * _zoom) / 2.0;
+            _panY = (size.Y - contentH * _zoom) / 2.0;
+        }
     }
 
     private void ZoomAboutCenter(double factor)

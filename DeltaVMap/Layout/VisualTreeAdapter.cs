@@ -38,7 +38,11 @@ internal static class VisualTreeAdapter
             Label = source.Label,
             Kind = MapKind(source.Kind),
             Rank = RankOf(source.Body),
-            IsYouAreHere = source.IsYouAreHere
+            IsYouAreHere = source.IsYouAreHere,
+            // Mirrored so the GravityWell pass can sign a "you are here" node's well offset
+            // (a medium orbit above or below low orbit) by its radius. The column key is
+            // assigned structurally in LayoutTree.FromRoot, so it is not set here.
+            Radius = source.RadiusFromBody
         };
 
         foreach (Edge edge in source.Out)

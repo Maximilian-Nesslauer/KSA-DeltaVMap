@@ -93,10 +93,18 @@ internal static class OverlapCheck
         };
 
         CheckNodes(tree, result.Config, report);
-        CheckSiblingSubtrees(tree, report);
+        // The sibling-subtree X-extent guarantee is specific to the cumulative pass,
+        // where a body's rungs are X-spread siblings. GravityWell stacks a body's rungs
+        // at one X (separated in Y), so adjacent "siblings" legitimately share an X;
+        // there the dot-overlap check is the no-overlap guarantee instead.
+        if (result.Config.Mode != LayoutMode.GravityWell)
+            CheckSiblingSubtrees(tree, report);
         CheckLabels(tree, result.Config, report);
-        CheckBands(tree, report);
-        CheckHubBus(tree, report);
+        if (result.Config.Mode == LayoutMode.GravityWell)
+            CheckWellBands(tree, report);
+        else
+            CheckBands(tree, report);
+        CheckHubBus(tree, report, result.Config.Mode == LayoutMode.GravityWell);
         return report;
     }
 
@@ -123,11 +131,46 @@ internal static class OverlapCheck
         }
     }
 
-    // Hub-bus integrity: every node reachable from the root
-    // through HubLink edges must sit on the root's band, and the bus nodes must spread
-    // across distinct columns rather than collapsing onto one. A single-node bus
-    // trivially satisfies both.
-    private static void CheckHubBus(LayoutTree tree, OverlapReport report)
+    // GravityWell well integrity. Y is a signed within-body offset around the spine, so
+    // the cumulative "every edge descends" rule does not apply. Instead: every low orbit
+    // and hub anchors the spine (band 0); surfaces sit below it and high orbits / capture
+    // above; and a body's rungs occupy distinct bands so they stack without colliding.
+    private static void CheckWellBands(LayoutTree tree, OverlapReport report)
+    {
+        var perColumn = new Dictionary<string, HashSet<int>>();
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            if ((node.Kind == LayoutKind.LowOrbit || node.Kind == LayoutKind.Hub) && node.Band != 0)
+                report.AddBandViolation($"'{node.Id}' ({node.Kind}) is off the spine (band {node.Band})");
+
+            if (node.Kind == LayoutKind.Surface && node.Band < 0)
+                report.AddBandViolation($"surface '{node.Id}' sits above the spine (band {node.Band})");
+
+            if ((node.Kind == LayoutKind.Stationary || node.Kind == LayoutKind.SoiEdge || node.Kind == LayoutKind.Intercept)
+                && node.Band > 0)
+                report.AddBandViolation($"'{node.Id}' ({node.Kind}) sits below the spine (band {node.Band})");
+
+            if (node.Band != 0)
+            {
+                if (!perColumn.TryGetValue(node.Column, out HashSet<int>? bands))
+                {
+                    bands = new HashSet<int>();
+                    perColumn[node.Column] = bands;
+                }
+                if (!bands.Add(node.Band))
+                    report.AddBandViolation($"column '{node.Column}' has two rungs on band {node.Band} (well rungs collide)");
+            }
+        }
+    }
+
+    // Hub-bus integrity: every node reachable from the root through HubLink edges must
+    // spread across distinct columns rather than collapsing onto one. In CumulativeDown
+    // they must also share the root band (the bus is one horizontal dV row). GravityWell
+    // does not have that band rule: a hub link can land on a destination's Intercept (the
+    // interplanetary-cruise root attaches planets that way), which legitimately sits above
+    // the spine in its own well, so only the distinct-column rule applies there (the spine
+    // anchoring is checked per-column by CheckWellBands). A single-node bus passes trivially.
+    private static void CheckHubBus(LayoutTree tree, OverlapReport report, bool gravityWell)
     {
         var bus = new List<LayoutNode>();
         CollectBus(tree.Root, bus);
@@ -137,7 +180,7 @@ internal static class OverlapCheck
         var seenColumns = new HashSet<int>();
         foreach (LayoutNode node in bus)
         {
-            if (node.Band != rootBand)
+            if (!gravityWell && node.Band != rootBand)
                 report.AddBusViolation($"bus node '{node.Id}' left the hub band ({node.Band} != {rootBand})");
             if (!seenColumns.Add(node.Col))
                 report.AddBusViolation($"bus node '{node.Id}' shares column {node.Col} with another hub (bus collapsed, not horizontal)");

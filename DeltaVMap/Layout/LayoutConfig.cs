@@ -1,11 +1,27 @@
 namespace DeltaVMap.Layout;
 
+// Which layout strategy the X and Y passes use. CumulativeDown is the as-built pipeline
+// (Y is cumulative dV from the root growing downward, a body's rungs are X-spread
+// siblings). GravityWell hangs a row of vertical wells off a horizontal low-orbit spine
+// (every body's low orbit sits on one line at Y=0, its surface dangles below, its high
+// orbits and capture poke above), the structure the canonical KSP subway map uses. The
+// engine carries no game types, so the mode lives here and the passes branch on it.
+internal enum LayoutMode
+{
+    CumulativeDown,
+    GravityWell
+}
+
 // Tunable layout constants, all in pixels at 100% zoom unless noted. These are
 // starting values; the interactive layout recomputes widths from real ImGui text
 // metrics and tunes the spacing against the rendered map, so treat these numbers as
 // indicative rather than final.
 internal sealed class LayoutConfig
 {
+    // The active layout strategy. Defaults to the as-built CumulativeDown so any caller
+    // that does not pick a mode (and the existing offline cases) keep their verified
+    // output unchanged; the map window selects GravityWell as its in-game default.
+    public LayoutMode Mode { get; init; } = LayoutMode.CumulativeDown;
     // Square snap grid. Must be at least the sum of the two largest dot radii so that
     // two dots in orthogonally adjacent cells never overlap; the overlap check relies
     // on it. Validate() enforces this.
@@ -27,11 +43,26 @@ internal sealed class LayoutConfig
     public int MinBandStep { get; init; } = 1;
     public int MaxBandStep { get; init; } = 6;
 
+    // GravityWell vertical spacing. A body's well straddles the spine: surface a few
+    // bands below, high orbits / capture a few bands above. The well is deliberately
+    // shallow (a smaller band height and a tighter step clamp than the cumulative
+    // bands) so a dense planet root reads as a wide, low band centered on the spine
+    // rather than a tall thin strip. Must stay a whole multiple of GridPx and at least
+    // MinSegmentPx; Validate() enforces both.
+    public double WellBandHeightPx { get; init; } = 64.0;
+    public int WellMaxBandStep { get; init; } = 3;
+
     // Horizontal breathing room. SiblingGap is added to the half-widths when the
     // tidy tree separates adjacent siblings; BusGap separates whole hub-bus subtrees.
     // Both are wide so neighbouring vertical lanes leave room for their labels.
     public double SiblingGapPx { get; init; } = 100.0;
     public double BusGapPx { get; init; } = 160.0;
+
+    // Extra gap inserted after the root's own subtree in CumulativeDown, on top of BusGap,
+    // so the root (and its moons) sit in a visibly detached cluster at the top-left rather
+    // than blending into the hub bus. Pure separation, so the root reads as "you start
+    // here"; the renderer also draws a halo on it. Zero would fall back to plain BusGap.
+    public double RootMarginPx { get; init; } = 110.0;
 
     // Approximate text metrics for the offline pass. Real widths come from
     // ImGui.CalcTextSize inside the draw loop later.
@@ -83,5 +114,13 @@ internal sealed class LayoutConfig
         if (System.Math.Abs(rows - System.Math.Round(rows)) > 1e-9)
             throw new System.ArgumentException(
                 $"BandHeightPx ({BandHeightPx}) must be a whole multiple of GridPx ({GridPx}).");
+
+        if (WellBandHeightPx < MinSegmentPx)
+            throw new System.ArgumentException(
+                $"WellBandHeightPx ({WellBandHeightPx}) must be at least MinSegmentPx ({MinSegmentPx}).");
+        double wellRows = WellBandHeightPx / GridPx;
+        if (System.Math.Abs(wellRows - System.Math.Round(wellRows)) > 1e-9)
+            throw new System.ArgumentException(
+                $"WellBandHeightPx ({WellBandHeightPx}) must be a whole multiple of GridPx ({GridPx}).");
     }
 }
