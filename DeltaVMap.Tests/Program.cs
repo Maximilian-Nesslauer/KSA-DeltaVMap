@@ -32,8 +32,10 @@ int failures = 0;
 failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), LayoutConfig.Default, "default", outDir, minNodes: 100);
 
 // The same stress tree on a deliberately tight grid, to force grid-snap collisions
-// and confirm the nudge pass still ends overlap-free.
-var tightGrid = new LayoutConfig { GridPx = 32.0, BandHeightPx = 64.0, SiblingGapPx = 12.0, BusGapPx = 24.0 };
+// and confirm the nudge pass still ends overlap-free. GridPx is the tightest the dot
+// radii allow (the two largest must fit one cell), and BandHeightPx the smallest whole
+// multiple of it that still clears MinSegmentPx.
+var tightGrid = new LayoutConfig { GridPx = 35.0, BandHeightPx = 70.0, SiblingGapPx = 12.0, BusGapPx = 24.0 };
 failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), tightGrid, "tight", outDir, minNodes: 100);
 
 // A stock-like planet root, for eyeballing realism.

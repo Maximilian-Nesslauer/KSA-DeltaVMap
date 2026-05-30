@@ -323,7 +323,7 @@ internal sealed class MapWindow : ImGuiWindow
         dl.PushClipRect(in origin, in canvasMax, intersectWithCurrentClipRect: true);
         try
         {
-            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _routeNodeIds);
+            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _routeNodeIds, _options.IncludePlaneChange);
         }
         finally
         {

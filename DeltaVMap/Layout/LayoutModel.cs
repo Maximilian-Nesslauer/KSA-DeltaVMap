@@ -53,6 +53,14 @@ internal sealed class LayoutEdge
     // case the badge stays single-valued.
     public double DescentDv { get; init; }
 
+    // Display-only marker flags set by the adapter from the game edge; the layout math
+    // ignores them. Aerobrake marks a capture into a body with a usable atmosphere, drawn
+    // as a directional aerobrake-possible triangle. PlaneChangeDv is the sibling transfer's
+    // inclination cost, drawn as a number when the plane-change toggle is on (zero
+    // otherwise, and for every non-sibling edge).
+    public bool Aerobrake { get; init; }
+    public double PlaneChangeDv { get; init; }
+
     // Lane index among the parallel edges leaving From, assigned by the router so
     // sibling tracks get distinct perpendicular offsets.
     public int Lane { get; set; }

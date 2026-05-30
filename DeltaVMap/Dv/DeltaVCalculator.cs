@@ -28,6 +28,12 @@ internal static class DeltaVCalculator
     public const double StandardSeaLevelDensity = 1.225;
     public const double StandardSurfaceGravity = 9.81;
 
+    // Sea-level air density (kg/m^3) above which an atmosphere counts as "usable": thick
+    // enough to fly a jet in and to aerobrake against. The jet halo, the aerobrake marker,
+    // the landing model and the route's aerobrake eligibility all gate on this one floor so
+    // they never disagree about which bodies have air.
+    public const double UsableAtmosphereDensity = 0.01;
+
     public static double Mu(double massKg)
     {
         return massKg * G;

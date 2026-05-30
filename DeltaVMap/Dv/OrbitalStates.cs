@@ -91,6 +91,23 @@ internal static class OrbitalStates
         return body.GetAtmosphereReference() != null;
     }
 
+    // A usable atmosphere: dense enough to fly jets in and to brake against. Reuses the
+    // same sea-level density floor the descent and aerobrake models already apply, so the
+    // jet halo and the aerobrake marker agree with the routing on which bodies "have air".
+    public static bool HasUsableAtmosphere(Astronomical body)
+    {
+        AtmosphereReference? atmosphere = body.GetAtmosphereReference();
+        return atmosphere != null && atmosphere.Physical.SeaLevelDensity > DeltaVCalculator.UsableAtmosphereDensity;
+    }
+
+    // True when the body carries a ring system in its template (Saturn in the stock
+    // system). The map draws a thin ring ellipse for these; a body without the data simply
+    // gets none, so this never fabricates rings where the game does not model them.
+    public static bool HasRings(Astronomical body)
+    {
+        return body.BodyTemplate.RingsReference != null;
+    }
+
     // True if the body has a solid surface you can land on.
     public static bool HasSolidSurface(IParentBody body)
     {
@@ -231,7 +248,7 @@ internal static class OrbitalStates
         double vacuumAscent = DeltaVCalculator.AscentVacuum(ladder.Mu, ladder.MeanRadius, ladder.LowOrbitRadius);
 
         AtmosphereReference? atmosphere = ladder.Body.GetAtmosphereReference();
-        if (atmosphere == null || atmosphere.Physical.SeaLevelDensity <= 0.01)
+        if (atmosphere == null || atmosphere.Physical.SeaLevelDensity <= DeltaVCalculator.UsableAtmosphereDensity)
             return vacuumAscent;
 
         double densityRatio = atmosphere.Physical.SeaLevelDensity / DeltaVCalculator.StandardSeaLevelDensity;

@@ -56,7 +56,12 @@ internal static class VisualTreeAdapter
                 Dv = RepresentativeDv(edge),
                 RouteDv = BadgeDv(edge, ladderFor),
                 DescentDv = edge.DescentDv,
-                IsApproximate = edge.IsApproximate
+                IsApproximate = edge.IsApproximate,
+                // A capture into a body with a usable atmosphere can aerobrake (the marker is
+                // a capability cue, independent of whether the aerobrake toggle is on). The
+                // sibling-leg plane-change figure rides along for the toggled-on number.
+                Aerobrake = edge.Kind == SegmentKind.Capture && OrbitalStates.HasUsableAtmosphere(edge.To.Body),
+                PlaneChangeDv = edge.PlaneChangeDv
             });
         }
 

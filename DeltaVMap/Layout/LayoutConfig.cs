@@ -30,12 +30,12 @@ internal sealed class LayoutConfig
     // Square snap grid. Must be at least the sum of the two largest dot radii so that
     // two dots in orthogonally adjacent cells never overlap; the overlap check relies
     // on it. Validate() enforces this.
-    public double GridPx { get; init; } = 32.0;
+    public double GridPx { get; init; } = 35.0;
 
     // Vertical height of one dV band. A multiple of GridPx so band rows map cleanly
     // onto grid rows. Must be at least MinSegmentPx so every non-structural edge
     // clears the minimum vertical gap. Generous so stacked rungs leave label room.
-    public double BandHeightPx { get; init; } = 128.0;
+    public double BandHeightPx { get; init; } = 140.0;
 
     // Floor on a single edge's vertical length. Validate() requires BandHeightPx to
     // meet it, so every one-band edge clears this minimum gap.
@@ -54,7 +54,7 @@ internal sealed class LayoutConfig
     // bands) so a dense planet root reads as a wide, low band centered on the spine
     // rather than a tall thin strip. Must stay a whole multiple of GridPx and at least
     // MinSegmentPx; Validate() enforces both.
-    public double WellBandHeightPx { get; init; } = 64.0;
+    public double WellBandHeightPx { get; init; } = 70.0;
     public int WellMaxBandStep { get; init; } = 3;
 
     // Spring (force-directed) layout. IdealLength is the rest length of an edge spring
@@ -100,13 +100,15 @@ internal sealed class LayoutConfig
 
     // Dot radius by node rank. Rank 0 is the ego root, 1 a planet-level
     // body, 2 a moon-level body, 3 a minor body; hubs and the you-are-here marker
-    // get their own sizes below.
-    public double RootDotRadius { get; init; } = 14.0;
-    public double HubDotRadius { get; init; } = 11.0;
-    public double YouAreHereDotRadius { get; init; } = 9.0;
-    public double PlanetDotRadius { get; init; } = 9.0;
-    public double MoonDotRadius { get; init; } = 7.0;
-    public double MinorDotRadius { get; init; } = 5.0;
+    // get their own sizes below. Sized so the concentric-ring glyphs (ring + dot + ticks)
+    // are legible at the zoomed-out auto-fit, not just up close; the largest pair
+    // (root + hub) must stay below GridPx so two adjacent dots never touch (Validate()).
+    public double RootDotRadius { get; init; } = 20.0;
+    public double HubDotRadius { get; init; } = 15.0;
+    public double YouAreHereDotRadius { get; init; } = 13.0;
+    public double PlanetDotRadius { get; init; } = 14.0;
+    public double MoonDotRadius { get; init; } = 11.0;
+    public double MinorDotRadius { get; init; } = 9.0;
 
     public static LayoutConfig Default => new();
 

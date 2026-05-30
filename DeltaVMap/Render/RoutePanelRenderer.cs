@@ -61,11 +61,13 @@ internal static class RoutePanelRenderer
         if (summary == null)
         {
             ImGui.TextDisabled("Click a body to plan a route.");
+            LegendRenderer.Draw();
             return changed;
         }
         if (summary.IsEmpty)
         {
             ImGui.TextDisabled("You are already here.");
+            LegendRenderer.Draw();
             return changed;
         }
 
@@ -80,6 +82,7 @@ internal static class RoutePanelRenderer
         DrawBreakdown(summary);
         DrawTotals(options, summary, planeChange, outboundTotal, returnTotal, roundTrip);
         DrawVehicleBar(needed, availableDv);
+        LegendRenderer.Draw();
 
         return changed;
     }

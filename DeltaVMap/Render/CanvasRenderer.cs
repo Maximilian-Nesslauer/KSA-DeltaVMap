@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
+using DeltaVMap.Dv;
 using DeltaVMap.Layout;
 using DeltaVMap.Model;
 
@@ -46,10 +47,11 @@ internal readonly struct CanvasTransform
 // turns that into lines, symbols, badges and labels. The StateNode lookup gives each
 // layout node its game body for the per-system color.
 //
-// Three passes per frame:
+// Four passes per frame:
 //  1. Edge polylines (off-route faded, then the route heavy and white on top).
-//  2. Node dots and orientation rings.
-//  3. Labels and dV badges through a screen-space culling pass: the layout placement is
+//  2. Node dots, their state-kind glyphs, and the atmosphere/ring node markers.
+//  3. Edge markers: aerobrake triangles, plus plane-change numbers when that toggle is on.
+//  4. Labels and dV badges through a screen-space culling pass: the layout placement is
 //     overlap-free at 100% zoom, but text renders at a fixed screen size while positions
 //     scale with zoom, so below 100% (and the default view is auto-fit, well below it)
 //     labels and badges would smear. The pass draws the highest-priority text first
@@ -69,6 +71,11 @@ internal static class CanvasRenderer
     // smear into noise, so they are hidden entirely; names still show (governed by the
     // culling). Zooming past it brings the numbers back.
     private const double BadgeMinZoom = 0.45;
+
+    // Plane-change numbers below this are noise (a near-coplanar leg), so they are not
+    // drawn even when the toggle is on. Matches the calculator's own half-degree floor in
+    // spirit: tiny inclinations cost almost nothing.
+    private const double PlaneChangeMinDv = 10.0;
 
     // Badge box padding and, for the dual ascent/descent badge, the little filled
     // direction triangles drawn instead of "^"/"v" text: triangle width and height (kept
@@ -99,10 +106,12 @@ internal static class CanvasRenderer
         ColorPalette palette,
         in CanvasTransform t,
         string? hoverId,
-        IReadOnlySet<string>? routeNodes)
+        IReadOnlySet<string>? routeNodes,
+        bool showPlaneChange)
     {
         DrawEdgeLines(dl, layout, lookup, palette, in t, routeNodes);
         DrawNodeDots(dl, layout, lookup, palette, in t, hoverId, routeNodes);
+        DrawEdgeMarkers(dl, layout, lookup, palette, in t, routeNodes, showPlaneChange);
         DrawLabelsAndBadges(dl, layout, lookup, palette, in t, hoverId, routeNodes);
     }
 
@@ -198,16 +207,36 @@ internal static class CanvasRenderer
             bool onRoute = !routing || routeNodes!.Contains(node.Id);
             double alpha = onRoute ? 1.0 : OffRouteAlpha;
 
-            byte4 baseColor = BodyColor(node, lookup, palette);
+            // Resolve the node's game body once: it supplies the system color and the
+            // body-property markers (a usable atmosphere -> jet halo, a ring system -> ring
+            // ellipse). Hubs resolve too (they back a real body), but the markers below skip
+            // them via the kind check; only a purely synthetic node misses the lookup.
+            lookup.TryGetValue(node.Id, out StateNode? state);
+            byte4 baseColor = state != null ? palette.ColorFor(state.Body) : palette.ColorFor(node.Id);
             byte4 fill = Fade(baseColor, alpha);
             byte4 stroke = Fade(Lighten(baseColor, 0.45), alpha);
+
+            // The atmosphere/ring markers belong on a body's in-atmosphere rungs (the ones
+            // you can fly a jet at or see the rings from), not on its high orbits or its
+            // hub bus, so they key off the surface and low-orbit glyphs.
+            bool bodyNode = node.Kind == LayoutKind.Surface || node.Kind == LayoutKind.LowOrbit;
+            bool atmoBody = bodyNode && state != null && OrbitalStates.HasUsableAtmosphere(state.Body);
+            bool ringedBody = bodyNode && state != null && OrbitalStates.HasRings(state.Body);
 
             // A soft filled halo behind the root so the ego anchor pops out of a dense
             // cluster even when zoomed out. Drawn before the dot so it sits underneath.
             if (node.IsRoot)
                 dl.AddCircleFilled(in p, r + 10f, RootHalo);
 
+            // Rings sit behind the body disc, like a planet seen against its ring plane.
+            if (ringedBody)
+                NodeGlyphs.RingEllipse(dl, p, r, stroke);
+
             DrawSymbol(dl, node, p, r, fill, stroke);
+
+            // The bold jet/atmosphere halo wraps the glyph from just outside it.
+            if (atmoBody)
+                NodeGlyphs.AtmosphereHalo(dl, p, r, stroke);
 
             // Orientation rings stay full strength: the root and "you are here" anchor
             // the map, the hover ring follows the cursor, regardless of the route fade.
@@ -220,26 +249,108 @@ internal static class CanvasRenderer
         }
     }
 
-    // The node shape carries the state kind; the fill carries the planetary system.
+    // The node shape carries the state kind (the KSP concentric-ring vocabulary); the fill
+    // carries the planetary system color, the stroke a lightened accent of it.
     private static void DrawSymbol(ImDrawListPtr dl, LayoutNode node, float2 p, float r, byte4 fill, byte4 stroke)
     {
         switch (node.Kind)
         {
+            case LayoutKind.Surface:
+                NodeGlyphs.Surface(dl, p, r, fill, stroke);
+                break;
+            case LayoutKind.LowOrbit:
+                NodeGlyphs.LowOrbit(dl, p, r, fill, stroke);
+                break;
+            case LayoutKind.Stationary:
+                NodeGlyphs.Stationary(dl, p, r, fill, stroke);
+                break;
+            case LayoutKind.SoiEdge:
+                NodeGlyphs.SoiEdge(dl, p, r, fill, stroke);
+                break;
             case LayoutKind.Intercept:
-                // A loose capture point: a hollow target ring rather than a solid body,
-                // distinct from every filled rung and from the gas-giant ring.
-                dl.AddCircle(in p, r, fill, 24, 2.5f);
-                dl.AddCircleFilled(in p, Math.Max(2f, r * 0.4f), fill);
+                NodeGlyphs.Intercept(dl, p, r, fill, stroke);
                 break;
             case LayoutKind.Hub:
-                dl.AddCircleFilled(in p, r, fill);
-                dl.AddCircle(in p, r, stroke, 20, 1.5f);
+                NodeGlyphs.Hub(dl, p, r, fill, stroke);
                 break;
             default:
-                dl.AddCircleFilled(in p, r, fill);
-                dl.AddCircle(in p, r, stroke, 20, 1.5f);
+                // YouAreHere and any future kind: a solid disc (the yellow ring above
+                // distinguishes the "you are here" anchor).
+                NodeGlyphs.Solid(dl, p, r, fill, stroke);
                 break;
         }
+    }
+
+    // Edge-borne markers drawn over the lines and dots: the aerobrake-possible triangle on
+    // any capture into an atmospheric body (a static capability cue, shown regardless of the
+    // aerobrake toggle), and the sibling-transfer plane-change number, shown only when the
+    // plane-change toggle is on. Both fade with the off-route dim so a selected route stays
+    // legible. They are gated by the same zoom floor as the dV badges, so the zoomed-out
+    // auto-fit stays a clean diagram of glyphs and names; zooming in reveals them. There are
+    // few of either, so neither joins the label/badge culling pass.
+    private static void DrawEdgeMarkers(
+        ImDrawListPtr dl,
+        LayoutResult layout,
+        IReadOnlyDictionary<string, StateNode> lookup,
+        ColorPalette palette,
+        in CanvasTransform t,
+        IReadOnlySet<string>? routeNodes,
+        bool showPlaneChange)
+    {
+        if (t.Zoom < BadgeMinZoom)
+            return;
+
+        bool routing = routeNodes != null;
+        foreach (LayoutNode node in layout.Tree.Nodes)
+        {
+            foreach (LayoutEdge edge in node.Out)
+            {
+                if (edge.Polyline.Count < 2)
+                    continue;
+                bool onRoute = !routing || OnRoute(edge, routeNodes!);
+                double alpha = onRoute ? 1.0 : OffRouteAlpha;
+
+                if (edge.Aerobrake)
+                    DrawAerobrake(dl, edge, lookup, palette, in t, alpha);
+
+                if (showPlaneChange && edge.Class == EdgeClass.Transfer && edge.PlaneChangeDv >= PlaneChangeMinDv)
+                    DrawPlaneChange(dl, edge, in t, alpha);
+            }
+        }
+    }
+
+    // A filled triangle partway along the capture edge, pointing the way the capture runs
+    // (from the loose ellipse down into low orbit), in the destination's lightened color.
+    private static void DrawAerobrake(
+        ImDrawListPtr dl, LayoutEdge edge, IReadOnlyDictionary<string, StateNode> lookup,
+        ColorPalette palette, in CanvasTransform t, double alpha)
+    {
+        IReadOnlyList<LayoutPoint> pts = edge.Polyline;
+        float2 a = t.ToScreen(pts[0].X, pts[0].Y);
+        float2 b = t.ToScreen(pts[pts.Count - 1].X, pts[pts.Count - 1].Y);
+        float dx = b.X - a.X;
+        float dy = b.Y - a.Y;
+        float len = MathF.Sqrt(dx * dx + dy * dy);
+        if (len < 1f)
+            return;
+        dx /= len;
+        dy /= len;
+        var at = new float2(a.X + (b.X - a.X) * 0.45f, a.Y + (b.Y - a.Y) * 0.45f);
+        byte4 color = Fade(Lighten(BodyColor(edge.To, lookup, palette), 0.4), alpha);
+        NodeGlyphs.AerobrakeTriangle(dl, at, dx, dy, 8f, color);
+    }
+
+    // The plane-change figure near the transfer's arrival node, offset up and to the right
+    // to sit clear of the dV badge. Drawn as a plain number (DrawList text cannot rotate, so
+    // there is no literal KSP slant); its warm color and the legend entry key its meaning.
+    private static void DrawPlaneChange(ImDrawListPtr dl, LayoutEdge edge, in CanvasTransform t, double alpha)
+    {
+        float2 to = t.ToScreen(edge.To.SnappedX, edge.To.SnappedY);
+        var pos = to + new float2(8f, -(float)edge.To.DotRadius - 16f);
+        string text = "i ~" + Math.Round(edge.PlaneChangeDv).ToString("0", CultureInfo.InvariantCulture);
+        var shadow = pos + new float2(1f, 1f);
+        dl.AddText(in shadow, Fade(LabelShadow, alpha), text);
+        dl.AddText(in pos, Fade(NodeGlyphs.PlaneChangeColor, alpha), text);
     }
 
     // The screen-space label + badge culling pass (see the class summary). Builds a

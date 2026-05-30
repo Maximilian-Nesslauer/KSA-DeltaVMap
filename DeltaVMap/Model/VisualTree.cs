@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using DeltaVMap.Dv;
 using KSA;
@@ -115,7 +116,8 @@ internal sealed class VisualTree
                 {
                     LadderNodes siblingLadder = BuildBodySubtree(sibling);
                     EdgeDv transfer = _cache.GetTransfer((IOrbiter)spineChild.Astro, (IOrbiter)sibling.Astro);
-                    ConnectTransfer(hubNode, siblingLadder.ArrivalAnchor, transfer);
+                    double planeChange = SiblingPlaneChange(spineChild, sibling, transfer);
+                    ConnectTransfer(hubNode, siblingLadder.ArrivalAnchor, transfer, planeChange);
                 }
 
                 spineTail = hubNode;
@@ -340,7 +342,7 @@ internal sealed class VisualTree
             return node;
         }
 
-        private static Edge ConnectTransfer(StateNode from, StateNode to, EdgeDv dv)
+        private static Edge ConnectTransfer(StateNode from, StateNode to, EdgeDv dv, double planeChangeDv = 0.0)
         {
             var edge = new Edge
             {
@@ -349,10 +351,27 @@ internal sealed class VisualTree
                 Kind = SegmentKind.Transfer,
                 Transfer = dv,
                 TransferTimeSeconds = dv.TransferTimeSeconds,
-                IsApproximate = dv.IsApproximate
+                IsApproximate = dv.IsApproximate,
+                PlaneChangeDv = planeChangeDv
             };
             from.AddChild(edge);
             return edge;
+        }
+
+        // Maximum plane-change dV for a sibling transfer, where both bodies orbit the same
+        // hub (two moons of a planet, or two planets of the star). It is turned against the
+        // cheaper hyperbolic-excess leg, the same rule the route accumulator applies, so the
+        // on-map number and the route breakdown agree. Returns zero for any pairing that is
+        // not a true sibling leg, or below the calculator's half-degree threshold.
+        private static double SiblingPlaneChange(PhysicalNode a, PhysicalNode b, EdgeDv transfer)
+        {
+            if (a.Astro is not IOrbiter oa || b.Astro is not IOrbiter ob)
+                return 0.0;
+            if (oa.Orbit?.Parent == null || ob.Orbit?.Parent == null || !ReferenceEquals(oa.Orbit.Parent, ob.Orbit.Parent))
+                return 0.0;
+            double di = oa.Orbit.GetRelativeInclination(ob.Orbit).Value();
+            double vInf = Math.Min(transfer.DepartDv, transfer.ArriveDv);
+            return DeltaVCalculator.PlaneChange(vInf, di);
         }
 
         private static Edge ConnectLadder(StateNode from, StateNode to, SegmentKind kind, double ladderDv, bool isApproximate = false, double descentDv = 0.0)
