@@ -13,7 +13,8 @@ internal enum LayoutKind
     SoiEdge,
     YouAreHere,
     Hub,
-    Intercept
+    Intercept,
+    MinorGroup
 }
 
 // How an edge behaves for layout purposes. Ladder and Transfer edges carry a dV that

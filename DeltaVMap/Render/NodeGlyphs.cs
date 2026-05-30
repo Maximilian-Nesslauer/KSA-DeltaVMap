@@ -80,6 +80,22 @@ internal static class NodeGlyphs
         dl.AddCircle(in p, r, stroke, 20, 1.5f);
     }
 
+    // A minor-body group ("+N more"): a little cluster of small filled dots inside a thin
+    // ring, so it reads as "many small bodies aggregated here" rather than one body. The
+    // count rides the node label, not the glyph.
+    public static void MinorGroup(ImDrawListPtr dl, float2 p, float r, byte4 fill, byte4 stroke)
+    {
+        dl.AddCircle(in p, r, stroke, 20, 1.2f);
+        float d = Math.Max(1.5f, r * 0.26f);
+        float o = r * 0.42f;
+        var a = new float2(p.X - o, p.Y - o * 0.5f);
+        var b = new float2(p.X + o, p.Y - o * 0.2f);
+        var c = new float2(p.X, p.Y + o * 0.75f);
+        dl.AddCircleFilled(in a, d, fill);
+        dl.AddCircleFilled(in b, d, fill);
+        dl.AddCircleFilled(in c, d, fill);
+    }
+
     // A heavy bold halo just outside the base glyph, marking a body with a usable
     // atmosphere (KSP "Jet Engine Operation Possible").
     public static void AtmosphereHalo(ImDrawListPtr dl, float2 p, float r, byte4 color)

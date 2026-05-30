@@ -51,6 +51,10 @@ failures += RunCase(SyntheticTree.BuildWideFan(), LayoutConfig.Default, "default
 // The gravity-well arrival model: capture anchor above low orbit for destinations.
 failures += RunCase(SyntheticTree.BuildArrivalDemo(), LayoutConfig.Default, "default", outDir, minNodes: 0);
 
+// A dense system after minor-body aggregation: a "+N" group node off the hub bus and off a
+// deeper local hub. Exercises the synthetic MinorGroup node's layout in all three modes.
+failures += RunCase(SyntheticTree.BuildDenseAggregated(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+
 // GravityWell mode (the in-game default): the same dense trees must stay overlap-free
 // with the spine / well / bus assertions holding, on a fresh tree instance each time
 // since the layout pass mutates node positions.
@@ -60,6 +64,7 @@ failures += RunCase(SyntheticTree.BuildWideFan(), gravityWell, "gravitywell", ou
 failures += RunCase(SyntheticTree.BuildArrivalDemo(), gravityWell, "gravitywell", outDir, minNodes: 0);
 failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), gravityWell, "gravitywell", outDir, minNodes: 0);
 failures += RunCase(SyntheticTree.BuildCruiseRoot(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildDenseAggregated(), gravityWell, "gravitywell", outDir, minNodes: 0);
 
 // The realistic cruise root: planets attach to the star hub via HubLink onto their
 // Intercept (above the spine). Exercises the GravityWell spine / well / relaxed-bus
@@ -72,6 +77,7 @@ failures += RunCase(SyntheticTree.BuildCruiseRootArrival(), gravityWell, "gravit
 var spring = new LayoutConfig { Mode = LayoutMode.Spring };
 failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), spring, "spring", outDir, minNodes: 100);
 failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), spring, "spring", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildDenseAggregated(), spring, "spring", outDir, minNodes: 0);
 
 // The closed-form delta-v kernel (pure math, no game types) gets its own asserts.
 failures += RunMathChecks();

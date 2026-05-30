@@ -12,7 +12,9 @@ namespace DeltaVMap.Model;
 // route is accumulated, not baked in here. HubLink is a structural connector with no
 // dV: it stitches a body's low orbit to its parent hub bus so the tree stays
 // connected without double-counting the transfer, which lives on the hub's outgoing
-// spokes instead.
+// spokes instead. GroupLink likewise carries no dV: it hangs a synthetic "+N" minor-body
+// group off its hub. It is a spoke, not part of the spine bus, so it is kept distinct
+// from HubLink (which the layout treats as the horizontal hub row).
 internal enum SegmentKind
 {
     Ascent,
@@ -20,7 +22,8 @@ internal enum SegmentKind
     Land,
     Capture,
     Transfer,
-    HubLink
+    HubLink,
+    GroupLink
 }
 
 // Display-only feasibility markers, filled in by the routing code. Kept here so the

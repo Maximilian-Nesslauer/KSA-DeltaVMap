@@ -17,6 +17,10 @@ namespace DeltaVMap.Layout;
 // sits on; the badge will carry the precise number.
 internal static class VisualTreeAdapter
 {
+    // Cosmetic rank a minor-body group draws at: moon-level, so its dot reads and its "+N"
+    // label is not dropped by the renderer's minor-label cull (which only drops rank 3).
+    private const int MinorGroupRank = 2;
+
     // graph is optional: when supplied (the in-game path), transfer badges show the real
     // Oberth-coupled per-leg burn derived from each end's ladder; when null (the offline
     // dump, which has no live bodies to read r_lo from) they fall back to the
@@ -37,7 +41,9 @@ internal static class VisualTreeAdapter
             Id = source.Id,
             Label = source.Label,
             Kind = MapKind(source.Kind),
-            Rank = RankOf(source.Body),
+            // A minor-body group gets a fixed mid rank (a moon-sized dot whose name survives
+            // the low-zoom minor-label cull), rather than the rank of the hub body it borrows.
+            Rank = source.Kind == StateKind.MinorGroup ? MinorGroupRank : RankOf(source.Body),
             IsYouAreHere = source.IsYouAreHere,
             // Mirrored so the GravityWell pass can sign a "you are here" node's well offset
             // (a medium orbit above or below low orbit) by its radius. The column key is
@@ -118,6 +124,7 @@ internal static class VisualTreeAdapter
             StateKind.YouAreHere => LayoutKind.YouAreHere,
             StateKind.Hub => LayoutKind.Hub,
             StateKind.Intercept => LayoutKind.Intercept,
+            StateKind.MinorGroup => LayoutKind.MinorGroup,
             _ => LayoutKind.LowOrbit
         };
     }
@@ -128,6 +135,11 @@ internal static class VisualTreeAdapter
         {
             SegmentKind.HubLink => EdgeClass.HubLink,
             SegmentKind.Transfer => EdgeClass.Transfer,
+            // A group link behaves like a transfer for layout: it starts its own column (so a
+            // GravityWell group sits in its own well, not stacked into the hub's) and drops one
+            // band below the hub in the cumulative mode. It carries no dV, so the band step is
+            // the minimum and the renderer draws no badge for it.
+            SegmentKind.GroupLink => EdgeClass.Transfer,
             _ => EdgeClass.Ladder
         };
     }

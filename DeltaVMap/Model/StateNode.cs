@@ -35,6 +35,12 @@ internal sealed class StateNode
     // this node. At most one node per tree carries it.
     public bool IsYouAreHere { get; set; }
 
+    // Set only on a MinorGroup node: the minor bodies aggregated into this "+N" group,
+    // in the graph's deterministic order. It lets search / isolate later surface a chosen
+    // member without re-rendering the rest, and the count drives the label. Null on every
+    // real node.
+    public IReadOnlyList<PhysicalNode>? GroupMembers { get; init; }
+
     // Human-facing label, e.g. "Earth Low Orbit". The layout pass measures it for
     // node widths; for now it just drives the debug dump.
     public required string Label { get; init; }

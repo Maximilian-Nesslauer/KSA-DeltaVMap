@@ -17,6 +17,30 @@ internal static class TooltipRenderer
 {
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
+    // A minor-body group ("+N more"): the count, the hub it sits on, and a short preview of
+    // the collapsed bodies so the user can see what is inside without expanding it. Search /
+    // isolate is the way to pull a specific one out, so the hint points there.
+    public static void MinorGroup(StateNode node)
+    {
+        IReadOnlyList<PhysicalNode> members = node.GroupMembers ?? System.Array.Empty<PhysicalNode>();
+
+        ImGui.BeginTooltip();
+        // The label already carries the count and the specific noun ("+2892 asteroids"), so
+        // the body is just a preview of what is inside, no restated count or generic noun.
+        ImGui.Text(node.Label);
+        ImGui.Separator();
+        ImGui.TextDisabled("Aggregated bodies:");
+
+        const int preview = 6;
+        int shown = Math.Min(preview, members.Count);
+        for (int i = 0; i < shown; i++)
+            ImGui.TextDisabled("  " + members[i].Astro.Id);
+        if (members.Count > shown)
+            ImGui.TextDisabled("  ... and " + (members.Count - shown).ToString(Inv) + " more");
+
+        ImGui.EndTooltip();
+    }
+
     // Body and orbit facts for a hovered node. ladder is the graph's cached ladder for the
     // body (mu, radii, SOI); it may be null for a node whose body is not in the graph, in
     // which case only the always-available facts are shown.
@@ -113,6 +137,7 @@ internal static class TooltipRenderer
             SegmentKind.Capture => "Capture (circularize)",
             SegmentKind.Transfer => "Transfer",
             SegmentKind.HubLink => "Structural link",
+            SegmentKind.GroupLink => "Minor bodies",
             _ => kind.ToString()
         };
     }
@@ -130,6 +155,7 @@ internal static class TooltipRenderer
                 ? "perihelion velocity match with Oberth capture (approximate)"
                 : "Hohmann transfer with Oberth ejection and capture",
             SegmentKind.HubLink => "structural connector, no delta-v",
+            SegmentKind.GroupLink => "aggregated minor bodies, no delta-v",
             _ => "closed-form patched-conic estimate"
         };
     }

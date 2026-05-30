@@ -555,6 +555,12 @@ internal sealed class MapWindow : ImGuiWindow
                 {
                     ReRootTo(hit);
                 }
+                else if (hit.Kind == LayoutKind.MinorGroup)
+                {
+                    // A group is not routable. A plain click is a no-op for now (search /
+                    // isolate will expand it to a specific body), so it never throws away a
+                    // selected route by clearing the selection.
+                }
                 else
                 {
                     bool selecting = hit.Id != _selectedId;
@@ -634,6 +640,11 @@ internal sealed class MapWindow : ImGuiWindow
     // route to). "Land at destination" extends an orbit click down to the body's surface.
     private StateNode? ResolveTarget(StateNode clicked)
     {
+        // A minor-body group is a synthetic aggregate, not a real destination, so it plans
+        // no route. Search / isolate (a later part) expands it to a specific body instead.
+        if (clicked.Kind == StateKind.MinorGroup)
+            return null;
+
         StateNode target = clicked;
 
         if (target.Kind == StateKind.Hub)
@@ -707,7 +718,9 @@ internal sealed class MapWindow : ImGuiWindow
         {
             foreach (LayoutEdge edge in node.Out)
             {
-                if (edge.IsHubLink || edge.Polyline.Count < 2)
+                // Skip hub links (no dV) and the group connector (its target is a synthetic
+                // aggregate, so an edge tooltip there would be meaningless).
+                if (edge.IsHubLink || edge.To.Kind == LayoutKind.MinorGroup || edge.Polyline.Count < 2)
                     continue;
                 for (int i = 1; i < edge.Polyline.Count; i++)
                 {
@@ -745,7 +758,11 @@ internal sealed class MapWindow : ImGuiWindow
     // cached ladder. A purely synthetic node (no game body in the lookup) shows nothing.
     private void ShowNodeTooltip(LayoutNode node)
     {
-        if (_lookup != null && _lookup.TryGetValue(node.Id, out StateNode? state))
+        if (_lookup == null || !_lookup.TryGetValue(node.Id, out StateNode? state))
+            return;
+        if (state.Kind == StateKind.MinorGroup)
+            TooltipRenderer.MinorGroup(state);
+        else
             TooltipRenderer.Node(state, _graph?.LadderFor(state.Body.Id));
     }
 

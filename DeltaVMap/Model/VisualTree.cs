@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using DeltaVMap.Dv;
 using KSA;
 
@@ -91,13 +92,11 @@ internal sealed class VisualTree
                 rootNode = starHub;
                 if (egoState.HasValue)
                     AttachCruiseYouAreHere(starHub, root, egoState.Value);
-                foreach (PhysicalNode child in root.Children)
+                AddChildren(starHub, root.Children, child =>
                 {
-                    if (!Include(child))
-                        continue;
                     LadderNodes childLadder = BuildBodySubtree(child);
                     ConnectHubLink(starHub, childLadder.ArrivalAnchor);
-                }
+                });
                 return Finish(rootNode, root.Id);
             }
 
@@ -106,14 +105,12 @@ internal sealed class VisualTree
             LadderNodes rootLadder = BuildLadder(root, egoState, asDestination: false);
             rootNode = rootLadder.LocalHub;
 
-            foreach (PhysicalNode child in root.Children)
+            AddChildren(rootLadder.LocalHub, root.Children, child =>
             {
-                if (!Include(child))
-                    continue;
                 LadderNodes childLadder = BuildBodySubtree(child);
                 ConnectTransfer(rootLadder.LocalHub, childLadder.ArrivalAnchor,
                     DirectTransfer(root.Body.Mu, rootLadder.LocalHubRadius, false, 0.0, TransferRadius(child), IsOpenOrbit(child), Ecc(child)));
-            }
+            });
 
             spineTail = rootLadder.LocalHub;
             PhysicalNode spineChild = root;
@@ -135,16 +132,17 @@ internal sealed class VisualTree
                     ConnectTransfer(hubNode, hubLadder.ArrivalAnchor, toHubLo);
                 }
 
-                // Siblings of the spine child: each a sibling transfer around the hub.
-                foreach (PhysicalNode sibling in level.OtherChildren)
+                // Siblings of the spine child: each a sibling transfer around the hub. A
+                // local pins the spine child for the callback, since the loop reassigns it
+                // below (the callback runs synchronously here, but the local keeps it clear).
+                PhysicalNode hubSpineChild = spineChild;
+                AddChildren(hubNode, level.OtherChildren, sibling =>
                 {
-                    if (!Include(sibling))
-                        continue;
                     LadderNodes siblingLadder = BuildBodySubtree(sibling);
-                    EdgeDv transfer = _cache.GetTransfer((IOrbiter)spineChild.Astro, (IOrbiter)sibling.Astro);
-                    double planeChange = SiblingPlaneChange(spineChild, sibling, transfer);
+                    EdgeDv transfer = _cache.GetTransfer((IOrbiter)hubSpineChild.Astro, (IOrbiter)sibling.Astro);
+                    double planeChange = SiblingPlaneChange(hubSpineChild, sibling, transfer);
                     ConnectTransfer(hubNode, siblingLadder.ArrivalAnchor, transfer, planeChange);
-                }
+                });
 
                 spineTail = hubNode;
                 spineChild = level.Hub;
@@ -173,16 +171,69 @@ internal sealed class VisualTree
         {
             LadderNodes ladder = BuildLadder(body, egoState: null, asDestination: true);
 
-            foreach (PhysicalNode child in body.Children)
+            AddChildren(ladder.LocalHub, body.Children, child =>
             {
-                if (!Include(child))
-                    continue;
                 LadderNodes childLadder = BuildBodySubtree(child);
                 ConnectTransfer(ladder.LocalHub, childLadder.ArrivalAnchor,
                     DirectTransfer(body.Body.Mu, ladder.LocalHubRadius, false, 0.0, TransferRadius(child), IsOpenOrbit(child), Ecc(child)));
-            }
+            });
 
             return ladder;
+        }
+
+        // Branch a hub's children off it, collapsing minor bodies into one synthetic "+N"
+        // group when the hub carries more of them than the threshold. buildChild builds one
+        // real child's subtree and wires its incoming edge; it runs for every shown body, in
+        // the graph's deterministic (innermost-first) order, so a hub under the threshold
+        // keeps its exact lane layout (a stock-sized system is unchanged). Only a dense hub
+        // collapses, and then the minor bodies are recorded on the group rather than built as
+        // thousands of lanes / subtrees; search / isolate surfaces a chosen member later, so
+        // the lanes are never built all at once (the member list itself is cheap). Visibility
+        // (Include) is applied first, so a hidden minor body counts toward neither the lanes
+        // nor the group.
+        private void AddChildren(StateNode hub, IReadOnlyList<PhysicalNode> children, Action<PhysicalNode> buildChild)
+        {
+            int minorCount = 0;
+            foreach (PhysicalNode child in children)
+            {
+                if (Include(child) && child.Astro is MinorBody)
+                    minorCount++;
+            }
+
+            bool collapse = minorCount > _options.MinorGroupThreshold;
+            List<PhysicalNode>? collapsed = collapse ? new List<PhysicalNode>(minorCount) : null;
+
+            foreach (PhysicalNode child in children)
+            {
+                if (!Include(child))
+                    continue;
+                if (collapse && child.Astro is MinorBody)
+                    collapsed!.Add(child);
+                else
+                    buildChild(child);
+            }
+
+            if (collapsed != null && collapsed.Count > 0)
+                AddMinorGroup(hub, collapsed);
+        }
+
+        // Create the synthetic "+N" group node for a hub's collapsed minor bodies and hang it
+        // off the hub by a dV-free GroupLink. The group borrows the hub's body for its color
+        // and a stable Id ("<hub>.MinorGroup", unique because a hub appears once per tree); it
+        // is not a real destination, so it carries no ladder and no transfer cost.
+        private void AddMinorGroup(StateNode hub, List<PhysicalNode> members)
+        {
+            var group = new StateNode
+            {
+                Id = $"{hub.Body.Id}.MinorGroup",
+                Body = hub.Body,
+                Kind = StateKind.MinorGroup,
+                RadiusFromBody = 0.0,
+                Label = MinorGroupLabel(members),
+                GroupMembers = members
+            };
+            _nodes.Add(group);
+            ConnectGroupLink(hub, group);
         }
 
         // Materialize one body's ladder rungs and wire the within-body edges. The set
@@ -416,6 +467,43 @@ internal sealed class VisualTree
             return edge;
         }
 
+        // Hang a minor-body group off its hub. Like a hub link it carries no dV, but it is a
+        // leaf spoke, not part of the spine bus, so it gets its own SegmentKind (the layout
+        // maps it to a column-starting transfer-class edge, never onto the horizontal hub row).
+        private static Edge ConnectGroupLink(StateNode from, StateNode to)
+        {
+            var edge = new Edge { From = from, To = to, Kind = SegmentKind.GroupLink };
+            from.AddChild(edge);
+            return edge;
+        }
+
+        // The group label, e.g. "+2892 asteroids". The noun is the concrete type when the
+        // collapsed bodies are uniform (a pure asteroid belt reads "asteroids"), otherwise the
+        // generic "minor bodies". The count is always well above the threshold, so the plural
+        // is always correct.
+        private static string MinorGroupLabel(IReadOnlyList<PhysicalNode> members)
+        {
+            return "+" + members.Count.ToString(CultureInfo.InvariantCulture) + " " + MinorNoun(members);
+        }
+
+        private static string MinorNoun(IReadOnlyList<PhysicalNode> members)
+        {
+            bool allAsteroid = true;
+            bool allComet = true;
+            foreach (PhysicalNode m in members)
+            {
+                if (m.Astro is not Asteroid)
+                    allAsteroid = false;
+                if (m.Astro is not Comet)
+                    allComet = false;
+            }
+            if (allAsteroid)
+                return "asteroids";
+            if (allComet)
+                return "comets";
+            return "minor bodies";
+        }
+
         // Transfer radius of a non-star body around its parent. Uses the shared
         // OrbitalStates helper so the open-orbit (comet) fallback matches DvCache and
         // cannot drift. Never called on the star (which has no orbit).
@@ -467,6 +555,7 @@ internal sealed class VisualTree
                 StateKind.Intercept => "Intercept",
                 StateKind.Hub => "Hub",
                 StateKind.YouAreHere => "You Are Here",
+                StateKind.MinorGroup => "Minor Bodies",
                 _ => kind.ToString()
             };
         }

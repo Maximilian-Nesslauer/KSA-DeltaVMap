@@ -8,7 +8,9 @@ namespace DeltaVMap.Dv;
 // re-rooted graph. Surface through YouAreHere are physical ladder rungs (built by
 // BuildLadder, classified by StateClassifier). Hub is an ancestor body rendered as
 // a horizontal bus (the star is the topmost one); Intercept is the arrival node for
-// a body too small to hold an orbit (a flyby/landing-only destination).
+// a body too small to hold an orbit (a flyby/landing-only destination). MinorGroup is
+// a synthetic aggregate: when a hub carries more minor bodies than the map can show as
+// lanes, all of them collapse into one "+N" group node hanging off that hub.
 internal enum StateKind
 {
     Surface,
@@ -17,7 +19,8 @@ internal enum StateKind
     SoiEdge,
     YouAreHere,
     Hub,
-    Intercept
+    Intercept,
+    MinorGroup
 }
 
 // One rung of a body's vertical ladder: a place you can be, expressed as a

@@ -288,6 +288,9 @@ internal static class CanvasRenderer
             case LayoutKind.Hub:
                 NodeGlyphs.Hub(dl, p, r, fill, stroke);
                 break;
+            case LayoutKind.MinorGroup:
+                NodeGlyphs.MinorGroup(dl, p, r, fill, stroke);
+                break;
             default:
                 // YouAreHere and any future kind: a solid disc (the yellow ring above
                 // distinguishes the "you are here" anchor).
@@ -743,6 +746,10 @@ internal static class CanvasRenderer
             return 2;
         if (routing && routeNodes!.Contains(node.Id))
             return 3;
+        // A minor-body group's "+N" count is the headline of a dense overview, so it ranks
+        // just under the route, ahead of every individual body name.
+        if (node.Kind == LayoutKind.MinorGroup)
+            return 4;
         if (IsMajor(node))
             return 5;
         if (node.Rank == 2)

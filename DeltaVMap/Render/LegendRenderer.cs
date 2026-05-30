@@ -36,6 +36,7 @@ internal static class LegendRenderer
         Row("Elliptical to SOI edge", static (dl, c) => NodeGlyphs.SoiEdge(dl, c, R, Fill, Stroke));
         Row("Intercept (flyby)", static (dl, c) => NodeGlyphs.Intercept(dl, c, R, Fill, Stroke));
         Row("Surface (landed)", static (dl, c) => NodeGlyphs.Surface(dl, c, R, Fill, Stroke));
+        Row("Minor-body group (+N)", static (dl, c) => NodeGlyphs.MinorGroup(dl, c, R, Fill, Stroke));
         Row("Jet engine possible", static (dl, c) =>
         {
             NodeGlyphs.LowOrbit(dl, c, 5f, Fill, Stroke);

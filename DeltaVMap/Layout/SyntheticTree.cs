@@ -151,6 +151,43 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-cruise-arrival", starHub);
     }
 
+    // A dense-system root after minor-body aggregation: a planet root with a star hub
+    // carrying the other planets plus a single huge "+N asteroids" group standing in for the
+    // collapsed belt, and one moon that has collapsed minor bodies of its own. The in-game
+    // collapse decision is game-typed and verified live; this exercises its LAYOUT output -
+    // that a MinorGroup node and its dV-free spoke lay out overlap-free in every mode, both
+    // off a hub bus and off a deeper local hub.
+    public static LayoutTree BuildDenseAggregated()
+    {
+        LayoutNode root = Node("Earth.LO", "Earth Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        Ladder(root, "Earth", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3210);
+
+        LayoutNode lunaLo = Node("Luna.LO", "Luna Low Orbit", LayoutKind.LowOrbit, rank: 2);
+        Transfer(root, lunaLo, depart: 3100, arrive: 850);
+        Ladder(lunaLo, "Luna", surfaceDv: 1870, stationaryDv: null, soiDv: 410);
+        // Luna's own collapsed minor bodies hang off it as a local hub.
+        MinorGroup(lunaLo, "Luna", "+57 minor bodies");
+
+        LayoutNode starHub = Node("Sol.Hub", "Sol", LayoutKind.Hub, rank: 0);
+        HubLink(root, starHub);
+        AttachPlanets(starHub, count: 7);
+        // The dense asteroid belt collapsed to one group off the Sol hub.
+        MinorGroup(starHub, "Sol", "+2892 asteroids");
+
+        return LayoutTree.FromRoot("synthetic-dense-aggregated", root);
+    }
+
+    // A collapsed minor-body group hanging off a hub: a MinorGroup node reached by a dV-free
+    // transfer-class edge (what VisualTreeAdapter maps a GroupLink to), with no children. The
+    // zero dV lands it one band below the hub (cumulative) or in its own well on the spine
+    // (gravity-well), and the renderer draws no badge for it.
+    private static void MinorGroup(LayoutNode hub, string bodyId, string label)
+    {
+        LayoutNode group = Node(bodyId + ".MinorGroup", label, LayoutKind.MinorGroup, rank: 2);
+        hub.AddChild(new LayoutEdge { From = hub, To = group, Class = EdgeClass.Transfer, Dv = 0.0 });
+    }
+
     // A deliberately wide, shallow fan: one body with many sibling destinations that
     // all land on a narrow band, stressing sibling separation and the grid-snap
     // collision pass on a dense row (a gas giant with many moons, or a busy hub).
