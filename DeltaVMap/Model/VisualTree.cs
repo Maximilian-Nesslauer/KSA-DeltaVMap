@@ -68,7 +68,18 @@ internal sealed class VisualTree
         private bool Include(PhysicalNode body)
         {
             Astronomical a = body.Astro;
-            if (!_options.ShowMinorBodies && a is MinorBody)
+
+            // A revealed (searched) body is always shown, ahead of every hide rule, so a
+            // chosen asteroid stays visible under isolate and is pulled out of its group.
+            if (_options.IsRevealed(body.Id))
+                return true;
+
+            bool minor = a is MinorBody;
+            // Isolate keeps only the spine, the major bodies and revealed bodies, so it hides
+            // every un-revealed minor body (asteroids and comets alike).
+            if (_options.Isolate && minor)
+                return false;
+            if (!_options.ShowMinorBodies && minor)
                 return false;
             if (!_options.ShowComets && a is Comet)
                 return false;
@@ -207,7 +218,9 @@ internal sealed class VisualTree
             {
                 if (!Include(child))
                     continue;
-                if (collapse && child.Astro is MinorBody)
+                // A revealed (searched) minor body is built as its own lane, never folded into
+                // the group, so the search pulls exactly that body out of the "+N".
+                if (collapse && child.Astro is MinorBody && !_options.IsRevealed(child.Id))
                     collapsed!.Add(child);
                 else
                     buildChild(child);

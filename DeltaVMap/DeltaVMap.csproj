@@ -21,6 +21,12 @@
       <HintPath>..\..\..\refs\game\Brutal.Core.Numerics.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Provides the Ptr type used in some ImGui overload signatures (e.g. InputTextWithHint);
+         needed for overload resolution even when calling the ImInputString overload. -->
+    <Reference Include="Brutal.Core.Common">
+      <HintPath>..\..\..\refs\game\Brutal.Core.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Brutal.Core.Logging">
       <HintPath>..\..\..\refs\game\Brutal.Core.Logging.dll</HintPath>
       <Private>false</Private>

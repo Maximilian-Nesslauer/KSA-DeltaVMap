@@ -107,6 +107,9 @@ internal static class CanvasRenderer
     private static readonly byte4 RootHalo = new byte4(255, 170, 120, 60);
     private static readonly byte4 YouAreHereRing = new byte4(255, 210, 63, 255);
     private static readonly byte4 HoverRing = new byte4(255, 255, 255, 255);
+    // The searched/focused body's distinct highlight: a bright cyan double ring, set apart
+    // from the orange root, yellow you-are-here and white hover rings.
+    private static readonly byte4 FocusRing = new byte4(96, 226, 232, 255);
     private static readonly byte4 RouteLine = new byte4(255, 255, 255, 255);
 
     public static void Draw(
@@ -116,6 +119,7 @@ internal static class CanvasRenderer
         ColorPalette palette,
         in CanvasTransform t,
         string? hoverId,
+        string? focusId,
         IReadOnlySet<string>? routeNodes,
         bool showPlaneChange,
         double dvScale,
@@ -123,7 +127,7 @@ internal static class CanvasRenderer
         bool showBodyMarkers)
     {
         DrawEdgeLines(dl, layout, lookup, palette, in t, routeNodes);
-        DrawNodeDots(dl, layout, lookup, palette, in t, hoverId, routeNodes, showBodyMarkers);
+        DrawNodeDots(dl, layout, lookup, palette, in t, hoverId, focusId, routeNodes, showBodyMarkers);
         DrawEdgeMarkers(dl, layout, lookup, palette, in t, routeNodes, showPlaneChange, dvScale, showBodyMarkers);
         DrawLabelsAndBadges(dl, layout, lookup, palette, in t, hoverId, routeNodes, dvScale, showTransferTimes);
     }
@@ -209,6 +213,7 @@ internal static class CanvasRenderer
         ColorPalette palette,
         in CanvasTransform t,
         string? hoverId,
+        string? focusId,
         IReadOnlySet<string>? routeNodes,
         bool showBodyMarkers)
     {
@@ -259,6 +264,13 @@ internal static class CanvasRenderer
                 dl.AddCircle(in p, r + 4f, RootRing, 24, 2.5f);
             if (node.IsYouAreHere)
                 dl.AddCircle(in p, r + 4f, YouAreHereRing, 24, 2.5f);
+            // The searched/focused body: a bright cyan double ring, full strength regardless
+            // of the route fade so it stays findable after the search centers on it.
+            if (node.Id == focusId)
+            {
+                dl.AddCircle(in p, r + 7f, FocusRing, 32, 3f);
+                dl.AddCircle(in p, r + 11f, FocusRing, 32, 1.5f);
+            }
             if (node.Id == hoverId)
                 dl.AddCircle(in p, r + 6f, HoverRing, 28, 2.5f);
         }

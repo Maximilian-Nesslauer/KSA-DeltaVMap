@@ -28,6 +28,17 @@ internal sealed class MapWindow : ImGuiWindow
     private const double MaxZoom = 4.0;
     private const double HoverRadiusPx = 14.0;
 
+    // A search pick zooms in to at least this so the found body is legible, and pans it to the
+    // viewport center.
+    private const double FocusZoom = 1.0;
+    // Cap on listed search matches; a broader query shows a "+N more" note and asks to refine,
+    // so the panel never renders thousands of rows.
+    private const int MaxSearchResults = 40;
+    // Visible result rows before the list scrolls (the list child is sized to this).
+    private const int MaxVisibleSearchRows = 7;
+    // Search text buffer capacity in characters; body names are short.
+    private const int SearchBufferCapacity = 64;
+
     // How close (screen px) the cursor must be to an edge polyline to show its tooltip.
     // Smaller than the node radius so a node always wins a hover near a junction.
     private const double EdgeHoverPx = 7.0;
@@ -80,6 +91,20 @@ internal sealed class MapWindow : ImGuiWindow
 
     // Interaction state.
     private string? _hoverId;
+
+    // Search / focus / isolate. _searchBuffer backs the panel input; matches are taken over the
+    // full graph (every body, even ones aggregated into a "+N" group). A pick adds the body to
+    // _revealedBodyIds (force-shown as its own lane on the next build), sets _focusNodeId (the
+    // highlighted, centered node), and isolate strips the map down to the spine, the major
+    // bodies, the revealed bodies and the selected route.
+    private readonly ImInputString _searchBuffer = new ImInputString(SearchBufferCapacity);
+    private string _lastSearchQuery = "";
+    private readonly List<PhysicalNode> _searchResults = new();
+    private int _searchMatchTotal;
+    private readonly HashSet<string> _revealedBodyIds = new();
+    private string? _focusBodyId;
+    private string? _focusNodeId;
+    private bool _isolate;
 
     // The clicked route target Id (null = no route). Plain click sets it; the route is
     // accumulated from it into _routeSummary, and _routeNodeIds is the set of node Ids
@@ -296,6 +321,7 @@ internal sealed class MapWindow : ImGuiWindow
     // map is re-rooted away from where the vehicle currently is.
     private void DrawPanel()
     {
+        DrawSearchPanel();
         PanelResult result = RoutePanelRenderer.Draw(_options, _view, _routeSummary, TryGetAvailableDv());
         // A visibility change rebuilds the tree (and re-resolves the selected route against
         // the new node set); a plain route-toggle change only re-accumulates the path.
@@ -303,6 +329,233 @@ internal sealed class MapWindow : ImGuiWindow
             RebuildPreservingSelection(_currentRootId);
         else if (result.RouteChanged)
             RecomputeRoute();
+    }
+
+    // The find / isolate section at the top of the panel: a body-name search over the full
+    // system graph (every body, even ones collapsed into a "+N" group), a results list whose
+    // pick reveals + centers + highlights the body, and an isolate toggle that strips the map
+    // to the spine, the major bodies, the revealed bodies and the selected route.
+    private void DrawSearchPanel()
+    {
+        ImGui.SeparatorText("Find"u8);
+
+        ImGui.PushItemWidth(-1f);
+        ImGui.InputTextWithHint("##dvsearch"u8, "Search bodies..."u8, _searchBuffer);
+        ImGui.PopItemWidth();
+
+        // Recompute matches only when the text actually changed, not every frame.
+        string query = _searchBuffer.ToString();
+        if (query != _lastSearchQuery)
+        {
+            _lastSearchQuery = query;
+            UpdateSearchResults(query);
+        }
+
+        PhysicalNode? pick = null;
+        if (_searchResults.Count > 0)
+        {
+            // A bounded, scrollable list so even a broad query stays compact.
+            float listH = Math.Min(_searchResults.Count, MaxVisibleSearchRows) * ImGui.GetFrameHeight() + 6f;
+            ImGui.BeginChild("##dvsearchresults"u8, new float2?(new float2(0f, listH)), ImGuiChildFlags.Borders);
+            try
+            {
+                foreach (PhysicalNode body in _searchResults)
+                {
+                    bool isFocus = body.Id == _focusBodyId;
+                    if (ImGui.Selectable(body.Id, isFocus, ImGuiSelectableFlags.None, (float2?)null))
+                        pick = body;
+                }
+            }
+            finally
+            {
+                // EndChild must always run, even if the region was clipped, to keep the
+                // window stack balanced.
+                ImGui.EndChild();
+            }
+
+            if (_searchMatchTotal > _searchResults.Count)
+            {
+                string more = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "+{0} more, refine search", _searchMatchTotal - _searchResults.Count);
+                ImGui.TextDisabled(more);
+            }
+        }
+        else if (query.Trim().Length > 0)
+        {
+            ImGui.TextDisabled("No bodies match.");
+        }
+
+        bool isolate = _isolate;
+        if (ImGui.Checkbox("Isolate to found bodies"u8, ref isolate))
+        {
+            _isolate = isolate;
+            // The effect only exists once something is revealed, so only rebuild when isolate
+            // would actually change the current view.
+            if (_revealedBodyIds.Count > 0 && _currentRootId != null)
+                RebuildPreservingSelection(_currentRootId);
+        }
+        if (_isolate && _revealedBodyIds.Count == 0)
+            ImGui.TextDisabled("Search a body to isolate it");
+
+        if ((_revealedBodyIds.Count > 0 || _focusBodyId != null || query.Length > 0)
+            && ImGui.SmallButton("Clear find"u8))
+            ClearSearch();
+
+        // Act on a pick after the list/child scope closes, so the rebuild it triggers does not
+        // run mid-child or mutate anything the loop above is iterating.
+        if (pick != null)
+            RevealAndFocus(pick);
+    }
+
+    // Refresh the match list from the full graph. Matching is a case-insensitive substring of
+    // the body Id (the same string the map labels use). The star is skipped (it is the hub bus,
+    // not a destination). Results rank exact, then prefix, then substring, alphabetical within,
+    // and are capped so a broad query does not build thousands of rows (the surplus is noted).
+    private void UpdateSearchResults(string query)
+    {
+        _searchResults.Clear();
+        _searchMatchTotal = 0;
+        if (_graph == null)
+            return;
+        string q = query.Trim();
+        if (q.Length == 0)
+            return;
+
+        foreach (PhysicalNode n in _graph.AllNodes)
+        {
+            if (n.IsStar)
+                continue;
+            if (n.Astro.Id.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0)
+                continue;
+            _searchMatchTotal++;
+            _searchResults.Add(n);
+        }
+
+        _searchResults.Sort((a, b) => CompareMatch(a.Astro.Id, b.Astro.Id, q));
+        if (_searchResults.Count > MaxSearchResults)
+            _searchResults.RemoveRange(MaxSearchResults, _searchResults.Count - MaxSearchResults);
+    }
+
+    private static int CompareMatch(string a, string b, string query)
+    {
+        int byRank = MatchRank(a, query).CompareTo(MatchRank(b, query));
+        return byRank != 0 ? byRank : string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int MatchRank(string id, string query)
+    {
+        if (id.Equals(query, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        if (id.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+            return 1;
+        return 2;
+    }
+
+    // Reveal a searched body (so it leaves its "+N" group / survives isolate), then center and
+    // highlight it. A body already on the map needs no rebuild, only the focus.
+    private void RevealAndFocus(PhysicalNode body)
+    {
+        _focusBodyId = body.Id;
+        bool alreadyVisible = FindFocusNode(body.Id) != null;
+        bool wasEmpty = _revealedBodyIds.Count == 0;
+        bool added = _revealedBodyIds.Add(body.Id);
+        // Rebuild when the body must be materialized (it was collapsed or hidden), or when this
+        // first reveal arms isolate (which is inert until something has been revealed).
+        bool isolateActivates = _isolate && wasEmpty && added;
+        if ((!alreadyVisible || isolateActivates) && _currentRootId != null)
+            RebuildPreservingSelection(_currentRootId);
+        // Center on the body. When the line above rebuilt, this overrides the root-anchoring
+        // pan that rebuild set; that anchor only stands as a fallback when the focus node
+        // cannot be resolved (FocusOnBody leaves the pan alone then).
+        FocusOnBody(body.Id);
+    }
+
+    // Center the view on a body's most central node and mark it as the focus highlight. Zooms
+    // in to at least FocusZoom so the found body is legible; keeps a higher zoom if already in.
+    private void FocusOnBody(string bodyId)
+    {
+        LayoutNode? node = FindFocusNode(bodyId);
+        if (node == null || _layout == null)
+        {
+            _focusNodeId = null;
+            return;
+        }
+
+        _focusNodeId = node.Id;
+        _zoom = Math.Clamp(Math.Max(_zoom, FocusZoom), MinZoom, MaxZoom);
+        if (_lastSize.X > 8f && _lastSize.Y > 8f)
+        {
+            _panX = _lastSize.X / 2.0 - (node.SnappedX - _layout.MinX) * _zoom;
+            _panY = _lastSize.Y / 2.0 - (node.SnappedY - _layout.MinY) * _zoom;
+        }
+        // Clear any pending auto-fit (RebuildAt sets one) so it does not run on the next draw
+        // and discard this centering.
+        _needsFit = false;
+    }
+
+    // The layout node to center / highlight for a body: its most central rung (low orbit, then
+    // intercept, then surface, ...). Returns null when the body is not currently materialized
+    // (still inside a group), in which case the caller rebuilds first.
+    private LayoutNode? FindFocusNode(string bodyId)
+    {
+        if (_layout == null || _lookup == null)
+            return null;
+
+        string? bestId = null;
+        int bestRank = int.MaxValue;
+        foreach (StateNode s in _lookup.Values)
+        {
+            if (s.Body.Id != bodyId)
+                continue;
+            int rank = FocusKindRank(s.Kind);
+            if (rank < bestRank)
+            {
+                bestRank = rank;
+                bestId = s.Id;
+            }
+        }
+        if (bestId == null)
+            return null;
+
+        foreach (LayoutNode n in _layout.Tree.Nodes)
+        {
+            if (n.Id == bestId)
+                return n;
+        }
+        return null;
+    }
+
+    private static int FocusKindRank(StateKind kind)
+    {
+        return kind switch
+        {
+            StateKind.LowOrbit => 0,
+            StateKind.Intercept => 1,
+            StateKind.Surface => 2,
+            StateKind.Stationary => 3,
+            StateKind.SoiEdge => 4,
+            StateKind.YouAreHere => 5,
+            _ => 6
+        };
+    }
+
+    // Reset the find state: clear the query, the focus highlight and the revealed set, so the
+    // map returns to its adaptive aggregated view. Rebuilds only when bodies were revealed.
+    private void ClearSearch()
+    {
+        _searchBuffer.Clear();
+        _lastSearchQuery = "";
+        _searchResults.Clear();
+        _searchMatchTotal = 0;
+        _focusBodyId = null;
+        _focusNodeId = null;
+        bool hadRevealed = _revealedBodyIds.Count > 0;
+        _revealedBodyIds.Clear();
+        // Clearing the find resets isolate too: with nothing revealed it would be inert anyway,
+        // and unticking it keeps the checkbox honest.
+        _isolate = false;
+        if (hadRevealed && _currentRootId != null)
+            RebuildPreservingSelection(_currentRootId);
     }
 
     // The canvas column. Assumes the build succeeded (DrawContent gates on EnsureBuilt);
@@ -335,7 +588,7 @@ internal sealed class MapWindow : ImGuiWindow
         dl.PushClipRect(in origin, in canvasMax, intersectWithCurrentClipRect: true);
         try
         {
-            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _routeNodeIds,
+            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _focusNodeId, _routeNodeIds,
                 _options.IncludePlaneChange, _view.DvScale, _view.ShowTransferTimes, _view.ShowBodyMarkers);
         }
         finally
@@ -824,6 +1077,16 @@ internal sealed class MapWindow : ImGuiWindow
             _routeSummary = null;
             _routeNodeIds = null;
             _built = false;
+
+            // A new system invalidates the search state (the bodies are different).
+            _revealedBodyIds.Clear();
+            _searchResults.Clear();
+            _searchMatchTotal = 0;
+            _searchBuffer.Clear();
+            _lastSearchQuery = "";
+            _focusBodyId = null;
+            _focusNodeId = null;
+            _isolate = false;
         }
 
         if (!_built || _reevaluateRoot)
@@ -934,7 +1197,12 @@ internal sealed class MapWindow : ImGuiWindow
 
         try
         {
-            var buildOptions = new BuildOptions(_fullLadder, _view.ShowMinorBodies, _view.ShowComets);
+            // Isolate only takes effect once a body has been revealed (searched). With nothing
+            // revealed it would just hide every minor body, duplicating the "Show minor bodies"
+            // toggle, so it stays inert until there is something to isolate to.
+            bool effectiveIsolate = _isolate && _revealedBodyIds.Count > 0;
+            var buildOptions = new BuildOptions(_fullLadder, _view.ShowMinorBodies, _view.ShowComets,
+                effectiveIsolate, _revealedBodyIds);
             VisualTree visual = VisualTree.Build(_graph, _cache, node, egoState, buildOptions);
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual, _graph);
             var cfg = new LayoutConfig { Mode = _layoutMode };
@@ -954,6 +1222,11 @@ internal sealed class MapWindow : ImGuiWindow
             _routeNodeIds = null;
             _needsFit = true;
             _built = true;
+
+            // Keep the focus highlight on the searched body across rebuilds; the chosen node Id
+            // can shift with detail, so re-resolve it from the body (no re-center here).
+            if (_focusBodyId != null)
+                _focusNodeId = FindFocusNode(_focusBodyId)?.Id;
         }
         catch (Exception ex)
         {
