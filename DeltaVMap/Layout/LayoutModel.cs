@@ -47,11 +47,25 @@ internal sealed class LayoutEdge
     // on the frame-consistent figure, the badge shows the figure a route actually pays.
     public double RouteDv { get; init; }
 
+    // The two halves of a Transfer's RouteDv, shown individually on the badge before the
+    // total: InjectionDv is the departure / ejection burn (leaving the origin onto the
+    // transfer), CaptureDv the arrival burn (capture at the destination, into the loose
+    // ellipse when the transfer lands on an Intercept). Their sum is RouteDv. Both zero for
+    // ladder and hub-link edges, and zero on a transfer when no live ladder was available to
+    // derive the Oberth burns (the offline dump, which renders no badges).
+    public double InjectionDv { get; init; }
+    public double CaptureDv { get; init; }
+
     // The cheaper landing cost for an Ascent edge on an atmospheric body, so the badge can
     // show both directions (ascent up, descent down). Zero on every other edge, and equal
     // to RouteDv on an airless body (where landing costs the same as ascending), in which
     // case the badge stays single-valued.
     public double DescentDv { get; init; }
+
+    // Hohmann transfer time in seconds, mirrored from the game edge so the renderer can show
+    // a time line under a transfer badge without re-reading game state. Zero for ladder and
+    // hub-link edges (the offline dump leaves it zero, which is fine: it shows no times).
+    public double TransferTimeSeconds { get; init; }
 
     // Display-only marker flags set by the adapter from the game edge; the layout math
     // ignores them. Aerobrake marks a capture into a body with a usable atmosphere, drawn

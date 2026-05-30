@@ -118,7 +118,7 @@ internal static class LayoutDump
     {
         try
         {
-            VisualTree visual = VisualTree.Build(graph, cache, root, egoState, fullLadderEverywhere: false);
+            VisualTree visual = VisualTree.Build(graph, cache, root, egoState, BuildOptions.Default);
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual);
             DumpLayout(tree, LayoutConfig.Default, outDir, role);
         }

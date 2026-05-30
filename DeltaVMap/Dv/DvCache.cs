@@ -83,9 +83,19 @@ internal sealed class DvCache
         double r1 = OrbitalStates.TransferRadius(fromOrbit);
         double r2 = OrbitalStates.TransferRadius(toOrbit);
 
-        DeltaVCalculator.Hohmann(muHub, r1, r2, out double departDv, out double arriveDv);
+        // An open endpoint (a comet) is matched at its true perihelion speed; a bound pair
+        // keeps the exact circular Hohmann, so stock planet-to-planet numbers are unchanged.
+        bool fromOpen = fromOrbit.Eccentricity >= 1.0;
+        bool toOpen = toOrbit.Eccentricity >= 1.0;
+        double departDv;
+        double arriveDv;
+        if (fromOpen || toOpen)
+            DeltaVCalculator.ConicTransfer(muHub, r1, fromOpen, fromOrbit.Eccentricity, r2, toOpen, toOrbit.Eccentricity, out departDv, out arriveDv);
+        else
+            DeltaVCalculator.Hohmann(muHub, r1, r2, out departDv, out arriveDv);
+
         double transferTime = DeltaVCalculator.TransferTimeSeconds(muHub, r1, r2);
-        bool isApproximate = fromOrbit.Eccentricity >= 1.0 || toOrbit.Eccentricity >= 1.0;
+        bool isApproximate = fromOpen || toOpen;
 
         return new EdgeDv(departDv, arriveDv, transferTime, isApproximate);
     }

@@ -112,7 +112,7 @@ internal static class VisualTreeDump
         VisualTree tree;
         try
         {
-            tree = VisualTree.Build(graph, cache, root, egoState, fullLadderEverywhere: false);
+            tree = VisualTree.Build(graph, cache, root, egoState, BuildOptions.Default);
         }
         catch (Exception ex)
         {

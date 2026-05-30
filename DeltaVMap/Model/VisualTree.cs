@@ -32,10 +32,10 @@ internal sealed class VisualTree
     // The node carrying the controlled vehicle's classified state, if any.
     public StateNode? YouAreHere { get; init; }
 
-    public static VisualTree Build(SystemGraph graph, DvCache cache, PhysicalNode root, ClassifiedState? egoState, bool fullLadderEverywhere)
+    public static VisualTree Build(SystemGraph graph, DvCache cache, PhysicalNode root, ClassifiedState? egoState, BuildOptions options)
     {
         ReRootResult reroot = ReRooter.ReRoot(root);
-        var builder = new Builder(graph, cache, new DetailLevel(reroot, fullLadderEverywhere));
+        var builder = new Builder(graph, cache, new DetailLevel(reroot, options.FullLadder), options);
         return builder.Build(reroot, egoState);
     }
 
@@ -46,14 +46,32 @@ internal sealed class VisualTree
         private readonly SystemGraph _graph;
         private readonly DvCache _cache;
         private readonly DetailLevel _detail;
+        private readonly BuildOptions _options;
         private readonly List<StateNode> _nodes = new();
         private StateNode? _youAreHere;
 
-        public Builder(SystemGraph graph, DvCache cache, DetailLevel detail)
+        public Builder(SystemGraph graph, DvCache cache, DetailLevel detail, BuildOptions options)
         {
             _graph = graph;
             _cache = cache;
             _detail = detail;
+            _options = options;
+        }
+
+        // Whether a destination body is shown given the visibility toggles. A minor body
+        // (asteroid / comet / minor) drops when "show minor bodies" is off; a comet drops
+        // when "show comets" is off. Major bodies (planets, moons) are always shown. The
+        // root and spine ancestors are never passed here, so they are never hidden. This
+        // assumes every small body derives from MinorBody (Comet does), which holds in stock;
+        // a future small-body type outside that hierarchy would need adding here.
+        private bool Include(PhysicalNode body)
+        {
+            Astronomical a = body.Astro;
+            if (!_options.ShowMinorBodies && a is MinorBody)
+                return false;
+            if (!_options.ShowComets && a is Comet)
+                return false;
+            return true;
         }
 
         public VisualTree Build(ReRootResult reroot, ClassifiedState? egoState)
@@ -75,6 +93,8 @@ internal sealed class VisualTree
                     AttachCruiseYouAreHere(starHub, root, egoState.Value);
                 foreach (PhysicalNode child in root.Children)
                 {
+                    if (!Include(child))
+                        continue;
                     LadderNodes childLadder = BuildBodySubtree(child);
                     ConnectHubLink(starHub, childLadder.ArrivalAnchor);
                 }
@@ -88,9 +108,11 @@ internal sealed class VisualTree
 
             foreach (PhysicalNode child in root.Children)
             {
+                if (!Include(child))
+                    continue;
                 LadderNodes childLadder = BuildBodySubtree(child);
                 ConnectTransfer(rootLadder.LocalHub, childLadder.ArrivalAnchor,
-                    DirectTransfer(root.Body.Mu, rootLadder.LocalHubRadius, TransferRadius(child), IsOpenOrbit(child)));
+                    DirectTransfer(root.Body.Mu, rootLadder.LocalHubRadius, false, 0.0, TransferRadius(child), IsOpenOrbit(child), Ecc(child)));
             }
 
             spineTail = rootLadder.LocalHub;
@@ -107,13 +129,17 @@ internal sealed class VisualTree
                 if (!level.Hub.IsStar)
                 {
                     LadderNodes hubLadder = BuildLadder(level.Hub, egoState: null, asDestination: false);
-                    EdgeDv toHubLo = DirectTransfer(level.Hub.Body.Mu, TransferRadius(spineChild), hubLadder.LocalHubRadius, IsOpenOrbit(spineChild));
+                    // The spine child descends to the hub's low orbit; the open end here is
+                    // the spine child (r1), which is a comet only when the map is rooted at one.
+                    EdgeDv toHubLo = DirectTransfer(level.Hub.Body.Mu, TransferRadius(spineChild), IsOpenOrbit(spineChild), Ecc(spineChild), hubLadder.LocalHubRadius, false, 0.0);
                     ConnectTransfer(hubNode, hubLadder.ArrivalAnchor, toHubLo);
                 }
 
                 // Siblings of the spine child: each a sibling transfer around the hub.
                 foreach (PhysicalNode sibling in level.OtherChildren)
                 {
+                    if (!Include(sibling))
+                        continue;
                     LadderNodes siblingLadder = BuildBodySubtree(sibling);
                     EdgeDv transfer = _cache.GetTransfer((IOrbiter)spineChild.Astro, (IOrbiter)sibling.Astro);
                     double planeChange = SiblingPlaneChange(spineChild, sibling, transfer);
@@ -149,9 +175,11 @@ internal sealed class VisualTree
 
             foreach (PhysicalNode child in body.Children)
             {
+                if (!Include(child))
+                    continue;
                 LadderNodes childLadder = BuildBodySubtree(child);
                 ConnectTransfer(ladder.LocalHub, childLadder.ArrivalAnchor,
-                    DirectTransfer(body.Body.Mu, ladder.LocalHubRadius, TransferRadius(child), IsOpenOrbit(child)));
+                    DirectTransfer(body.Body.Mu, ladder.LocalHubRadius, false, 0.0, TransferRadius(child), IsOpenOrbit(child), Ecc(child)));
             }
 
             return ladder;
@@ -405,11 +433,27 @@ internal sealed class VisualTree
             return ((IOrbiter)body.Astro).Orbit.Eccentricity >= 1.0;
         }
 
-        private static EdgeDv DirectTransfer(double muHub, double r1, double r2, bool isApproximate)
+        // Eccentricity of a non-star body's orbit, passed to DirectTransfer so an open
+        // (comet) endpoint can be velocity-matched at its perihelion. Never called on the
+        // star (which has no orbit); the spine child is always a planet/moon/comet.
+        private static double Ecc(PhysicalNode body)
         {
-            DeltaVCalculator.Hohmann(muHub, r1, r2, out double depart, out double arrive);
+            return ((IOrbiter)body.Astro).Orbit.Eccentricity;
+        }
+
+        // A within-SOI / direct transfer between two radii around a hub. Either end may be
+        // open (a comet), in which case its real perihelion speed is matched; a bound pair
+        // keeps the exact circular Hohmann. The open flags double as the IsApproximate mark.
+        private static EdgeDv DirectTransfer(double muHub, double r1, bool r1Open, double r1Ecc, double r2, bool r2Open, double r2Ecc)
+        {
+            double depart;
+            double arrive;
+            if (r1Open || r2Open)
+                DeltaVCalculator.ConicTransfer(muHub, r1, r1Open, r1Ecc, r2, r2Open, r2Ecc, out depart, out arrive);
+            else
+                DeltaVCalculator.Hohmann(muHub, r1, r2, out depart, out arrive);
             double time = DeltaVCalculator.TransferTimeSeconds(muHub, r1, r2);
-            return new EdgeDv(depart, arrive, time, isApproximate);
+            return new EdgeDv(depart, arrive, time, r1Open || r2Open);
         }
 
         private static string KindLabel(StateKind kind)

@@ -22,6 +22,10 @@
     <!-- Shared debug config (pure, no game deps) so the harness defaults to the same
          dump directory as the in-game LayoutDump. -->
     <Compile Include="..\DeltaVMap\Core\DebugConfig.cs" />
+    <!-- The closed-form delta-v kernel is pure (no game types), so the harness can lock its
+         formulas down directly: the comet velocity-match, the Hohmann reduction it
+         generalizes, the intercept split, and the atmospheric landing fraction. -->
+    <Compile Include="..\DeltaVMap\Dv\DeltaVCalculator.cs" />
   </ItemGroup>
 
 </Project>

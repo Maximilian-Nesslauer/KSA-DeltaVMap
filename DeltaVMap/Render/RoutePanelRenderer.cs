@@ -6,15 +6,32 @@ using DeltaVMap.Route;
 
 namespace DeltaVMap.Render;
 
-// The right-hand route panel: the toggles, the per-segment breakdown, the totals and
-// transfer time, and the vehicle dV comparison bar. Returns true when a toggle changed
-// so the window recomputes the route next frame. Plain ImGui widgets carry the text;
-// the colored bar is drawn with DrawList primitives so its green/yellow/red is exact
-// and independent of the binding's styling helpers.
+// What changed in the panel this frame, so the window knows how to react. A route-option
+// change re-accumulates the selected path; a visibility change rebuilds the visual tree
+// (it adds or drops bodies). Display-only settings (transfer times, body markers,
+// piloting margin) need neither, since the renderer and panel read them live every frame.
+internal readonly struct PanelResult
+{
+    public readonly bool RouteChanged;
+    public readonly bool RebuildNeeded;
+
+    public PanelResult(bool routeChanged, bool rebuildNeeded)
+    {
+        RouteChanged = routeChanged;
+        RebuildNeeded = rebuildNeeded;
+    }
+}
+
+// The right-hand route panel, top to bottom: the legend (controls + symbol key), the route
+// toggles, a view section (visibility + piloting margin), the per-segment breakdown, the
+// totals and transfer time, and the vehicle dV bar. Plain ImGui widgets carry the text; the
+// colored bar is drawn with DrawList primitives so its green/yellow/red is exact and
+// independent of the binding's styling helpers.
 //
-// Every dV figure is shown with a leading "~": the whole map is a closed-form
-// patched-conic estimate, so no number is exact and saying so up front is more honest
-// than implying precision.
+// Every dV figure is shown with a leading "~": the whole map is a closed-form patched-conic
+// estimate, so no number is exact and saying so up front is more honest than implying
+// precision. The piloting margin inflates every shown dV by (1 + percent/100); it is applied
+// here at display time, so the route and layout never change.
 internal static class RoutePanelRenderer
 {
     private static readonly byte4 BarBg = new byte4(34, 40, 50, 255);
@@ -28,9 +45,14 @@ internal static class RoutePanelRenderer
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
-    public static bool Draw(RouteOptions options, RouteSummary? summary, double? availableDv)
+    public static PanelResult Draw(RouteOptions options, ViewOptions view, RouteSummary? summary, double? availableDv)
     {
         bool changed = false;
+        bool rebuild = false;
+
+        // The legend (controls + symbol key) sits at the top, so the panel opens by
+        // explaining the map before the route controls.
+        LegendRenderer.Draw();
 
         ImGui.SeparatorText("Route options"u8);
         changed |= ImGui.Checkbox("From surface"u8, ref options.FromSurface);
@@ -56,38 +78,75 @@ internal static class RoutePanelRenderer
                 changed |= ImGui.Checkbox("Aerobraking on return"u8, ref options.AerobrakingReturn);
         }
 
+        rebuild = DrawViewOptions(view);
+
         ImGui.Separator();
+
+        double scale = view.DvScale;
 
         if (summary == null)
         {
             ImGui.TextDisabled("Click a body to plan a route.");
-            LegendRenderer.Draw();
-            return changed;
+            return new PanelResult(changed, rebuild);
         }
         if (summary.IsEmpty)
         {
             ImGui.TextDisabled("You are already here.");
-            LegendRenderer.Draw();
-            return changed;
+            return new PanelResult(changed, rebuild);
         }
 
         // Plane change is additive: it is incurred per interplanetary leg, so a round trip
-        // pays it on both the outbound and the return.
-        double planeChange = options.IncludePlaneChange ? summary.PlaneChangeDv : 0.0;
-        double outboundTotal = summary.OutboundDv + planeChange;
-        double returnTotal = summary.ReturnDv + planeChange;
+        // pays it on both the outbound and the return. Every figure is scaled by the piloting
+        // margin so the panel and the on-map badges agree.
+        double planeChange = (options.IncludePlaneChange ? summary.PlaneChangeDv : 0.0) * scale;
+        double outboundTotal = summary.OutboundDv * scale + planeChange;
+        double returnTotal = summary.ReturnDv * scale + planeChange;
         double roundTrip = outboundTotal + returnTotal;
         double needed = options.ShowReturnTrip ? roundTrip : outboundTotal;
 
-        DrawBreakdown(summary);
-        DrawTotals(options, summary, planeChange, outboundTotal, returnTotal, roundTrip);
+        DrawBreakdown(summary, scale);
+        DrawTotals(options, summary, planeChange, outboundTotal, returnTotal, roundTrip, view.PilotingMarginPercent);
         DrawVehicleBar(needed, availableDv);
-        LegendRenderer.Draw();
 
-        return changed;
+        return new PanelResult(changed, rebuild);
     }
 
-    private static void DrawBreakdown(RouteSummary summary)
+    // The view section: which bodies are shown (rebuilds the tree) and the display-only
+    // settings (transfer times, body markers, piloting margin). Returns whether a
+    // visibility change requires a rebuild; the display-only settings are read live and
+    // signal nothing.
+    private static bool DrawViewOptions(ViewOptions view)
+    {
+        bool rebuild = false;
+        ImGui.SeparatorText("View"u8);
+
+        rebuild |= ImGui.Checkbox("Show minor bodies"u8, ref view.ShowMinorBodies);
+        // Comets are a subset of minor bodies, so the comet toggle only bites while minor
+        // bodies are shown; otherwise they are already hidden.
+        if (view.ShowMinorBodies)
+            rebuild |= ImGui.Checkbox("Show comets"u8, ref view.ShowComets);
+        else
+            ImGui.TextDisabled("Show comets (minor bodies hidden)");
+
+        ImGui.Checkbox("Show transfer times"u8, ref view.ShowTransferTimes);
+        // These are the ring ellipse, the atmosphere/jet halo and the aerobrake arrow - body
+        // feature markers, not just "feasibility", so the label says what it actually hides.
+        ImGui.Checkbox("Show body markers (rings, atmosphere)"u8, ref view.ShowBodyMarkers);
+
+        // Piloting margin: a full-width 0-50% slider that inflates every shown dV (display
+        // only). The label rides above a full-width slider that shows the current percent in
+        // its grab.
+        ImGui.Text("Piloting margin"u8);
+        int margin = view.PilotingMarginPercent;
+        ImGui.PushItemWidth(-1f);
+        if (ImGui.SliderInt("##dvmargin"u8, ref margin, 0, 50, "%u%%"))
+            view.PilotingMarginPercent = Math.Clamp(margin, 0, 50);
+        ImGui.PopItemWidth();
+
+        return rebuild;
+    }
+
+    private static void DrawBreakdown(RouteSummary summary, double scale)
     {
         ImGui.SeparatorText("Breakdown"u8);
         foreach (RouteSegment seg in summary.Segments)
@@ -101,14 +160,14 @@ internal static class RoutePanelRenderer
                 ImGui.TextDisabled(aero);
                 continue;
             }
-            string line = seg.Label + ": " + DvText(seg.Dv);
+            string line = seg.Label + ": " + DvText(seg.Dv * scale);
             ImGui.Text(line);
         }
     }
 
     private static void DrawTotals(
         RouteOptions options, RouteSummary summary,
-        double planeChange, double outboundTotal, double returnTotal, double roundTrip)
+        double planeChange, double outboundTotal, double returnTotal, double roundTrip, int marginPercent)
     {
         ImGui.Separator();
 
@@ -119,7 +178,12 @@ internal static class RoutePanelRenderer
             ImGui.TextDisabled(plane);
         }
 
-        string total = "Total: " + DvText(outboundTotal);
+        // A non-zero piloting margin silently inflates every figure, which reads as "the
+        // numbers are wrong" if you forget it is on, so call it out on the total line.
+        string marginNote = marginPercent > 0
+            ? string.Format(Inv, " (incl. +{0}% margin)", marginPercent)
+            : "";
+        string total = "Total: " + DvText(outboundTotal) + marginNote;
         ImGui.Text(total);
 
         if (options.ShowReturnTrip)

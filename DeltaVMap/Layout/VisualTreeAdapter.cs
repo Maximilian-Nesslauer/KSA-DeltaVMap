@@ -48,14 +48,18 @@ internal static class VisualTreeAdapter
         foreach (Edge edge in source.Out)
         {
             LayoutNode child = Convert(edge.To, ladderFor);
+            double routeDv = BadgeDv(edge, ladderFor, out double injectionDv, out double captureDv);
             node.AddChild(new LayoutEdge
             {
                 From = node,
                 To = child,
                 Class = MapClass(edge.Kind),
                 Dv = RepresentativeDv(edge),
-                RouteDv = BadgeDv(edge, ladderFor),
+                RouteDv = routeDv,
+                InjectionDv = injectionDv,
+                CaptureDv = captureDv,
                 DescentDv = edge.DescentDv,
+                TransferTimeSeconds = edge.TransferTimeSeconds,
                 IsApproximate = edge.IsApproximate,
                 // A capture into a body with a usable atmosphere can aerobrake (the marker is
                 // a capability cue, independent of whether the aerobrake toggle is on). The
@@ -68,20 +72,28 @@ internal static class VisualTreeAdapter
         return node;
     }
 
-    // The primary dV the badge displays. A transfer shows its real coupled burn (depart +
-    // capture), computed by the same rule the route accumulator uses, so the badge and the
-    // route breakdown agree. A ladder edge shows its exact self-contained cost (for an
-    // Ascent edge that is the ascent; the renderer pairs it with DescentDv to show both
-    // directions). A hub link shows nothing.
-    private static double BadgeDv(Edge edge, Func<string, BodyLadder?>? ladderFor)
+    // The primary dV the badge displays, plus a transfer's two halves (injection = depart,
+    // capture = arrive) which the badge shows individually before the total. A transfer's
+    // figures are the real coupled Oberth burns, computed by the same rule the route
+    // accumulator uses, so the badge and the route breakdown agree. A ladder edge shows its
+    // exact self-contained cost (for an Ascent edge that is the ascent; the renderer pairs it
+    // with DescentDv to show both directions) and has no injection/capture split. A hub link
+    // shows nothing. When no live ladder is available (the offline dump) the transfer falls
+    // back to the representative v_inf sum and leaves the split at zero (it renders no badges).
+    private static double BadgeDv(Edge edge, Func<string, BodyLadder?>? ladderFor, out double injectionDv, out double captureDv)
     {
+        injectionDv = 0.0;
+        captureDv = 0.0;
         if (edge.Kind == SegmentKind.HubLink)
             return 0.0;
         if (edge.Kind == SegmentKind.Transfer && edge.Transfer.HasValue)
         {
             if (ladderFor == null)
                 return edge.Transfer.Value.TotalDv;
-            return TransferBurns.ComputeLegs(edge, ladderFor).Total;
+            TransferLegs legs = TransferBurns.ComputeLegs(edge, ladderFor);
+            injectionDv = legs.DepartBurn;
+            captureDv = legs.ArriveBurn;
+            return legs.Total;
         }
         return edge.LadderDv;
     }

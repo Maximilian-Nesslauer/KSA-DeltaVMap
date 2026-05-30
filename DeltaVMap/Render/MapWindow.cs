@@ -28,6 +28,10 @@ internal sealed class MapWindow : ImGuiWindow
     private const double MaxZoom = 4.0;
     private const double HoverRadiusPx = 14.0;
 
+    // How close (screen px) the cursor must be to an edge polyline to show its tooltip.
+    // Smaller than the node radius so a node always wins a hover near a junction.
+    private const double EdgeHoverPx = 7.0;
+
     private static readonly byte4 BackgroundColor = new byte4(17, 21, 28, 255);
 
     private static MapWindow? _instance;
@@ -84,6 +88,10 @@ internal sealed class MapWindow : ImGuiWindow
     private RouteSummary? _routeSummary;
     private HashSet<string>? _routeNodeIds;
     private readonly RouteOptions _options = new();
+
+    // Display and visibility settings (visibility rebuilds the tree; the rest are display
+    // only). Shared with the panel, which edits it, and read by the canvas renderer.
+    private readonly ViewOptions _view = new();
     private bool _middlePanning;
     private bool _titleApplied;
 
@@ -288,8 +296,12 @@ internal sealed class MapWindow : ImGuiWindow
     // map is re-rooted away from where the vehicle currently is.
     private void DrawPanel()
     {
-        bool changed = RoutePanelRenderer.Draw(_options, _routeSummary, TryGetAvailableDv());
-        if (changed)
+        PanelResult result = RoutePanelRenderer.Draw(_options, _view, _routeSummary, TryGetAvailableDv());
+        // A visibility change rebuilds the tree (and re-resolves the selected route against
+        // the new node set); a plain route-toggle change only re-accumulates the path.
+        if (result.RebuildNeeded && _currentRootId != null)
+            RebuildPreservingSelection(_currentRootId);
+        else if (result.RouteChanged)
             RecomputeRoute();
     }
 
@@ -323,7 +335,8 @@ internal sealed class MapWindow : ImGuiWindow
         dl.PushClipRect(in origin, in canvasMax, intersectWithCurrentClipRect: true);
         try
         {
-            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _routeNodeIds, _options.IncludePlaneChange);
+            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _routeNodeIds,
+                _options.IncludePlaneChange, _view.DvScale, _view.ShowTransferTimes, _view.ShowBodyMarkers);
         }
         finally
         {
@@ -519,10 +532,14 @@ internal sealed class MapWindow : ImGuiWindow
 
         if (onNode)
         {
-            ImGui.BeginTooltip();
-            ImGui.Text(near!.Label);
-            ImGui.TextDisabled(near.Kind.ToString());
-            ImGui.EndTooltip();
+            ShowNodeTooltip(near!);
+        }
+        else if (hovered && !panning)
+        {
+            // Not over a node: a hover near an edge shows that segment's tooltip instead.
+            LayoutEdge? edge = NearestEdge(mouse, in transform, out double edgeDist);
+            if (edge != null && edgeDist <= EdgeHoverPx)
+                ShowEdgeTooltip(edge);
         }
 
         // A click without a drag selects a route (or shift-clicks to re-root). A plain
@@ -680,6 +697,80 @@ internal sealed class MapWindow : ImGuiWindow
         return best;
     }
 
+    // The edge whose routed polyline runs nearest the cursor (hub links excluded, they carry
+    // no dV). Used for the edge hover tooltip when the cursor is not over a node.
+    private LayoutEdge? NearestEdge(float2 mouse, in CanvasTransform transform, out double distPx)
+    {
+        LayoutEdge? best = null;
+        double bestSq = double.MaxValue;
+        foreach (LayoutNode node in _layout!.Tree.Nodes)
+        {
+            foreach (LayoutEdge edge in node.Out)
+            {
+                if (edge.IsHubLink || edge.Polyline.Count < 2)
+                    continue;
+                for (int i = 1; i < edge.Polyline.Count; i++)
+                {
+                    float2 a = transform.ToScreen(edge.Polyline[i - 1].X, edge.Polyline[i - 1].Y);
+                    float2 b = transform.ToScreen(edge.Polyline[i].X, edge.Polyline[i].Y);
+                    double sq = DistanceSqToSegment(mouse, a, b);
+                    if (sq < bestSq)
+                    {
+                        bestSq = sq;
+                        best = edge;
+                    }
+                }
+            }
+        }
+        distPx = Math.Sqrt(bestSq);
+        return best;
+    }
+
+    private static double DistanceSqToSegment(float2 p, float2 a, float2 b)
+    {
+        double abx = b.X - a.X;
+        double aby = b.Y - a.Y;
+        double apx = p.X - a.X;
+        double apy = p.Y - a.Y;
+        double len2 = abx * abx + aby * aby;
+        double t = len2 > 0.0 ? Math.Clamp((apx * abx + apy * aby) / len2, 0.0, 1.0) : 0.0;
+        double cx = a.X + t * abx;
+        double cy = a.Y + t * aby;
+        double dx = p.X - cx;
+        double dy = p.Y - cy;
+        return dx * dx + dy * dy;
+    }
+
+    // Rich node tooltip: resolve the layout node back to its game StateNode and the graph's
+    // cached ladder. A purely synthetic node (no game body in the lookup) shows nothing.
+    private void ShowNodeTooltip(LayoutNode node)
+    {
+        if (_lookup != null && _lookup.TryGetValue(node.Id, out StateNode? state))
+            TooltipRenderer.Node(state, _graph?.LadderFor(state.Body.Id));
+    }
+
+    // Rich edge tooltip: resolve the layout edge back to its game edge for the fine segment
+    // kind and formula; the layout edge supplies the displayed dV figures.
+    private void ShowEdgeTooltip(LayoutEdge edge)
+    {
+        Edge? game = ResolveGameEdge(edge);
+        if (game != null)
+            TooltipRenderer.Edge(game, edge, _view.DvScale, _view.ShowTransferTimes);
+    }
+
+    // Find the game edge backing a layout edge by matching its endpoints in the visual tree.
+    private Edge? ResolveGameEdge(LayoutEdge layoutEdge)
+    {
+        if (_lookup == null || !_lookup.TryGetValue(layoutEdge.From.Id, out StateNode? from))
+            return null;
+        foreach (Edge e in from.Out)
+        {
+            if (e.To.Id == layoutEdge.To.Id)
+                return e;
+        }
+        return null;
+    }
+
     // Shift-click re-root: rebuild the visual tree and layout at the clicked body. The
     // node Id is "<body>.<state>"; resolve the body through the lookup and the graph.
     private void ReRootTo(LayoutNode node)
@@ -763,6 +854,46 @@ internal sealed class MapWindow : ImGuiWindow
         }
     }
 
+    // Rebuild at a root while keeping the view anchored and the selected route. A visibility
+    // toggle should declutter in place, but RebuildAt re-runs the layout: removing or adding
+    // bodies reflows the tidy tree (sibling columns repack) and shifts the bounding box, so
+    // restoring the raw pan verbatim would make the whole map jump under a fixed viewport.
+    // Instead capture where the root sits on screen now and solve pan after the rebuild to
+    // keep it on that same point, so the root stays put and only the rest reflows around it.
+    // (screen = origin + (layout - min) * zoom + pan; origin is constant here, so it cancels.)
+    private void RebuildPreservingSelection(string rootId)
+    {
+        string? selected = _selectedId;
+        double zoom = _zoom;
+
+        double anchorX = 0.0;
+        double anchorY = 0.0;
+        bool haveAnchor = _layout != null;
+        if (haveAnchor)
+        {
+            LayoutNode oldRoot = _layout!.Tree.Root;
+            anchorX = (oldRoot.SnappedX - _layout.MinX) * zoom + _panX;
+            anchorY = (oldRoot.SnappedY - _layout.MinY) * zoom + _panY;
+        }
+
+        RebuildAt(rootId);
+
+        _zoom = zoom;
+        if (haveAnchor && _layout != null)
+        {
+            LayoutNode newRoot = _layout.Tree.Root;
+            _panX = anchorX - (newRoot.SnappedX - _layout.MinX) * zoom;
+            _panY = anchorY - (newRoot.SnappedY - _layout.MinY) * zoom;
+        }
+        _needsFit = false;
+
+        if (selected != null && _lookup != null && _lookup.ContainsKey(selected))
+        {
+            _selectedId = selected;
+            RecomputeRoute();
+        }
+    }
+
     private void RebuildAt(string rootId)
     {
         if (_graph == null || _cache == null)
@@ -786,7 +917,8 @@ internal sealed class MapWindow : ImGuiWindow
 
         try
         {
-            VisualTree visual = VisualTree.Build(_graph, _cache, node, egoState, _fullLadder);
+            var buildOptions = new BuildOptions(_fullLadder, _view.ShowMinorBodies, _view.ShowComets);
+            VisualTree visual = VisualTree.Build(_graph, _cache, node, egoState, buildOptions);
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual, _graph);
             var cfg = new LayoutConfig { Mode = _layoutMode };
             LayoutResult result = LayoutEngine.Run(tree, cfg, MeasureText);

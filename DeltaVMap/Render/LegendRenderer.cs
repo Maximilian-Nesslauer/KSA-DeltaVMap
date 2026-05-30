@@ -21,6 +21,14 @@ internal static class LegendRenderer
 
     public static void Draw()
     {
+        // Controls first, so the map's interactions are discoverable without a manual.
+        ImGui.SeparatorText("Controls"u8);
+        ImGui.TextDisabled("Click a body: plan a route to it");
+        ImGui.TextDisabled("Click it again: clear the route");
+        ImGui.TextDisabled("Shift+click: re-root the map here");
+        ImGui.TextDisabled("Drag: pan,  mouse wheel: zoom");
+        ImGui.TextDisabled("Top-left icon: switch layout");
+
         ImGui.SeparatorText("Legend"u8);
 
         Row("Low orbit", static (dl, c) => NodeGlyphs.LowOrbit(dl, c, R, Fill, Stroke));
@@ -41,6 +49,9 @@ internal static class LegendRenderer
         });
         PlaneChangeRow("Max plane change (when on)");
 
+        ImGui.TextDisabled("Color = planetary system");
+        ImGui.TextDisabled("Transfer dV: injection + capture, then total");
+        ImGui.TextDisabled("With a margin: base (left) | amber +margin (right)");
         ImGui.TextDisabled("~  approximate (closed-form estimate)");
     }
 

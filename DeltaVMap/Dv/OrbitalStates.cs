@@ -147,12 +147,15 @@ internal static class OrbitalStates
         return (double.IsFinite(soi) && soi > 0.0) ? soi : null;
     }
 
-    // The orbital radius to use for a Hohmann-style transfer. For closed orbits this
-    // matches the EffectiveRadius the game itself uses. Open orbits (comets, e >= 1)
-    // have no apoapsis, so (Apoapsis + Periapsis) / 2 would be garbage (a hyperbolic
-    // apoapsis is negative); fall back to the periapsis distance instead. This is a
-    // coarse approximation for open orbits that just keeps the number finite, and the
-    // caller flags such transfers as approximate.
+    // The rendezvous radius to use for a transfer. For closed orbits this matches the
+    // EffectiveRadius the game itself uses. Open orbits (comets, e >= 1) have no apoapsis,
+    // so (Apoapsis + Periapsis) / 2 would be garbage (a hyperbolic apoapsis is negative);
+    // their natural rendezvous point is the perihelion (closest approach to the hub). The
+    // periapsis radius alone used to badly understate the cost because the downstream
+    // Hohmann then treated the comet as a slow circular body there; DeltaVCalculator.
+    // ConicTransfer now matches the comet's real (fast) perihelion speed instead, so the
+    // perihelion is the correct rendezvous radius rather than a coarse stand-in. The caller
+    // still flags such transfers as approximate.
     public static double TransferRadius(Orbit orbit)
     {
         if (orbit.Eccentricity >= 1.0)
@@ -252,7 +255,6 @@ internal static class OrbitalStates
             return vacuumAscent;
 
         double densityRatio = atmosphere.Physical.SeaLevelDensity / DeltaVCalculator.StandardSeaLevelDensity;
-        double landingFraction = Math.Clamp(0.06 + 0.004 / (densityRatio + 0.01), 0.06, 0.35);
-        return vacuumAscent * landingFraction;
+        return vacuumAscent * DeltaVCalculator.AtmosphericLandingFraction(densityRatio);
     }
 }

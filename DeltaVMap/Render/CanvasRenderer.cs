@@ -72,6 +72,11 @@ internal static class CanvasRenderer
     // culling). Zooming past it brings the numbers back.
     private const double BadgeMinZoom = 0.45;
 
+    // Below this zoom minor-body (rank 3) labels are dropped from the culling pass: at a
+    // zoomed-out overview their names are noise, and the major bodies plus any selected route
+    // read better without them. The root, the hovered node and on-route nodes are exempt.
+    private const double MinorLabelMinZoom = 0.5;
+
     // Plane-change numbers below this are noise (a near-coplanar leg), so they are not
     // drawn even when the toggle is on. Matches the calculator's own half-degree floor in
     // spirit: tiny inclinations cost almost nothing.
@@ -91,6 +96,11 @@ internal static class CanvasRenderer
     private static readonly byte4 HubBus = new byte4(122, 138, 152, 255);
     private static readonly byte4 BadgeBg = new byte4(16, 20, 28, 210);
     private static readonly byte4 BadgeTextColor = new byte4(198, 208, 220, 255);
+    private static readonly byte4 BadgeSubText = new byte4(150, 162, 176, 255);
+    // The with-margin figures, drawn in a warm amber to the right of the line so they read
+    // apart from the canonical (grey) figures on the left. Only shown when a margin is set.
+    private static readonly byte4 BadgeMarginText = new byte4(235, 192, 116, 255);
+    private static readonly byte4 BadgeMarginSub = new byte4(192, 158, 104, 255);
     private static readonly byte4 LabelText = new byte4(205, 214, 224, 255);
     private static readonly byte4 LabelShadow = new byte4(0, 0, 0, 200);
     private static readonly byte4 RootRing = new byte4(255, 210, 194, 255);
@@ -107,12 +117,15 @@ internal static class CanvasRenderer
         in CanvasTransform t,
         string? hoverId,
         IReadOnlySet<string>? routeNodes,
-        bool showPlaneChange)
+        bool showPlaneChange,
+        double dvScale,
+        bool showTransferTimes,
+        bool showBodyMarkers)
     {
         DrawEdgeLines(dl, layout, lookup, palette, in t, routeNodes);
-        DrawNodeDots(dl, layout, lookup, palette, in t, hoverId, routeNodes);
-        DrawEdgeMarkers(dl, layout, lookup, palette, in t, routeNodes, showPlaneChange);
-        DrawLabelsAndBadges(dl, layout, lookup, palette, in t, hoverId, routeNodes);
+        DrawNodeDots(dl, layout, lookup, palette, in t, hoverId, routeNodes, showBodyMarkers);
+        DrawEdgeMarkers(dl, layout, lookup, palette, in t, routeNodes, showPlaneChange, dvScale, showBodyMarkers);
+        DrawLabelsAndBadges(dl, layout, lookup, palette, in t, hoverId, routeNodes, dvScale, showTransferTimes);
     }
 
     private static void DrawEdgeLines(
@@ -196,7 +209,8 @@ internal static class CanvasRenderer
         ColorPalette palette,
         in CanvasTransform t,
         string? hoverId,
-        IReadOnlySet<string>? routeNodes)
+        IReadOnlySet<string>? routeNodes,
+        bool showBodyMarkers)
     {
         bool routing = routeNodes != null;
 
@@ -218,10 +232,11 @@ internal static class CanvasRenderer
 
             // The atmosphere/ring markers belong on a body's in-atmosphere rungs (the ones
             // you can fly a jet at or see the rings from), not on its high orbits or its
-            // hub bus, so they key off the surface and low-orbit glyphs.
+            // hub bus, so they key off the surface and low-orbit glyphs. The body-markers
+            // toggle hides them for a plainer map.
             bool bodyNode = node.Kind == LayoutKind.Surface || node.Kind == LayoutKind.LowOrbit;
-            bool atmoBody = bodyNode && state != null && OrbitalStates.HasUsableAtmosphere(state.Body);
-            bool ringedBody = bodyNode && state != null && OrbitalStates.HasRings(state.Body);
+            bool atmoBody = showBodyMarkers && bodyNode && state != null && OrbitalStates.HasUsableAtmosphere(state.Body);
+            bool ringedBody = showBodyMarkers && bodyNode && state != null && OrbitalStates.HasRings(state.Body);
 
             // A soft filled halo behind the root so the ego anchor pops out of a dense
             // cluster even when zoomed out. Drawn before the dot so it sits underneath.
@@ -295,7 +310,9 @@ internal static class CanvasRenderer
         ColorPalette palette,
         in CanvasTransform t,
         IReadOnlySet<string>? routeNodes,
-        bool showPlaneChange)
+        bool showPlaneChange,
+        double dvScale,
+        bool showBodyMarkers)
     {
         if (t.Zoom < BadgeMinZoom)
             return;
@@ -310,11 +327,13 @@ internal static class CanvasRenderer
                 bool onRoute = !routing || OnRoute(edge, routeNodes!);
                 double alpha = onRoute ? 1.0 : OffRouteAlpha;
 
-                if (edge.Aerobrake)
+                if (showBodyMarkers && edge.Aerobrake)
                     DrawAerobrake(dl, edge, lookup, palette, in t, alpha);
 
-                if (showPlaneChange && edge.Class == EdgeClass.Transfer && edge.PlaneChangeDv >= PlaneChangeMinDv)
-                    DrawPlaneChange(dl, edge, in t, alpha);
+                // The plane-change figure scales with the piloting margin like the dV badges,
+                // so the on-map number agrees with the breakdown the panel inflates.
+                if (showPlaneChange && edge.Class == EdgeClass.Transfer && edge.PlaneChangeDv * dvScale >= PlaneChangeMinDv)
+                    DrawPlaneChange(dl, edge, in t, alpha, dvScale);
             }
         }
     }
@@ -343,11 +362,11 @@ internal static class CanvasRenderer
     // The plane-change figure near the transfer's arrival node, offset up and to the right
     // to sit clear of the dV badge. Drawn as a plain number (DrawList text cannot rotate, so
     // there is no literal KSP slant); its warm color and the legend entry key its meaning.
-    private static void DrawPlaneChange(ImDrawListPtr dl, LayoutEdge edge, in CanvasTransform t, double alpha)
+    private static void DrawPlaneChange(ImDrawListPtr dl, LayoutEdge edge, in CanvasTransform t, double alpha, double dvScale)
     {
         float2 to = t.ToScreen(edge.To.SnappedX, edge.To.SnappedY);
         var pos = to + new float2(8f, -(float)edge.To.DotRadius - 16f);
-        string text = "i ~" + Math.Round(edge.PlaneChangeDv).ToString("0", CultureInfo.InvariantCulture);
+        string text = "i ~" + DvNumber(edge.PlaneChangeDv * dvScale) + " m/s";
         var shadow = pos + new float2(1f, 1f);
         dl.AddText(in shadow, Fade(LabelShadow, alpha), text);
         dl.AddText(in pos, Fade(NodeGlyphs.PlaneChangeColor, alpha), text);
@@ -368,16 +387,22 @@ internal static class CanvasRenderer
         ColorPalette palette,
         in CanvasTransform t,
         string? hoverId,
-        IReadOnlySet<string>? routeNodes)
+        IReadOnlySet<string>? routeNodes,
+        double dvScale,
+        bool showTransferTimes)
     {
         bool routing = routeNodes != null;
         bool showBadges = t.Zoom >= BadgeMinZoom;
+        // Zoomed far out the minor-body names only clutter the overview, so drop them below
+        // this floor (their dots and the route still show); zooming in brings them back.
+        bool showMinorLabels = t.Zoom >= MinorLabelMinZoom;
         LayoutMode mode = layout.Config.Mode;
         var items = new List<DrawItem>();
 
         foreach (LayoutNode node in layout.Tree.Nodes)
         {
-            if (node.LabelPlaced)
+            if (node.LabelPlaced && (showMinorLabels || node.Rank < 3 || node.IsRoot || node.Id == hoverId
+                || (routing && routeNodes!.Contains(node.Id))))
                 items.Add(BuildLabelItem(node, in t, hoverId, routing, routeNodes));
 
             if (!showBadges)
@@ -386,7 +411,7 @@ internal static class CanvasRenderer
             {
                 if (edge.IsHubLink || edge.RouteDv < 1.0 || edge.Polyline.Count < 2)
                     continue;
-                items.Add(BuildBadgeItem(edge, in t, mode, routing, routeNodes));
+                items.Add(BuildBadgeItem(edge, in t, mode, routing, routeNodes, dvScale, showTransferTimes));
             }
         }
 
@@ -445,55 +470,172 @@ internal static class CanvasRenderer
     }
 
     private static DrawItem BuildBadgeItem(
-        LayoutEdge edge, in CanvasTransform t, LayoutMode mode, bool routing, IReadOnlySet<string>? routeNodes)
+        LayoutEdge edge, in CanvasTransform t, LayoutMode mode, bool routing, IReadOnlySet<string>? routeNodes,
+        double dvScale, bool showTransferTimes)
     {
         float2 anchor = BadgeAnchorScreen(edge, in t, mode);
         bool onRoute = routing && OnRoute(edge, routeNodes!);
         bool offRoute = routing && !onRoute;
+        var pad = new float2(BadgePadX, BadgePadY);
+        double alpha = offRoute ? OffRouteAlpha : 1.0;
+        int priority = BadgePriority(edge, routing, routeNodes);
+        bool paired = dvScale > 1.0001;
 
         // An Ascent edge on an atmospheric body shows both directions: an up triangle with
         // the ascent dV, then a down triangle with the cheaper descent dV. Drawn as filled
         // triangles (DrawBadgeItem) rather than text arrows, so they read as real arrows
-        // while the source stays ASCII. Every other edge shows a single "~dV".
+        // while the source stays ASCII. The unit rides the descent (the last) of the pair.
+        // Unlike the stacked badges the dual badge cannot show base | margin side by side, so
+        // when a margin is set it is tinted amber instead, so the inflated value still reads
+        // as inflated (matching the legend) rather than passing for the canonical cost.
         bool dual = edge.DescentDv > 1.0 && Math.Abs(edge.DescentDv - edge.RouteDv) > 1.0;
-        string asc = "~" + Math.Round(edge.RouteDv).ToString("0", CultureInfo.InvariantCulture);
-        string desc = "~" + Math.Round(edge.DescentDv).ToString("0", CultureInfo.InvariantCulture);
-
-        float contentW;
-        float contentH;
         if (dual)
         {
+            string asc = "~" + DvNumber(edge.RouteDv * dvScale);
+            string desc = "~" + DvNumber(edge.DescentDv * dvScale) + " m/s";
             float2 sa = ImGui.CalcTextSize(asc);
             float2 sd = ImGui.CalcTextSize(desc);
-            contentW = ArrowW + ArrowGap + sa.X + DualSegGap + ArrowW + ArrowGap + sd.X;
-            contentH = Math.Max(sa.Y, sd.Y);
+            float dw = ArrowW + ArrowGap + sa.X + DualSegGap + ArrowW + ArrowGap + sd.X;
+            float dh = Math.Max(sa.Y, sd.Y);
+            float2 dMin = anchor + new float2(6f, (0f - dh) * 0.5f);
+            float2 dBgMin = dMin - pad;
+            float2 dBgMax = dMin + new float2(dw, dh) + pad;
+            return new DrawItem
+            {
+                Priority = priority,
+                Rect = new ScreenRect(dBgMin.X, dBgMin.Y, dBgMax.X - dBgMin.X, dBgMax.Y - dBgMin.Y),
+                IsBadge = true,
+                Dual = true,
+                Margined = paired,
+                AscText = asc,
+                DescText = desc,
+                TextPos = dMin,
+                BgMin = dBgMin,
+                BgMax = dBgMax,
+                Alpha = alpha
+            };
+        }
+
+        // Every other badge is a stack of rows. A transfer shows its injection (the departure
+        // / ejection burn, the pure escape onto the transfer) and its capture (the arrival
+        // burn) individually, then the coupled total - matching the panel breakdown. A ladder
+        // edge is just its single cost. The transfer-time toggle appends a dimmer coast-time
+        // line. Each dV row carries the canonical (no-margin) figure and, when a piloting
+        // margin is set, the inflated figure too: base grey on the left of the line, with-
+        // margin amber on the right, so both are visible at once. The unit rides the total.
+        var rows = new List<BadgeRow>(4);
+        if (edge.Class == EdgeClass.Transfer)
+        {
+            // Show the injection / capture split only when both legs are non-trivial;
+            // otherwise the total already equals the single leg and a detail row would just
+            // repeat it.
+            if (edge.InjectionDv >= 1.0 && edge.CaptureDv >= 1.0)
+            {
+                rows.Add(DvRow("inj ~", edge.InjectionDv, dvScale, paired, unit: false, main: false));
+                rows.Add(DvRow("cap ~", edge.CaptureDv, dvScale, paired, unit: false, main: false));
+            }
+            rows.Add(DvRow("~", edge.RouteDv, dvScale, paired, unit: true, main: true));
+            if (showTransferTimes && edge.TransferTimeSeconds > 0.0)
+                rows.Add(new BadgeRow(FormatTransferTime(edge.TransferTimeSeconds), null, false));
         }
         else
         {
-            float2 s = ImGui.CalcTextSize(asc);
-            contentW = s.X;
-            contentH = s.Y;
+            rows.Add(DvRow("~", edge.RouteDv, dvScale, paired, unit: true, main: true));
         }
 
-        var pad = new float2(BadgePadX, BadgePadY);
-        float2 contentMin = anchor + new float2(6f, (0f - contentH) * 0.5f);
-        float2 bgMin = contentMin - pad;
-        float2 bgMax = contentMin + new float2(contentW, contentH) + pad;
+        float lineH = ImGui.GetTextLineHeight();
+        float totalH = rows.Count * lineH;
+        float top = anchor.Y - totalH * 0.5f;
+        var lines = new List<BadgeLine>(rows.Count * 2);
+        float bgLeft;
+        float bgRight;
+
+        if (!paired)
+        {
+            // No margin: one left-aligned block sitting just right of the line, as before.
+            float left = anchor.X + 6f;
+            float maxW = 0f;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                BadgeRow r = rows[i];
+                lines.Add(new BadgeLine(r.BaseText, r.Main ? BadgeTextColor : BadgeSubText, new float2(left, top + i * lineH)));
+                maxW = Math.Max(maxW, ImGui.CalcTextSize(r.BaseText).X);
+            }
+            bgLeft = left;
+            bgRight = left + maxW;
+        }
+        else
+        {
+            // Margin set: base figures right-aligned to the left of the line, the with-margin
+            // figures left-aligned to the right of it, so the line splits the two readings.
+            const float gutter = 5f;
+            float baseRight = anchor.X - gutter;
+            float marginLeft = anchor.X + gutter;
+            float baseMaxW = 0f;
+            float marginMaxW = 0f;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                BadgeRow r = rows[i];
+                float y = top + i * lineH;
+                float bw = ImGui.CalcTextSize(r.BaseText).X;
+                baseMaxW = Math.Max(baseMaxW, bw);
+                lines.Add(new BadgeLine(r.BaseText, r.Main ? BadgeTextColor : BadgeSubText, new float2(baseRight - bw, y)));
+                if (r.MarginText != null)
+                {
+                    marginMaxW = Math.Max(marginMaxW, ImGui.CalcTextSize(r.MarginText).X);
+                    lines.Add(new BadgeLine(r.MarginText, r.Main ? BadgeMarginText : BadgeMarginSub, new float2(marginLeft, y)));
+                }
+            }
+            bgLeft = baseRight - baseMaxW;
+            bgRight = marginLeft + marginMaxW;
+        }
+
+        float2 bgMin = new float2(bgLeft - BadgePadX, top - BadgePadY);
+        float2 bgMax = new float2(bgRight + BadgePadX, top + totalH + BadgePadY);
 
         return new DrawItem
         {
-            Priority = BadgePriority(edge, routing, routeNodes),
+            Priority = priority,
             Rect = new ScreenRect(bgMin.X, bgMin.Y, bgMax.X - bgMin.X, bgMax.Y - bgMin.Y),
             IsBadge = true,
-            Dual = dual,
-            Text = asc,
-            AscText = asc,
-            DescText = desc,
-            TextPos = contentMin,
+            Dual = false,
+            Lines = lines,
+            TextPos = new float2(bgLeft, top),
             BgMin = bgMin,
             BgMax = bgMax,
-            Alpha = offRoute ? OffRouteAlpha : 1.0
+            Alpha = alpha
         };
+    }
+
+    // One dV row of a badge: the canonical figure ("inj ~3,617"), plus the with-margin figure
+    // ("~3,979") when a margin is set. unit appends " m/s" (used on the total / single value).
+    private static BadgeRow DvRow(string prefix, double baseDv, double dvScale, bool paired, bool unit, bool main)
+    {
+        string suffix = unit ? " m/s" : "";
+        string baseText = prefix + DvNumber(baseDv) + suffix;
+        string? marginText = paired ? "~" + DvNumber(baseDv * dvScale) + suffix : null;
+        return new BadgeRow(baseText, marginText, main);
+    }
+
+    // A rounded dV magnitude with thousands separators (no unit, no "~"), matching the panel
+    // breakdown's number style so the map and the panel read alike.
+    private static string DvNumber(double dv)
+    {
+        return Math.Round(dv).ToString("#,##0", CultureInfo.InvariantCulture);
+    }
+
+    // Compact coast-time string for the transfer-badge subline (minutes / hours / days /
+    // years), invariant so it stays ASCII regardless of locale.
+    private static string FormatTransferTime(double seconds)
+    {
+        if (seconds < 3600.0)
+            return string.Format(CultureInfo.InvariantCulture, "{0:0} min", seconds / 60.0);
+        if (seconds < 86400.0)
+            return string.Format(CultureInfo.InvariantCulture, "{0:0.0} h", seconds / 3600.0);
+        double days = seconds / 86400.0;
+        if (days < 365.25)
+            return string.Format(CultureInfo.InvariantCulture, "{0:0.0} d", days);
+        return string.Format(CultureInfo.InvariantCulture, "{0:0.0} yr", days / 365.25);
     }
 
     // Where the badge anchors on the edge. The badge sits on the segment that carries the
@@ -529,12 +671,20 @@ internal static class CanvasRenderer
     {
         float2 bgMin = item.BgMin;
         float2 bgMax = item.BgMax;
-        byte4 col = Fade(BadgeTextColor, item.Alpha);
+        // Used only by the dual (ascent/descent) badge: amber when a margin inflates it, so it
+        // reads as inflated like the with-margin figures on the stacked badges.
+        byte4 col = Fade(item.Margined ? BadgeMarginText : BadgeTextColor, item.Alpha);
         dl.AddRectFilled(in bgMin, in bgMax, Fade(BadgeBg, item.Alpha), 3f);
 
         if (!item.Dual)
         {
-            dl.AddText(in item.TextPos, col, item.Text);
+            // Each fragment is pre-positioned and pre-colored (base grey left, with-margin
+            // amber right); just blit them, applying the route-fade alpha.
+            foreach (BadgeLine ln in item.Lines!)
+            {
+                float2 pos = ln.Pos;
+                dl.AddText(in pos, Fade(ln.Color, item.Alpha), ln.Text);
+            }
             return;
         }
 
@@ -641,20 +791,60 @@ internal static class CanvasRenderer
     }
 
     // One label or badge competing for screen room. Rect is the screen-space box used
-    // for overlap; the draw fields carry what each kind needs to render.
+    // for overlap; the draw fields carry what each kind needs to render. A label uses Text;
+    // a dual (ascent/descent) badge uses AscText/DescText with drawn triangles; every other
+    // badge uses Lines (a stack: a transfer's injection / capture / total, a ladder's cost).
     private struct DrawItem
     {
         public int Priority;
         public ScreenRect Rect;
         public bool IsBadge;
         public bool Dual;
+        // A dual (ascent/descent) badge whose figures are inflated by a piloting margin; drawn
+        // amber so it reads as inflated. Non-dual badges show base | margin per row instead.
+        public bool Margined;
         public string Text;
         public string AscText;
         public string DescText;
+        public List<BadgeLine>? Lines;
         public float2 TextPos;
         public double Alpha;
         public float2 BgMin;
         public float2 BgMax;
+    }
+
+    // One positioned text fragment of a stacked (non-dual) badge: the resolved (pre-fade)
+    // color and the absolute screen position, so the draw pass just blits it. Layout (left/
+    // right alignment around the line, base vs margin coloring) is all decided in BuildBadgeItem.
+    private readonly struct BadgeLine
+    {
+        public readonly string Text;
+        public readonly byte4 Color;
+        public readonly float2 Pos;
+
+        public BadgeLine(string text, byte4 color, float2 pos)
+        {
+            Text = text;
+            Color = color;
+            Pos = pos;
+        }
+    }
+
+    // One dV row of a badge before positioning: the canonical figure, the optional with-margin
+    // figure (null when no margin), and whether it is the bright headline (total / single cost)
+    // or a dim detail line (a transfer's injection / capture, or the coast time).
+    private readonly struct BadgeRow
+    {
+        public readonly string BaseText;
+        public readonly string? MarginText;
+        public readonly bool Main;
+
+        public BadgeRow(string baseText, string? marginText, bool main)
+        {
+            BaseText = baseText;
+            MarginText = marginText;
+            Main = main;
+        }
     }
 
     private readonly struct ScreenRect

@@ -225,7 +225,16 @@ internal static class RouteAccumulator
         var orbiter = planet as IOrbiter;
         double r2 = orbiter != null ? OrbitalStates.TransferRadius(orbiter.Orbit) : cruiseRadius;
 
-        DeltaVCalculator.Hohmann(starMu, cruiseRadius, r2, out double depart, out double arriveVinf);
+        // The vehicle is already in a (bound) heliocentric orbit, so the cruise origin is the
+        // bound end. A comet target is matched at its true perihelion speed; a planet keeps
+        // the plain circular Hohmann arrive leg.
+        bool toOpen = orbiter != null && orbiter.Orbit.Eccentricity >= 1.0;
+        double depart;
+        double arriveVinf;
+        if (toOpen)
+            DeltaVCalculator.ConicTransfer(starMu, cruiseRadius, false, 0.0, r2, true, orbiter!.Orbit.Eccentricity, out depart, out arriveVinf);
+        else
+            DeltaVCalculator.Hohmann(starMu, cruiseRadius, r2, out depart, out arriveVinf);
         double transferTime = DeltaVCalculator.TransferTimeSeconds(starMu, cruiseRadius, r2);
         bool approx = orbiter == null || orbiter.Orbit.Eccentricity >= 1.0;
 

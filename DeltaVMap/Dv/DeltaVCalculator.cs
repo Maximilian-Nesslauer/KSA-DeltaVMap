@@ -86,6 +86,20 @@ internal static class DeltaVCalculator
         return mu / (rSurface * rSurface);
     }
 
+    // Fraction of the vacuum ascent a propulsive landing costs on a body with a usable
+    // atmosphere: drag sheds most of the orbital energy, so only a deorbit burn plus a
+    // terminal landing burn remain. The cost falls as the atmosphere thickens (a thick
+    // atmosphere like Venus brakes nearly to a stop; a thin one like Mars leaves a fast
+    // terminal descent). densityRatio is the body's sea-level density over the ISA standard.
+    // The floor keeps a final touchdown burn even in a very thick atmosphere; the cap bounds
+    // the wispiest atmospheres that barely brake. Checked offline against the stock bodies'
+    // own data: Earth landed ~510 m/s, Venus ~460, Mars ~775 (a thin atmosphere reading
+    // costlier than the thick ones, as it should). Tune here if an in-game figure reads wrong.
+    public static double AtmosphericLandingFraction(double densityRatio)
+    {
+        return Math.Clamp(0.06 + 0.004 / (densityRatio + 0.01), 0.06, 0.35);
+    }
+
     // Hohmann transfer between two circular radii around the same body.
     public static double CircularToCircular(double mu, double r1, double r2)
     {
@@ -110,6 +124,37 @@ internal static class DeltaVCalculator
         double sum = r1 + r2;
         dvDepart = Math.Abs(CircularSpeed(muHub, r1) * (Math.Sqrt(2.0 * r2 / sum) - 1.0));
         dvArrive = Math.Abs(CircularSpeed(muHub, r2) * (1.0 - Math.Sqrt(2.0 * r1 / sum)));
+    }
+
+    // Two-impulse transfer around a hub between two endpoints, one or both of which may be on
+    // an open (parabolic / hyperbolic) conic. This generalizes Hohmann: a bound endpoint moves
+    // at circular speed, but an open endpoint (a comet at its perihelion) moves far faster, at
+    // or above escape speed, so matching its velocity there costs much more than a circular
+    // Hohmann leg implies. rA / rB are the rendezvous radii (a bound body's effective radius,
+    // an open body's perihelion); openA / openB pick a velocity match against the true
+    // perihelion speed instead of the circular speed. With both ends bound this reduces
+    // exactly to Hohmann (verified in the offline tests), so the common path is unchanged and
+    // only comet transfers see the difference. Named apart from the TransferLegs struct (the
+    // route-level result of a transfer edge) to keep the two distinct where both appear.
+    public static void ConicTransfer(
+        double muHub,
+        double rA, bool openA, double eccentricityA,
+        double rB, bool openB, double eccentricityB,
+        out double dvA, out double dvB)
+    {
+        double aTransfer = (rA + rB) / 2.0;
+        double vBodyA = openA ? PeriapsisSpeed(muHub, rA, eccentricityA) : CircularSpeed(muHub, rA);
+        double vBodyB = openB ? PeriapsisSpeed(muHub, rB, eccentricityB) : CircularSpeed(muHub, rB);
+        dvA = Math.Abs(vBodyA - VisVivaSpeed(muHub, rA, aTransfer));
+        dvB = Math.Abs(vBodyB - VisVivaSpeed(muHub, rB, aTransfer));
+    }
+
+    // Speed at periapsis on any conic of eccentricity e: v = sqrt(mu * (1 + e) / r_peri). It
+    // reduces to the circular speed at e = 0, the escape speed at e = 1, and exceeds escape
+    // for a hyperbola, so it gives the true (fast) speed of a comet at its closest approach.
+    public static double PeriapsisSpeed(double mu, double rPeriapsis, double eccentricity)
+    {
+        return Math.Sqrt(mu * (1.0 + eccentricity) / rPeriapsis);
     }
 
     // Analytical patched-conic ejection (or capture, reversed) from a circular low
