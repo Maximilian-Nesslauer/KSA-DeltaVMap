@@ -16,12 +16,14 @@ internal enum TransferWindowMode
     SelectedRoute
 }
 
-// The collapsible "Transfer windows" section in the right-hand panel: a mode selector and a
-// per-sibling table of the optimal lead angle, the live current phase, the countdown to the
-// next window, the synodic period, the ejection angle and the transfer time. The soonest
-// window is highlighted; the full labeled detail (including relative inclination) is one
-// hover away on each row. It reuses the panel's time formatting and color vocabulary; the
-// clock-face diagram and the on-map markers are separate later steps.
+// The content of the "Transfer windows" overlay (the floating frame itself is positioned by
+// MapWindow, bottom-left in the canvas): a footer toggle (a real arrow) pinned at the bottom
+// so it does not move when the overlay expands upward, a mode selector, and a narrow per-
+// sibling list of the target, the countdown to the next window and the ejection angle. The
+// soonest window is highlighted; the rest of the figures (lead and current phase, synodic
+// period, transfer time, relative inclination) are one hover away on each row. It reuses the
+// panel's time formatting and color vocabulary; the clock-face diagram and the on-map markers
+// are separate later steps.
 internal static class TransferWindowRenderer
 {
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
@@ -34,37 +36,81 @@ internal static class TransferWindowRenderer
         ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersV | ImGuiTableFlags.SizingStretchProp
         | ImGuiTableFlags.ScrollY;
 
-    // Rows shown before the table scrolls; after the visibility filter a stock root has only a
-    // handful of siblings, so this only bites on a dense modded hub.
-    private const int MaxVisibleRows = 10;
+    private static readonly byte4 ArrowColor = new byte4(210, 220, 235, 255);
 
-    // Draw the section. Collapsed by default; the header shows the next window so it stays
-    // useful while closed.
-    public static void Draw(IReadOnlyList<TransferWindowInfo> windows, ref TransferWindowMode mode)
+    // Draw the overlay content inside the frame MapWindow positions. When expanded it draws the
+    // mode selector and the compact per-sibling list from the top; the toggle is drawn last and
+    // pinned to the bottom of the frame, so collapsing / expanding never moves it. Returns
+    // whether the toggle was clicked this frame, so the caller can flip the expanded state.
+    public static bool DrawOverlay(IReadOnlyList<TransferWindowInfo> windows, ref TransferWindowMode mode, bool expanded)
     {
-        // The text before "###" updates with the soonest window so the collapsed header still
-        // names the next one; the id after "###" is stable, so toggling state survives the
-        // changing label.
-        string header = CollapsedHeaderLabel(windows) + "###dvtransferwindows";
-        if (!ImGui.CollapsingHeader(header))
-            return;
-
-        DrawModeSelector(ref mode);
-
-        if (mode == TransferWindowMode.SelectedRoute)
-            ImGui.TextDisabled("Selected-route timing is coming in a later step. Showing Overview for now.");
-
-        if (windows.Count == 0)
+        if (expanded)
         {
-            ImGui.TextDisabled("No sibling destinations from this root.");
-            return;
+            DrawModeSelector(ref mode);
+
+            if (mode == TransferWindowMode.SelectedRoute)
+                ImGui.TextDisabled("Selected-route timing is coming in a later step. Showing Overview for now.");
+
+            if (windows.Count == 0)
+            {
+                ImGui.TextDisabled("No sibling destinations from this root.");
+            }
+            else
+            {
+                // Source (the root) named once; the "*" marker and the dropped figures are
+                // explained here and in the per-row hover.
+                ImGui.TextDisabled("From " + windows[0].SourceId + " - * eccentric; hover a row for detail");
+                float footerH = ImGui.GetFrameHeight() + 4f;
+                float listH = ImGui.GetContentRegionAvail().Y - footerH;
+                DrawCompactList(windows, listH);
+            }
+
+            // Push the toggle to the bottom edge so it stays put across collapse / expand.
+            float bottomY = ImGui.GetWindowHeight() - ImGui.GetFrameHeight() - 4f;
+            if (bottomY > ImGui.GetCursorPosY())
+                ImGui.SetCursorPosY(bottomY);
         }
 
-        // Every window shares the same source (the root); name it once for context.
-        ImGui.TextDisabled("From " + windows[0].SourceId + " to its siblings:");
-        ImGui.TextDisabled("Lead/Now/Eject in degrees; * = eccentric orbit; hover a row for detail.");
+        return DrawToggle(windows, expanded);
+    }
 
-        DrawTable(windows);
+    // The footer toggle: a full-width clickable row (stable id via "###" so the live label can
+    // change between press and release without dropping the click) with a real triangle arrow
+    // drawn at its left.
+    private static bool DrawToggle(IReadOnlyList<TransferWindowInfo> windows, bool expanded)
+    {
+        string label = "     " + CollapsedHeaderLabel(windows) + "###dvtwtoggle";
+        bool clicked = ImGui.Selectable(label, false, ImGuiSelectableFlags.None, (float2?)null);
+
+        float2 rmin = ImGui.GetItemRectMin();
+        float2 rmax = ImGui.GetItemRectMax();
+        DrawArrow(rmin, rmax, expanded);
+        return clicked;
+    }
+
+    // A small filled triangle at the left of the toggle row: pointing down when expanded
+    // (click to collapse) and up when collapsed (click to expand the frame upward).
+    private static void DrawArrow(float2 rmin, float2 rmax, bool expanded)
+    {
+        ImDrawListPtr dl = ImGui.GetWindowDrawList();
+        float cx = rmin.X + 9f;
+        float cy = (rmin.Y + rmax.Y) * 0.5f;
+        float s = MathF.Max(3f, (rmax.Y - rmin.Y) * 0.20f);
+
+        if (expanded)
+        {
+            var a = new float2(cx - s, cy - s * 0.6f);
+            var b = new float2(cx + s, cy - s * 0.6f);
+            var c = new float2(cx, cy + s * 0.8f);
+            dl.AddTriangleFilled(in a, in b, in c, ArrowColor);
+        }
+        else
+        {
+            var a = new float2(cx - s, cy + s * 0.6f);
+            var b = new float2(cx + s, cy + s * 0.6f);
+            var c = new float2(cx, cy - s * 0.8f);
+            dl.AddTriangleFilled(in a, in b, in c, ArrowColor);
+        }
     }
 
     private static void DrawModeSelector(ref TransferWindowMode mode)
@@ -76,42 +122,37 @@ internal static class TransferWindowRenderer
             mode = TransferWindowMode.SelectedRoute;
     }
 
-    private static void DrawTable(IReadOnlyList<TransferWindowInfo> windows)
+    private static void DrawCompactList(IReadOnlyList<TransferWindowInfo> windows, float height)
     {
         int soonest = SoonestIndex(windows);
 
-        // Bound the table height so a dense hub scrolls instead of pushing the panel off-screen:
-        // a header row plus up to MaxVisibleRows data rows.
-        int rows = Math.Min(windows.Count, MaxVisibleRows);
-        var outer = new float2(0f, (rows + 1) * ImGui.GetFrameHeight() + 4f);
+        // Fill the space between the header line and the footer toggle; the table scrolls
+        // internally when a dense hub has more siblings than fit.
+        var outer = new float2(0f, Math.Max(height, ImGui.GetFrameHeight() * 2f));
 
-        if (!ImGui.BeginTable("##dvtwtable"u8, 7, TableFlags, (float2?)outer))
+        if (!ImGui.BeginTable("##dvtwlist"u8, 3, TableFlags, (float2?)outer))
             return;
         try
         {
-            ImGui.TableSetupColumn("Target"u8, ImGuiTableColumnFlags.WidthStretch, 1.6f, 0);
-            ImGui.TableSetupColumn("Lead"u8, ImGuiTableColumnFlags.WidthStretch, 1.0f, 1);
-            ImGui.TableSetupColumn("Now"u8, ImGuiTableColumnFlags.WidthStretch, 1.0f, 2);
-            ImGui.TableSetupColumn("In"u8, ImGuiTableColumnFlags.WidthStretch, 1.2f, 3);
-            ImGui.TableSetupColumn("Every"u8, ImGuiTableColumnFlags.WidthStretch, 1.2f, 4);
-            ImGui.TableSetupColumn("Eject"u8, ImGuiTableColumnFlags.WidthStretch, 1.1f, 5);
-            ImGui.TableSetupColumn("ToF"u8, ImGuiTableColumnFlags.WidthStretch, 1.2f, 6);
+            ImGui.TableSetupColumn("Target"u8, ImGuiTableColumnFlags.WidthStretch, 1.7f, 0);
+            ImGui.TableSetupColumn("In"u8, ImGuiTableColumnFlags.WidthStretch, 1.1f, 1);
+            ImGui.TableSetupColumn("Eject"u8, ImGuiTableColumnFlags.WidthStretch, 0.9f, 2);
             // Keep the header visible while the body scrolls.
             ImGui.TableSetupScrollFreeze(0, 1);
             ImGui.TableHeadersRow();
 
             for (int i = 0; i < windows.Count; i++)
-                DrawRow(windows[i], i == soonest);
+                DrawCompactRow(windows[i], i == soonest);
         }
         finally
         {
             // Always close the table, even on an unexpected throw, so the table stack stays
-            // balanced for the rest of the panel.
+            // balanced for the rest of the overlay.
             ImGui.EndTable();
         }
     }
 
-    private static void DrawRow(TransferWindowInfo w, bool soonest)
+    private static void DrawCompactRow(TransferWindowInfo w, bool soonest)
     {
         ImGui.TableNextRow();
         if (soonest)
@@ -129,27 +170,16 @@ internal static class TransferWindowRenderer
         {
             ImGui.Text(name);
         }
-        // Hovering the name cell shows the full labeled detail for the pair.
+        // Hovering the name cell shows the full labeled detail for the pair (the figures the
+        // compact list drops to fit the narrow overlay).
         if (ImGui.IsItemHovered())
             ShowRowTooltip(w);
-
-        ImGui.TableNextColumn();
-        ImGui.Text(DegSigned(w.TargetPhaseAngle));
-
-        ImGui.TableNextColumn();
-        ImGui.Text(DegSigned(w.CurrentPhaseAngle));
 
         ImGui.TableNextColumn();
         ImGui.Text("~" + RoutePanelRenderer.FormatTime(w.TimeToWindowSeconds));
 
         ImGui.TableNextColumn();
-        ImGui.Text("~" + RoutePanelRenderer.FormatTime(w.SynodicPeriodSeconds));
-
-        ImGui.TableNextColumn();
         ImGui.Text(Deg(w.EjectionAngle) + (w.EjectionAhead ? " >" : " <"));
-
-        ImGui.TableNextColumn();
-        ImGui.Text("~" + RoutePanelRenderer.FormatTime(w.TransferTimeSeconds));
     }
 
     private static void ShowRowTooltip(TransferWindowInfo w)

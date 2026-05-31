@@ -51,6 +51,10 @@ internal sealed class MapWindow : ImGuiWindow
 
     private static readonly byte4 BackgroundColor = new byte4(17, 21, 28, 255);
 
+    // The Transfer-windows overlay fill: a touch lighter than the canvas, near-opaque so the
+    // map does not bleed through the text.
+    private static readonly byte4 TransferOverlayBg = new byte4(24, 30, 40, 238);
+
     private static MapWindow? _instance;
 
     // Per-system state (rebuilt when Universe.CurrentSystem changes).
@@ -124,11 +128,13 @@ internal sealed class MapWindow : ImGuiWindow
     private HashSet<string>? _routeNodeIds;
     private readonly RouteOptions _options = new();
 
-    // Transfer-window timing section, separate from the route / layout pipeline. The list is
+    // Transfer-window timing overlay, separate from the route / layout pipeline. The list is
     // rebuilt on root or visibility change (it mirrors the bodies the map shows); its two live
-    // fields (current phase, countdown) refresh every frame. The mode is the section's own.
+    // fields (current phase, countdown) refresh every frame. The overlay floats bottom-left in
+    // the canvas; its mode and collapsed / expanded state are its own.
     private readonly List<TransferWindowInfo> _windows = new();
     private TransferWindowMode _windowMode = TransferWindowMode.Overview;
+    private bool _windowsOverlayExpanded;
 
     // Display and visibility settings (visibility rebuilds the tree; the rest are display
     // only). Shared with the panel, which edits it, and read by the canvas renderer.
@@ -345,28 +351,72 @@ internal sealed class MapWindow : ImGuiWindow
             RebuildPreservingSelection(_currentRootId);
         else if (result.RouteChanged)
             RecomputeRoute();
-
-        DrawTransferWindowSection();
     }
 
-    // The transfer-window timing section, below the route summary. Guarded on its own so a
-    // throw here never reaches the render path or disturbs the rest of the panel; the renderer
-    // pairs its own BeginTable / EndTable so the table stack stays balanced regardless.
-    private void DrawTransferWindowSection()
+    // The Transfer-windows overlay, floated bottom-left inside the canvas (mirroring the top-
+    // left layout toggle): a collapsible frame over the map rather than a right-panel section.
+    // Collapsed it is a one-line footer toggle naming the next window; expanded it adds the mode
+    // selector and the compact per-sibling list above that toggle, full detail on hover. Returns
+    // whether the mouse is over it so the canvas suppresses hover / pan / select underneath.
+    // Submitted after the canvas button (which allowed overlap) so it takes its own clicks;
+    // guarded on its own so a throw never reaches the render path, and the child / table / style
+    // stacks stay balanced regardless.
+    private bool DrawTransferWindowOverlay(float2 origin, float2 size)
     {
+        // Refresh the two live fields every frame so the toggle's countdown ticks even while the
+        // overlay is collapsed. Cheap: a couple of Kepler reads per shown sibling, and the list
+        // is filtered to the bodies the map draws.
+        RefreshTransferWindows();
+
+        const float margin = 8f;
+        float width = Math.Clamp(size.X * 0.32f, 360f, 520f);
+        width = Math.Min(width, size.X - 2f * margin);
+        if (width < 220f || size.Y < 160f)
+            return false;
+
+        float f = ImGui.GetFrameHeight();
+        float collapsedH = f + 16f;
+
+        // Expanded height: room for the mode selector, the source line, the list and the footer
+        // toggle, capped so the frame does not climb into the top-left layout toggle. The list
+        // scrolls internally if it would exceed this.
+        int rows = Math.Min(_windows.Count, 10);
+        float wanted = (rows + 5) * f + 28f;
+        float maxH = Math.Min(size.Y - 2f * margin - 76f, 380f);
+        float height = _windowsOverlayExpanded ? Math.Clamp(wanted, collapsedH, Math.Max(collapsedH, maxH)) : collapsedH;
+
+        // Anchor the bottom-left corner near the canvas corner; the toggle is pinned at the
+        // bottom of the frame, so it stays put while the detail above it grows upward on expand.
+        var pos = new float2(origin.X + margin, origin.Y + size.Y - margin - height);
+        var max = pos + new float2(width, height);
+
+        ImGui.SetCursorScreenPos(pos);
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, TransferOverlayBg);
         try
         {
-            // Refresh the two live fields every frame the list is non-empty: the collapsed
-            // header shows a live countdown to the next window, so they must stay current even
-            // while the section is collapsed. The cost is ~2 Kepler reads per shown sibling (the
-            // list is filtered to the bodies the map draws), which is trivial.
-            RefreshTransferWindows();
-            TransferWindowRenderer.Draw(_windows, ref _windowMode);
+            ImGui.BeginChild("##dvtwoverlay"u8, new float2?(new float2(width, height)), ImGuiChildFlags.Borders);
+            try
+            {
+                if (TransferWindowRenderer.DrawOverlay(_windows, ref _windowMode, _windowsOverlayExpanded))
+                    _windowsOverlayExpanded = !_windowsOverlayExpanded;
+            }
+            finally
+            {
+                ImGui.EndChild();
+            }
         }
         catch (Exception ex)
         {
-            LogHelper.ErrorOnce("twindow-panel", $"[DvMap] Transfer window panel failed: {ex}");
+            LogHelper.ErrorOnce("twindow-overlay", $"[DvMap] Transfer window overlay failed: {ex}");
         }
+        finally
+        {
+            // Pop even if BeginChild threw, so the style-color stack stays balanced for the frame.
+            ImGui.PopStyleColor();
+        }
+
+        float2 mouse = ImGui.GetMousePos();
+        return mouse.X >= pos.X && mouse.X <= max.X && mouse.Y >= pos.Y && mouse.Y <= max.Y;
     }
 
     // Recompute the two live fields (current phase, countdown) for the current windows at the
@@ -719,7 +769,12 @@ internal sealed class MapWindow : ImGuiWindow
         // so a click on the combo never leaks through to a node or a pan.
         bool overOverlay = DrawLayoutOverlay(origin);
 
-        HandleInput(hovered && !overOverlay, active, clicked && !overOverlay, origin, in transform);
+        // The Transfer-windows overlay floats bottom-left and likewise claims the input under it,
+        // so neither a click on its rows nor a drag over it leaks through to a node or a pan.
+        bool overWindows = DrawTransferWindowOverlay(origin, size);
+
+        bool overAny = overOverlay || overWindows;
+        HandleInput(hovered && !overAny, active, clicked && !overAny, origin, in transform);
     }
 
     // Draw the on-canvas layout toggle: a small icon button in the top-left corner whose

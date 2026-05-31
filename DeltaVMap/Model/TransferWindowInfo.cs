@@ -5,9 +5,9 @@ namespace DeltaVMap.Model;
 // One departure-window result for an ordered pair: from the map root (Source) to one
 // sibling sharing the same hub (Target). Most fields are fixed for a given root because the
 // Keplerian orbits do not change, so they are computed once when the root changes; only the
-// current phase and the countdown move, and those two are refreshed every frame the section
-// is open. The list holds these and the builder mutates the live fields in place, so this is
-// a reference type rather than a value type.
+// current phase and the countdown move, and those two are refreshed every frame (so the
+// countdown ticks even while the overlay is collapsed). The list holds these and the builder
+// mutates the live fields in place, so this is a reference type rather than a value type.
 internal sealed class TransferWindowInfo
 {
     public required Astronomical Source { get; init; }
