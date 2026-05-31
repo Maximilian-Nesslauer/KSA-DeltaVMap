@@ -7,15 +7,6 @@ using DeltaVMap.Model;
 
 namespace DeltaVMap.Render;
 
-// Which pairs the transfer-window section shows. Overview lists every sibling of the root;
-// Selected route would focus the selected route's interplanetary leg. Overview is wired now;
-// the route-focused mode is scaffolded and lands in a later step.
-internal enum TransferWindowMode
-{
-    Overview,
-    SelectedRoute
-}
-
 // What the overlay reports back per frame: whether the footer toggle was clicked (so the
 // caller flips the expanded state), and which sibling a clock dot or list row is hovering (so
 // the caller can highlight that body on the map).
@@ -33,14 +24,14 @@ internal readonly struct OverlayResult
 
 // The content of the "Transfer windows" overlay (the floating frames are positioned by
 // MapWindow, bottom-left in the canvas). The list panel holds a footer toggle (a real arrow)
-// pinned at the bottom so it does not move when the overlay expands upward, a mode selector,
+// pinned at the bottom so it does not move when the overlay expands upward, a markers toggle,
 // and a narrow per-sibling list of the target, the countdown to the next window and the
 // ejection angle; its soonest window is highlighted and the rest of the figures are one hover
 // away on each row. The separate clock panel beside it holds the live polar clock-face: a top-
 // down schematic of the hub and its bodies at their current phase, where the soonest (or
 // hovered) window gets a required-position marker, an arc to the body's current position and
-// the countdown. It reuses the panel's time formatting and the per-system color palette; the
-// on-map markers are a separate later step.
+// the countdown. It reuses the panel's time formatting and the per-system color palette. The
+// list panel's markers toggle controls the on-map window badges, which the canvas draws.
 internal static class TransferWindowRenderer
 {
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
@@ -76,24 +67,21 @@ internal static class TransferWindowRenderer
     private const float DotPickRadius = 8f;
 
     // Draw the list panel's content inside the frame MapWindow positions. When expanded it draws
-    // the mode selector and the compact per-sibling list from the top; the toggle is drawn last
-    // and pinned to the bottom of the frame, so collapsing / expanding never moves it (the clock-
-    // face lives in its own panel beside this one). highlightBodyId is the body to emphasize
-    // (last frame's hover, so a hovered row also lights its clock dot); clockHidden is true when
-    // the clock panel could not fit beside this one, to note it. The return reports this frame's
-    // click and hovered body.
+    // the on-map markers toggle and the compact per-sibling list from the top; the toggle is
+    // drawn last and pinned to the bottom of the frame, so collapsing / expanding never moves it
+    // (the clock-face lives in its own panel beside this one). highlightBodyId is the body to
+    // emphasize (the hover, else the selected route's sibling); clockHidden is true when the
+    // clock panel could not fit beside this one, to note it. The return reports this frame's
+    // toggle click and hovered body.
     public static OverlayResult DrawOverlay(
-        IReadOnlyList<TransferWindowInfo> windows, ref TransferWindowMode mode, bool expanded,
+        IReadOnlyList<TransferWindowInfo> windows, ref bool showMarkers, bool expanded,
         string? highlightBodyId, bool clockHidden)
     {
         string? hover = null;
 
         if (expanded)
         {
-            DrawModeSelector(ref mode);
-
-            if (mode == TransferWindowMode.SelectedRoute)
-                ImGui.TextDisabled("Selected-route timing is coming in a later step. Showing Overview for now.");
+            ImGui.Checkbox("Show window markers on map"u8, ref showMarkers);
 
             if (windows.Count == 0)
             {
@@ -189,15 +177,6 @@ internal static class TransferWindowRenderer
             var c = new float2(cx, cy - s * 0.8f);
             dl.AddTriangleFilled(in a, in b, in c, ArrowColor);
         }
-    }
-
-    private static void DrawModeSelector(ref TransferWindowMode mode)
-    {
-        if (ImGui.RadioButton("Overview"u8, mode == TransferWindowMode.Overview))
-            mode = TransferWindowMode.Overview;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Selected route"u8, mode == TransferWindowMode.SelectedRoute))
-            mode = TransferWindowMode.SelectedRoute;
     }
 
     // The polar clock-face: a top-down schematic of the hub (center) and its bodies, each a dot

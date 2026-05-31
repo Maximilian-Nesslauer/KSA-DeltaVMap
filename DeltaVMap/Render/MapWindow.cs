@@ -131,13 +131,18 @@ internal sealed class MapWindow : ImGuiWindow
     // Transfer-window timing overlay, separate from the route / layout pipeline. The list is
     // rebuilt on root or visibility change (it mirrors the bodies the map shows); its two live
     // fields (current phase, countdown) refresh every frame. The overlay floats bottom-left in
-    // the canvas; its mode and collapsed / expanded state are its own.
+    // the canvas; its collapsed / expanded state is its own.
     private readonly List<TransferWindowInfo> _windows = new();
-    private TransferWindowMode _windowMode = TransferWindowMode.Overview;
     private bool _windowsOverlayExpanded;
     // The sibling whose clock dot or list row the overlay is hovering, or null. Drives the map
     // highlight, and is fed back in next frame so the hovered body also lights its clock dot.
     private string? _windowsHoverBodyId;
+    // Whether the inline transfer-window markers are drawn on the map (off by default; the toggle
+    // lives in the list panel). Dense roots are why it defaults off.
+    private bool _showWindowMarkers;
+    // The sibling on the selected route's interplanetary leg, or null. Biases the clock / list
+    // emphasis when nothing is hovered (emphasis order: hovered, else this, else soonest).
+    private string? _routeSiblingId;
 
     // Display and visibility settings (visibility rebuilds the tree; the rest are display
     // only). Shared with the panel, which edits it, and read by the canvas renderer.
@@ -360,17 +365,18 @@ internal sealed class MapWindow : ImGuiWindow
     // left layout toggle): a collapsible list panel plus, when expanded, a second square panel
     // beside it (to the right, falling back to above) holding the clock-face large enough to
     // read. Collapsed it is a one-line footer toggle naming the next window; expanded the
-    // list panel adds the mode selector and the compact per-sibling list above the toggle, and
+    // list panel adds the markers toggle and the compact per-sibling list above the toggle, and
     // the clock panel shows the polar diagram. Returns whether the mouse is over either panel so
     // the canvas suppresses hover / pan / select underneath. Submitted after the canvas button
     // (which allowed overlap) so it takes its own clicks; each panel is guarded on its own so a
     // throw never reaches the render path, and the child / table / style stacks stay balanced.
     private bool DrawTransferWindowOverlay(float2 origin, float2 size)
     {
-        // Refresh the two live fields every frame so the toggle's countdown ticks even while the
-        // overlay is collapsed. Cheap: a couple of Kepler reads per shown sibling, and the list
-        // is filtered to the bodies the map draws.
-        RefreshTransferWindows();
+        // The live fields were refreshed once in DrawCanvas (before the on-map markers). The
+        // emphasized sibling is the one being hovered, else the one the selected route departs
+        // to, else (in the renderer) the soonest. _routeSiblingId is cleared wherever the route
+        // is, so it is non-null only while a route to a sibling is selected.
+        string? emphasisHint = _windowsHoverBodyId ?? _routeSiblingId;
 
         const float margin = 8f;
         const float gap = 6f;
@@ -391,8 +397,8 @@ internal sealed class MapWindow : ImGuiWindow
         bool clockRight = _windowsOverlayExpanded && _windows.Count > 0
             && origin.X + margin + width + gap + clockSide <= origin.X + size.X - margin;
 
-        // List-panel content height: room for the mode selector, the source line, the list and the
-        // footer toggle. The list scrolls internally if it would exceed this.
+        // List-panel content height: room for the markers toggle, the source line, the list and
+        // the footer toggle. The list scrolls internally if it would exceed this.
         int rows = Math.Min(_windows.Count, 10);
         float contentH = Math.Clamp((rows + 5) * f + 28f, collapsedH, Math.Min(topRoom, 460f));
         float height = !_windowsOverlayExpanded ? collapsedH : (clockRight ? clockSide : contentH);
@@ -421,7 +427,7 @@ internal sealed class MapWindow : ImGuiWindow
             try
             {
                 OverlayResult result = TransferWindowRenderer.DrawOverlay(
-                    _windows, ref _windowMode, _windowsOverlayExpanded, _windowsHoverBodyId, clockHidden);
+                    _windows, ref _showWindowMarkers, _windowsOverlayExpanded, emphasisHint, clockHidden);
                 hover = result.HoverBodyId;
                 if (result.Toggled)
                     _windowsOverlayExpanded = !_windowsOverlayExpanded;
@@ -454,7 +460,7 @@ internal sealed class MapWindow : ImGuiWindow
                 ImGui.BeginChild("##dvtwclockpanel"u8, new float2?(new float2(clockSide, clockSide)), ImGuiChildFlags.Borders);
                 try
                 {
-                    string? ch = TransferWindowRenderer.DrawClockPanel(_windows, _palette, _windowsHoverBodyId);
+                    string? ch = TransferWindowRenderer.DrawClockPanel(_windows, _palette, emphasisHint);
                     if (ch != null)
                         hover = ch;
                 }
@@ -499,6 +505,25 @@ internal sealed class MapWindow : ImGuiWindow
         {
             LogHelper.WarnOnce("twindow-refresh", $"[DvMap] Transfer window refresh failed: {ex.Message}");
         }
+    }
+
+    // The on-map window markers, keyed by each sibling's representative node id (resolved via
+    // FindFocusNode) -> its countdown. Null when the toggle is off or there is nothing to mark,
+    // so the canvas skips the marker pass entirely.
+    private Dictionary<string, double>? BuildWindowMarkers()
+    {
+        if (!_showWindowMarkers || _windows.Count == 0)
+            return null;
+        var markers = new Dictionary<string, double>(_windows.Count);
+        foreach (TransferWindowInfo w in _windows)
+        {
+            if (!double.IsFinite(w.TimeToWindowSeconds))
+                continue;
+            LayoutNode? node = FindFocusNode(w.TargetId);
+            if (node != null)
+                markers[node.Id] = w.TimeToWindowSeconds;
+        }
+        return markers.Count > 0 ? markers : null;
     }
 
     // Rebuild the transfer-window list for a root. Called from RebuildAt after a successful
@@ -804,11 +829,16 @@ internal sealed class MapWindow : ImGuiWindow
 
         var transform = new CanvasTransform(origin, _zoom, _panX, _panY, layout.MinX, layout.MinY);
 
+        // Refresh the live transfer-window fields once per frame here, so both the on-map markers
+        // (below) and the overlay read the same fresh countdowns.
+        RefreshTransferWindows();
+        IReadOnlyDictionary<string, double>? windowMarkers = BuildWindowMarkers();
+
         dl.PushClipRect(in origin, in canvasMax, intersectWithCurrentClipRect: true);
         try
         {
             CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _focusNodeId, _routeNodeIds,
-                _options.IncludePlaneChange, _view.DvScale, _view.ShowTransferTimes, _view.ShowBodyMarkers);
+                _options.IncludePlaneChange, _view.DvScale, _view.ShowTransferTimes, _view.ShowBodyMarkers, windowMarkers);
         }
         finally
         {
@@ -1064,6 +1094,7 @@ internal sealed class MapWindow : ImGuiWindow
     {
         _routeSummary = null;
         _routeNodeIds = null;
+        _routeSiblingId = null;
 
         if (_selectedId == null || _visualTree == null || _graph == null || _lookup == null)
             return;
@@ -1093,6 +1124,25 @@ internal sealed class MapWindow : ImGuiWindow
             foreach (StateNode n in path.Nodes)
                 ids.Add(n.Id);
             _routeNodeIds = ids;
+
+            // The route's interplanetary leg: the first body on the ordered path past the origin
+            // that is a transfer-window sibling of the root. Used to bias the clock / list
+            // emphasis to the route's destination when nothing is hovered. Skipping the origin
+            // body covers the rare case where the route itself starts at a sibling (re-rooted
+            // away from the vehicle), so the emphasis lands on the destination, not the origin.
+            var siblingIds = new HashSet<string>(_windows.Count);
+            foreach (TransferWindowInfo w in _windows)
+                siblingIds.Add(w.TargetId);
+            foreach (StateNode n in path.Nodes)
+            {
+                if (n.Body.Id == origin.Body.Id)
+                    continue;
+                if (siblingIds.Contains(n.Body.Id))
+                {
+                    _routeSiblingId = n.Body.Id;
+                    break;
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -1305,6 +1355,7 @@ internal sealed class MapWindow : ImGuiWindow
             _selectedId = null;
             _routeSummary = null;
             _routeNodeIds = null;
+            _routeSiblingId = null;
             _built = false;
 
             // A new system invalidates the search state (the bodies are different).
@@ -1465,6 +1516,7 @@ internal sealed class MapWindow : ImGuiWindow
                 _selectedId = null;
                 _routeSummary = null;
                 _routeNodeIds = null;
+                _routeSiblingId = null;
                 _focusNodeId = null;
                 _hoverId = null;
                 _needsFit = false;
@@ -1488,6 +1540,7 @@ internal sealed class MapWindow : ImGuiWindow
             _selectedId = null;
             _routeSummary = null;
             _routeNodeIds = null;
+            _routeSiblingId = null;
             _needsFit = true;
             _built = true;
 

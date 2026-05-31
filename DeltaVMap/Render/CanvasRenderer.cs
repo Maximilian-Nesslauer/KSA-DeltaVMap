@@ -47,7 +47,7 @@ internal readonly struct CanvasTransform
 // turns that into lines, symbols, badges and labels. The StateNode lookup gives each
 // layout node its game body for the per-system color.
 //
-// Four passes per frame:
+// Five passes per frame:
 //  1. Edge polylines (off-route faded, then the route heavy and white on top).
 //  2. Node dots, their state-kind glyphs, and the atmosphere/ring node markers.
 //  3. Edge markers: aerobrake triangles, plus plane-change numbers when that toggle is on.
@@ -61,6 +61,8 @@ internal readonly struct CanvasTransform
 //     ranked ahead of plain dV badges, so the map reads as a labelled diagram first. A
 //     label is never culled by its own dot (only foreign dots), or zooming out far enough
 //     that the fixed-size dot swallows the scaled-in label gap would hide every name.
+//  5. Transfer-window markers (only when the toggle is on): an amber clock badge near each
+//     sibling with the countdown to its next window, on its own light cull pass.
 internal static class CanvasRenderer
 {
     // How far off-route geometry fades when a route is highlighted.
@@ -112,6 +114,11 @@ internal static class CanvasRenderer
     private static readonly byte4 FocusRing = new byte4(96, 226, 232, 255);
     private static readonly byte4 RouteLine = new byte4(255, 255, 255, 255);
 
+    // The transfer-window markers ("Show window markers" overlay): an amber clock badge near
+    // each sibling, distinct from the grey dV badges.
+    private static readonly byte4 WindowBadgeBg = new byte4(20, 24, 32, 215);
+    private static readonly byte4 WindowBadgeText = new byte4(240, 200, 90, 255);
+
     public static void Draw(
         ImDrawListPtr dl,
         LayoutResult layout,
@@ -124,12 +131,15 @@ internal static class CanvasRenderer
         bool showPlaneChange,
         double dvScale,
         bool showTransferTimes,
-        bool showBodyMarkers)
+        bool showBodyMarkers,
+        IReadOnlyDictionary<string, double>? windowMarkers)
     {
         DrawEdgeLines(dl, layout, lookup, palette, in t, routeNodes);
         DrawNodeDots(dl, layout, lookup, palette, in t, hoverId, focusId, routeNodes, showBodyMarkers);
         DrawEdgeMarkers(dl, layout, lookup, palette, in t, routeNodes, showPlaneChange, dvScale, showBodyMarkers);
         DrawLabelsAndBadges(dl, layout, lookup, palette, in t, hoverId, routeNodes, dvScale, showTransferTimes);
+        if (windowMarkers != null)
+            DrawWindowMarkers(dl, layout, in t, windowMarkers);
     }
 
     private static void DrawEdgeLines(
@@ -651,6 +661,82 @@ internal static class CanvasRenderer
         if (days < 365.25)
             return string.Format(CultureInfo.InvariantCulture, "{0:0.0} d", days);
         return string.Format(CultureInfo.InvariantCulture, "{0:0.0} yr", days / 365.25);
+    }
+
+    // The transfer-window markers: a small amber clock badge near each sibling that has a
+    // window, showing the countdown to its next departure window. Keyed by the sibling's
+    // representative node id (resolved in MapWindow). Gated by the same zoom floor as the dV
+    // badges, drawn soonest-first and skipped where it would overlap an already-placed marker
+    // (its own light cull pass), so a dense root does not smear. Sits up-left of the dot, clear
+    // of the dV / transfer-time badges on the right. Drawn at full strength even when a route
+    // dims the rest of the map: the timing layer is orthogonal to the chosen route.
+    private static void DrawWindowMarkers(
+        ImDrawListPtr dl, LayoutResult layout, in CanvasTransform t,
+        IReadOnlyDictionary<string, double> markers)
+    {
+        if (t.Zoom < BadgeMinZoom)
+            return;
+
+        // markers only ever holds finite countdowns (the builder filters non-finite), so the
+        // entries here need no further guard.
+        var ordered = new List<(LayoutNode Node, double Secs)>();
+        foreach (LayoutNode node in layout.Tree.Nodes)
+        {
+            if (markers.TryGetValue(node.Id, out double secs))
+                ordered.Add((node, secs));
+        }
+        ordered.Sort(static (a, b) => a.Secs.CompareTo(b.Secs));
+
+        var placed = new ScreenHash(48.0);
+        foreach ((LayoutNode node, double secs) in ordered)
+        {
+            float2 p = t.ToScreen(node.SnappedX, node.SnappedY);
+            float r = (float)node.DotRadius;
+            string text = "~" + FormatWindowTime(secs);
+            float2 ts = ImGui.CalcTextSize(text);
+            float clockR = MathF.Max(4f, ts.Y * 0.42f);
+            const float gap = 4f;
+            float w = clockR * 2f + gap + ts.X;
+
+            var pos = new float2(p.X - r - 6f - w, p.Y - r - 6f - ts.Y);
+            float2 bgMin = pos - new float2(BadgePadX, BadgePadY);
+            float2 bgMax = pos + new float2(w, ts.Y) + new float2(BadgePadX, BadgePadY);
+            var rect = new ScreenRect(bgMin.X, bgMin.Y, bgMax.X - bgMin.X, bgMax.Y - bgMin.Y);
+            if (placed.AnyOverlap(rect))
+                continue;
+            placed.Insert(rect);
+
+            dl.AddRectFilled(in bgMin, in bgMax, WindowBadgeBg, 3f);
+
+            // A tiny clock glyph: a ring with an hour and a minute hand.
+            var c = new float2(pos.X + clockR, pos.Y + ts.Y * 0.5f);
+            dl.AddCircle(in c, clockR, WindowBadgeText, 12, 1.4f);
+            var hand1 = new float2(c.X, c.Y - clockR * 0.6f);
+            var hand2 = new float2(c.X + clockR * 0.55f, c.Y + clockR * 0.1f);
+            dl.AddLine(in c, in hand1, WindowBadgeText, 1.3f);
+            dl.AddLine(in c, in hand2, WindowBadgeText, 1.3f);
+
+            var tp = new float2(pos.X + clockR * 2f + gap, pos.Y);
+            float2 sh = tp + new float2(1f, 1f);
+            dl.AddText(in sh, LabelShadow, text);
+            dl.AddText(in tp, WindowBadgeText, text);
+        }
+    }
+
+    // Compact countdown for the window marker: minutes, hours, days, then years, so an imminent
+    // sub-day window does not collapse to "0d" (and stays consistent with the overlay, which
+    // shows the same countdown in min / h). No spaces, to keep the badge small; invariant so it
+    // stays ASCII regardless of locale.
+    private static string FormatWindowTime(double seconds)
+    {
+        if (seconds < 3600.0)
+            return string.Format(CultureInfo.InvariantCulture, "{0:0}m", seconds / 60.0);
+        if (seconds < 86400.0)
+            return string.Format(CultureInfo.InvariantCulture, "{0:0}h", seconds / 3600.0);
+        double days = seconds / 86400.0;
+        if (days < 365.25)
+            return string.Format(CultureInfo.InvariantCulture, "{0:0}d", days);
+        return string.Format(CultureInfo.InvariantCulture, "{0:0.0}yr", days / 365.25);
     }
 
     // Where the badge anchors on the edge. The badge sits on the segment that carries the
