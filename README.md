@@ -6,6 +6,8 @@ An interactive, auto-generated delta-v subway map and transfer-window planner fo
 
 This mod is written against the [StarMap loader](https://github.com/StarMapLoader/StarMap).
 
+Validated against KSA build version 2026.5.12.4510.
+
 ## What it does
 
 The map tells you "where can I go from where I am and for how much delta-v".
@@ -45,7 +47,7 @@ A separate, opt-in layer draws the same data in the game's 3D map mode: the opti
 ## Installation
 
 1. Install [StarMap](https://github.com/StarMapLoader/StarMap).
-2. Download the latest release from the [Releases](https://github.com/Maximilian-Nesslauer/KSA-DeltaVMap/releases) tab.
+2. Download the latest release from the [GitHub Releases](https://github.com/Maximilian-Nesslauer/KSA-DeltaVMap/releases) tab or from [SpaceDock](https://spacedock.info/mod/4294/DeltaVMap).
 3. Extract into `Documents\My Games\Kitten Space Agency\mods\DeltaVMap\`.
 4. The game auto-discovers new mods and prompts you to enable them. Alternatively, add to `Documents\My Games\Kitten Space Agency\manifest.toml`:
 
@@ -76,9 +78,13 @@ Required only to build the mod from source. Targets **.NET 10**.
 
 - Known conflicts: none
 
+## Community
+
+Thread on the KSA forums: https://forums.ahwoo.com/threads/deltavmap.978/
+
 ## Check out my other mods
 
-- [AdvancedFlightComputer](https://github.com/Maximilian-Nesslauer/KSA-AdvancedFlightComputer) - set periapsis / set apoapsis / match or set inclination quick-tools in the Transfer Planner, plus hyperbolic-target support ([forum thread](https://forums.ahwoo.com/threads/advanced-flight-computer.783/))
+- [AdvancedFlightComputer](https://github.com/Maximilian-Nesslauer/KSA-AdvancedFlightComputer) - Transfer Planner quick-tools (set Pe/Ap, match/set inclination, circularize), multi-pass burn splitting, and hyperbolic-target support (Oumuamua, 2I/Borisov, 3I/ATLAS) ([forum thread](https://forums.ahwoo.com/threads/advanced-flight-computer.783/))
+- [AutoRemoveFinishedBurns](https://github.com/Maximilian-Nesslauer/KSA-AutoRemoveFinishedBurns) - automatically removes finished auto-burns from the burn plan ([forum thread](https://forums.ahwoo.com/threads/autoremovefinishedburns.928/))
 - [AutoStage](https://github.com/Maximilian-Nesslauer/KSA-AutoStage) - automatic staging during auto-burns and manual flight, with configurable ignition delays ([forum thread](https://forums.ahwoo.com/threads/autostage.891/))
 - [StageInfo](https://github.com/Maximilian-Nesslauer/KSA-StageInfo) - extra info in the stock Stage/Sequence window: per-stage delta V, TWR, burn time, fuel pool, RCS, and more ([forum thread](https://forums.ahwoo.com/threads/stageinfo.905/))
-- [AutoRemoveFinishedBurns](https://github.com/Maximilian-Nesslauer/KSA-AutoRemoveFinishedBurns) - auto-removes completed auto-burns from the burn plan ([forum thread](https://forums.ahwoo.com/threads/autoremovefinishedburns.928/))
