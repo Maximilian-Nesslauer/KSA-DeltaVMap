@@ -124,6 +124,12 @@ internal sealed class MapWindow : ImGuiWindow
     private HashSet<string>? _routeNodeIds;
     private readonly RouteOptions _options = new();
 
+    // Transfer-window timing section, separate from the route / layout pipeline. The list is
+    // rebuilt on root or visibility change (it mirrors the bodies the map shows); its two live
+    // fields (current phase, countdown) refresh every frame. The mode is the section's own.
+    private readonly List<TransferWindowInfo> _windows = new();
+    private TransferWindowMode _windowMode = TransferWindowMode.Overview;
+
     // Display and visibility settings (visibility rebuilds the tree; the rest are display
     // only). Shared with the panel, which edits it, and read by the canvas renderer.
     private readonly ViewOptions _view = new();
@@ -339,6 +345,83 @@ internal sealed class MapWindow : ImGuiWindow
             RebuildPreservingSelection(_currentRootId);
         else if (result.RouteChanged)
             RecomputeRoute();
+
+        DrawTransferWindowSection();
+    }
+
+    // The transfer-window timing section, below the route summary. Guarded on its own so a
+    // throw here never reaches the render path or disturbs the rest of the panel; the renderer
+    // pairs its own BeginTable / EndTable so the table stack stays balanced regardless.
+    private void DrawTransferWindowSection()
+    {
+        try
+        {
+            // Refresh the two live fields every frame the list is non-empty: the collapsed
+            // header shows a live countdown to the next window, so they must stay current even
+            // while the section is collapsed. The cost is ~2 Kepler reads per shown sibling (the
+            // list is filtered to the bodies the map draws), which is trivial.
+            RefreshTransferWindows();
+            TransferWindowRenderer.Draw(_windows, ref _windowMode);
+        }
+        catch (Exception ex)
+        {
+            LogHelper.ErrorOnce("twindow-panel", $"[DvMap] Transfer window panel failed: {ex}");
+        }
+    }
+
+    // Recompute the two live fields (current phase, countdown) for the current windows at the
+    // current sim time. Cheap (~2 Kepler reads per sibling); a failed time read leaves the
+    // last values in place rather than throwing into the panel.
+    private void RefreshTransferWindows()
+    {
+        if (_windows.Count == 0)
+            return;
+        try
+        {
+            TransferWindows.RefreshAll(_windows, Universe.GetElapsedSimTime());
+        }
+        catch (Exception ex)
+        {
+            LogHelper.WarnOnce("twindow-refresh", $"[DvMap] Transfer window refresh failed: {ex.Message}");
+        }
+    }
+
+    // Rebuild the transfer-window list for a root. Called from RebuildAt after a successful
+    // build. The list mirrors the bodies the map shows as their own lane, so it reads that set
+    // off the freshly built visual tree; it is therefore rebuilt on visibility changes too.
+    // Self-clearing, so it is safe to call on its own.
+    private void RebuildTransferWindows(PhysicalNode root)
+    {
+        _windows.Clear();
+        if (_cache == null || _visualTree == null)
+            return;
+        try
+        {
+            HashSet<string> shown = CollectShownBodyIds();
+            List<TransferWindowInfo> built = TransferWindows.Build(_cache, root, shown, Universe.GetElapsedSimTime());
+            _windows.AddRange(built);
+        }
+        catch (Exception ex)
+        {
+            LogHelper.ErrorOnce("twindow-build-" + root.Id, $"[DvMap] Transfer window build failed for '{root.Id}': {ex}");
+        }
+    }
+
+    // The body Ids the map currently shows as their own lane (every rung node), excluding the
+    // hub buses and the aggregated minor-body group. The transfer-window table filters its
+    // siblings to this set so it lists exactly what the canvas does.
+    private HashSet<string> CollectShownBodyIds()
+    {
+        var ids = new HashSet<string>();
+        if (_visualTree == null)
+            return ids;
+        foreach (StateNode n in _visualTree.Nodes)
+        {
+            if (n.Kind == StateKind.Hub || n.Kind == StateKind.MinorGroup)
+                continue;
+            ids.Add(n.Body.Id);
+        }
+        return ids;
     }
 
     // The find / isolate section at the top of the panel: a body-name search over the full
@@ -1225,6 +1308,10 @@ internal sealed class MapWindow : ImGuiWindow
         // claim "too many bodies" when the real cause was a build failure.
         _oversizedCount = 0;
 
+        // Drop the old transfer windows up front so a refused or failed build leaves the
+        // section empty rather than showing stale entries; a successful build repopulates it.
+        _windows.Clear();
+
         try
         {
             // Isolate only takes effect once a body has been revealed (searched). With nothing
@@ -1283,6 +1370,10 @@ internal sealed class MapWindow : ImGuiWindow
             // can shift with detail, so re-resolve it from the body (no re-center here).
             if (_focusBodyId != null)
                 _focusNodeId = FindFocusNode(_focusBodyId)?.Id;
+
+            // Rebuild the transfer-window list for the new root. It mirrors the bodies the map
+            // shows as their own lane, so it runs here, after the visual tree is built.
+            RebuildTransferWindows(node);
         }
         catch (Exception ex)
         {

@@ -272,16 +272,21 @@ internal static class RoutePanelRenderer
         return Math.Round(dv).ToString("#,##0", Inv);
     }
 
-    // Auto-scaled transfer time: minutes, hours, days, then years.
-    private static string FormatTime(double seconds)
+    // Auto-scaled transfer time: minutes, hours, days, then years. Shared with the transfer-
+    // window section so both format durations identically. Formats with the invariant culture
+    // (a decimal point, never a locale comma) to match the rest of the map's numbers, and
+    // returns "-" for a non-finite duration (a degenerate window with no recurrence).
+    internal static string FormatTime(double seconds)
     {
+        if (!double.IsFinite(seconds))
+            return "-";
         if (seconds < 3600.0)
-            return $"{seconds / 60.0:0} min";
+            return (seconds / 60.0).ToString("0", Inv) + " min";
         if (seconds < 86400.0)
-            return $"{seconds / 3600.0:0.0} h";
+            return (seconds / 3600.0).ToString("0.0", Inv) + " h";
         double days = seconds / 86400.0;
         if (days < 365.25)
-            return $"{days:0.0} d";
-        return $"{days / 365.25:0.00} yr";
+            return days.ToString("0.0", Inv) + " d";
+        return (days / 365.25).ToString("0.00", Inv) + " yr";
     }
 }
