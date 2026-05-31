@@ -135,6 +135,9 @@ internal sealed class MapWindow : ImGuiWindow
     private readonly List<TransferWindowInfo> _windows = new();
     private TransferWindowMode _windowMode = TransferWindowMode.Overview;
     private bool _windowsOverlayExpanded;
+    // The sibling whose clock dot or list row the overlay is hovering, or null. Drives the map
+    // highlight, and is fed back in next frame so the hovered body also lights its clock dot.
+    private string? _windowsHoverBodyId;
 
     // Display and visibility settings (visibility rebuilds the tree; the rest are display
     // only). Shared with the panel, which edits it, and read by the canvas renderer.
@@ -354,13 +357,14 @@ internal sealed class MapWindow : ImGuiWindow
     }
 
     // The Transfer-windows overlay, floated bottom-left inside the canvas (mirroring the top-
-    // left layout toggle): a collapsible frame over the map rather than a right-panel section.
-    // Collapsed it is a one-line footer toggle naming the next window; expanded it adds the mode
-    // selector and the compact per-sibling list above that toggle, full detail on hover. Returns
-    // whether the mouse is over it so the canvas suppresses hover / pan / select underneath.
-    // Submitted after the canvas button (which allowed overlap) so it takes its own clicks;
-    // guarded on its own so a throw never reaches the render path, and the child / table / style
-    // stacks stay balanced regardless.
+    // left layout toggle): a collapsible list panel plus, when expanded, a second square panel
+    // beside it (to the right, falling back to above) holding the clock-face large enough to
+    // read. Collapsed it is a one-line footer toggle naming the next window; expanded the
+    // list panel adds the mode selector and the compact per-sibling list above the toggle, and
+    // the clock panel shows the polar diagram. Returns whether the mouse is over either panel so
+    // the canvas suppresses hover / pan / select underneath. Submitted after the canvas button
+    // (which allowed overlap) so it takes its own clicks; each panel is guarded on its own so a
+    // throw never reaches the render path, and the child / table / style stacks stay balanced.
     private bool DrawTransferWindowOverlay(float2 origin, float2 size)
     {
         // Refresh the two live fields every frame so the toggle's countdown ticks even while the
@@ -369,35 +373,57 @@ internal sealed class MapWindow : ImGuiWindow
         RefreshTransferWindows();
 
         const float margin = 8f;
-        float width = Math.Clamp(size.X * 0.32f, 360f, 520f);
+        const float gap = 6f;
+        float width = Math.Clamp(size.X * 0.30f, 340f, 480f);
         width = Math.Min(width, size.X - 2f * margin);
         if (width < 220f || size.Y < 160f)
             return false;
 
         float f = ImGui.GetFrameHeight();
         float collapsedH = f + 16f;
+        float topRoom = size.Y - 2f * margin - 76f;
 
-        // Expanded height: room for the mode selector, the source line, the list and the footer
-        // toggle, capped so the frame does not climb into the top-left layout toggle. The list
-        // scrolls internally if it would exceed this.
+        // The clock panel is a square as large as the canvas height allows. When it fits to the
+        // right of the list, the list panel is grown to the same height so the two read as a
+        // matched pair (bottom-aligned); otherwise the list keeps its content height and the
+        // clock stacks above it (or is dropped on a tiny canvas).
+        float clockSide = Math.Clamp(Math.Min(topRoom, 460f), 200f, 460f);
+        bool clockRight = _windowsOverlayExpanded && _windows.Count > 0
+            && origin.X + margin + width + gap + clockSide <= origin.X + size.X - margin;
+
+        // List-panel content height: room for the mode selector, the source line, the list and the
+        // footer toggle. The list scrolls internally if it would exceed this.
         int rows = Math.Min(_windows.Count, 10);
-        float wanted = (rows + 5) * f + 28f;
-        float maxH = Math.Min(size.Y - 2f * margin - 76f, 380f);
-        float height = _windowsOverlayExpanded ? Math.Clamp(wanted, collapsedH, Math.Max(collapsedH, maxH)) : collapsedH;
+        float contentH = Math.Clamp((rows + 5) * f + 28f, collapsedH, Math.Min(topRoom, 460f));
+        float height = !_windowsOverlayExpanded ? collapsedH : (clockRight ? clockSide : contentH);
 
-        // Anchor the bottom-left corner near the canvas corner; the toggle is pinned at the
-        // bottom of the frame, so it stays put while the detail above it grows upward on expand.
-        var pos = new float2(origin.X + margin, origin.Y + size.Y - margin - height);
-        var max = pos + new float2(width, height);
+        // Anchor the list panel's bottom-left near the canvas corner; the toggle is pinned at its
+        // bottom, so it stays put while the detail above grows upward on expand.
+        var listPos = new float2(origin.X + margin, origin.Y + size.Y - margin - height);
 
-        ImGui.SetCursorScreenPos(pos);
+        float2? clockPos = null;
+        if (_windowsOverlayExpanded && _windows.Count > 0)
+        {
+            if (clockRight)
+                clockPos = new float2(listPos.X + width + gap, origin.Y + size.Y - margin - clockSide);
+            else if (listPos.Y - gap - clockSide >= origin.Y + margin)
+                clockPos = new float2(listPos.X, listPos.Y - gap - clockSide);
+        }
+        bool clockHidden = _windowsOverlayExpanded && _windows.Count > 0 && clockPos == null;
+
+        string? hover = null;
+
+        ImGui.SetCursorScreenPos(listPos);
         ImGui.PushStyleColor(ImGuiCol.ChildBg, TransferOverlayBg);
         try
         {
-            ImGui.BeginChild("##dvtwoverlay"u8, new float2?(new float2(width, height)), ImGuiChildFlags.Borders);
+            ImGui.BeginChild("##dvtwlistpanel"u8, new float2?(new float2(width, height)), ImGuiChildFlags.Borders);
             try
             {
-                if (TransferWindowRenderer.DrawOverlay(_windows, ref _windowMode, _windowsOverlayExpanded))
+                OverlayResult result = TransferWindowRenderer.DrawOverlay(
+                    _windows, ref _windowMode, _windowsOverlayExpanded, _windowsHoverBodyId, clockHidden);
+                hover = result.HoverBodyId;
+                if (result.Toggled)
                     _windowsOverlayExpanded = !_windowsOverlayExpanded;
             }
             finally
@@ -415,8 +441,47 @@ internal sealed class MapWindow : ImGuiWindow
             ImGui.PopStyleColor();
         }
 
-        float2 mouse = ImGui.GetMousePos();
-        return mouse.X >= pos.X && mouse.X <= max.X && mouse.Y >= pos.Y && mouse.Y <= max.Y;
+        bool overList = MouseInRect(listPos, width, height);
+        bool overClock = false;
+
+        // The clock panel (placement decided above), a square frame holding the diagram.
+        if (clockPos is float2 cp)
+        {
+            ImGui.SetCursorScreenPos(cp);
+            ImGui.PushStyleColor(ImGuiCol.ChildBg, TransferOverlayBg);
+            try
+            {
+                ImGui.BeginChild("##dvtwclockpanel"u8, new float2?(new float2(clockSide, clockSide)), ImGuiChildFlags.Borders);
+                try
+                {
+                    string? ch = TransferWindowRenderer.DrawClockPanel(_windows, _palette, _windowsHoverBodyId);
+                    if (ch != null)
+                        hover = ch;
+                }
+                finally
+                {
+                    ImGui.EndChild();
+                }
+            }
+            catch (Exception ex)
+            {
+                LogHelper.ErrorOnce("twindow-clock", $"[DvMap] Transfer window clock failed: {ex}");
+            }
+            finally
+            {
+                ImGui.PopStyleColor();
+            }
+            overClock = MouseInRect(cp, clockSide, clockSide);
+        }
+
+        _windowsHoverBodyId = hover;
+        return overList || overClock;
+    }
+
+    private static bool MouseInRect(float2 pos, float w, float h)
+    {
+        float2 m = ImGui.GetMousePos();
+        return m.X >= pos.X && m.X <= pos.X + w && m.Y >= pos.Y && m.Y <= pos.Y + h;
     }
 
     // Recompute the two live fields (current phase, countdown) for the current windows at the
@@ -775,6 +840,12 @@ internal sealed class MapWindow : ImGuiWindow
 
         bool overAny = overOverlay || overWindows;
         HandleInput(hovered && !overAny, active, clicked && !overAny, origin, in transform);
+
+        // A clock dot or list row hovered in the overlay highlights that sibling's node on the
+        // map, reusing the canvas hover glow. Applied after HandleInput, which clears _hoverId
+        // while the cursor is over the overlay.
+        if (_windowsHoverBodyId != null)
+            _hoverId = FindFocusNode(_windowsHoverBodyId)?.Id;
     }
 
     // Draw the on-canvas layout toggle: a small icon button in the top-left corner whose
@@ -807,8 +878,7 @@ internal sealed class MapWindow : ImGuiWindow
         if (clicked)
             SetLayoutMode(NextLayoutMode(_layoutMode));
 
-        float2 mouse = ImGui.GetMousePos();
-        return mouse.X >= min.X && mouse.X <= max.X && mouse.Y >= min.Y && mouse.Y <= max.Y;
+        return MouseInRect(min, max.X - min.X, max.Y - min.Y);
     }
 
     // Draw the toggle's frame plus a tiny glyph of the active layout. CumulativeDown is a

@@ -35,9 +35,20 @@ internal sealed class TransferWindowInfo
     // shown on top of the whole map's standing "~" estimate marker.
     public required bool IsApproximate { get; init; }
 
+    // Semi-major axes (m) of the two orbits around the hub, used by the clock-face to place
+    // each body on a log-scaled ring.
+    public required double SourceSemiMajorAxis { get; init; }
+    public required double TargetSemiMajorAxis { get; init; }
+
     // Live per frame.
     public double CurrentPhaseAngle { get; set; }
     public double TimeToWindowSeconds { get; set; }
+
+    // Absolute phase angles (radians) of the two bodies around the hub at the refreshed time
+    // (each body's GetPhaseAngle), used to place the clock-face dots. CurrentPhaseAngle is the
+    // wrapped difference of these (prograde; the retrograde branch measures it the other way).
+    public double SourcePhaseAngleNow { get; set; }
+    public double TargetPhaseAngleNow { get; set; }
 
     public string SourceId => Source.Id;
     public string TargetId => Target.Id;

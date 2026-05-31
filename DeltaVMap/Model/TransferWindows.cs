@@ -131,7 +131,9 @@ internal static class TransferWindows
                 EjectionAhead = ejectionAhead,
                 Retrograde = retrograde,
                 RelativeInclination = relInc,
-                IsApproximate = approximate
+                IsApproximate = approximate,
+                SourceSemiMajorAxis = aSource,
+                TargetSemiMajorAxis = aTarget
             };
 
             Refresh(info, now);
@@ -163,8 +165,12 @@ internal static class TransferWindows
             if (info.Source is not IOrbiter source || info.Target is not IOrbiter target)
                 return;
 
-            double raw = MathEx.ToOrbitAngle(
-                target.Orbit.GetPhaseAngle(now).Value() - source.Orbit.GetPhaseAngle(now).Value());
+            double sourcePhase = source.Orbit.GetPhaseAngle(now).Value();
+            double targetPhase = target.Orbit.GetPhaseAngle(now).Value();
+            info.SourcePhaseAngleNow = sourcePhase;
+            info.TargetPhaseAngleNow = targetPhase;
+
+            double raw = MathEx.ToOrbitAngle(targetPhase - sourcePhase);
             double currentPhase = info.Retrograde ? (TransferWindow.TwoPi - raw) : raw;
 
             info.CurrentPhaseAngle = currentPhase;
