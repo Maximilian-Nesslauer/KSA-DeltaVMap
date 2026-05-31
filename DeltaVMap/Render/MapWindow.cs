@@ -31,6 +31,12 @@ internal sealed class MapWindow : ImGuiWindow
     // A search pick zooms in to at least this so the found body is legible, and pans it to the
     // viewport center.
     private const double FocusZoom = 1.0;
+    // Universal never-hang ceiling: above this many laid-out nodes the map refuses to build
+    // (any mode) and shows a note, so no build or per-frame loop can freeze the game. Set well
+    // above any real aggregated system (stock and the dense system both land near stock size
+    // after minor-body aggregation); only a pathological all-major system would reach it.
+    private const int MaxLayoutNodes = 8000;
+
     // Cap on listed search matches; a broader query shows a "+N more" note and asks to refine,
     // so the panel never renders thousands of rows.
     private const int MaxSearchResults = 40;
@@ -105,6 +111,10 @@ internal sealed class MapWindow : ImGuiWindow
     private string? _focusBodyId;
     private string? _focusNodeId;
     private bool _isolate;
+
+    // Set (to the node count) when a build was refused for exceeding MaxLayoutNodes; drives the
+    // "too large" note in place of the canvas. Zero when the current build laid out normally.
+    private int _oversizedCount;
 
     // The clicked route target Id (null = no route). Plain click sets it; the route is
     // accumulated from it into _routeSummary, and _routeNodeIds is the set of node Ids
@@ -564,7 +574,18 @@ internal sealed class MapWindow : ImGuiWindow
     {
         LayoutResult? built = _layout;
         if (built == null)
+        {
+            // A refused (too-large) build leaves no layout; explain why instead of a blank
+            // canvas. The panel still draws, so the visibility / isolate controls remain usable.
+            if (_oversizedCount > 0)
+            {
+                string note = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "This system has {0:#,##0} bodies to lay out - too many to render without "
+                    + "risking a freeze, so the map is disabled for it.", _oversizedCount);
+                ImGui.TextWrapped(note);
+            }
             return;
+        }
 
         LayoutResult layout = built;
         ImDrawListPtr dl = ImGui.GetWindowDrawList();
@@ -1087,6 +1108,7 @@ internal sealed class MapWindow : ImGuiWindow
             _focusBodyId = null;
             _focusNodeId = null;
             _isolate = false;
+            _oversizedCount = 0;
         }
 
         if (!_built || _reevaluateRoot)
@@ -1164,8 +1186,11 @@ internal sealed class MapWindow : ImGuiWindow
             LayoutNode newRoot = _layout.Tree.Root;
             _panX = anchorX - (newRoot.SnappedX - _layout.MinX) * zoom;
             _panY = anchorY - (newRoot.SnappedY - _layout.MinY) * zoom;
+            // We re-anchored the view ourselves, so cancel the auto-fit RebuildAt requested.
+            // Without a prior layout to anchor to (e.g. recovering from a refused build), leave
+            // the auto-fit on so the fresh map is framed instead of shown at a stale pan/zoom.
+            _needsFit = false;
         }
-        _needsFit = false;
 
         if (selected != null && _lookup != null && _lookup.ContainsKey(selected))
         {
@@ -1195,6 +1220,11 @@ internal sealed class MapWindow : ImGuiWindow
             }
         }
 
+        // Clear the oversized flag up front so only the oversized branch below can raise it; if
+        // the build instead throws, the catch leaves it clear and the canvas does not wrongly
+        // claim "too many bodies" when the real cause was a build failure.
+        _oversizedCount = 0;
+
         try
         {
             // Isolate only takes effect once a body has been revealed (searched). With nothing
@@ -1204,6 +1234,32 @@ internal sealed class MapWindow : ImGuiWindow
             var buildOptions = new BuildOptions(_fullLadder, _view.ShowMinorBodies, _view.ShowComets,
                 effectiveIsolate, _revealedBodyIds);
             VisualTree visual = VisualTree.Build(_graph, _cache, node, egoState, buildOptions);
+
+            // Universal never-hang guard: above the ceiling, refuse to lay out (any mode) and
+            // show a note instead of risking a multi-second build or unresponsive frames. The
+            // visual-tree build above is O(nodes) and cheap; the expensive passes (the spring
+            // settle, label placement) and the per-frame hover/render loops are what this caps.
+            // Running the build off the draw thread is not an option here: the layout measures
+            // labels via ImGui, which is only valid on the draw thread. Realistically only a
+            // system with thousands of MAJOR bodies reaches this - minor bodies aggregate away.
+            if (visual.Nodes.Count > MaxLayoutNodes)
+            {
+                _visualTree = null;
+                _layout = null;
+                _lookup = null;
+                _oversizedCount = visual.Nodes.Count;
+                _currentRootId = node.Id;
+                _buildFailedRootId = null;
+                _selectedId = null;
+                _routeSummary = null;
+                _routeNodeIds = null;
+                _focusNodeId = null;
+                _hoverId = null;
+                _needsFit = false;
+                _built = true;
+                return;
+            }
+
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual, _graph);
             var cfg = new LayoutConfig { Mode = _layoutMode };
             LayoutResult result = LayoutEngine.Run(tree, cfg, MeasureText);

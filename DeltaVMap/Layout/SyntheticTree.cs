@@ -188,6 +188,31 @@ internal static class SyntheticTree
         hub.AddChild(new LayoutEdge { From = hub, To = group, Class = EdgeClass.Transfer, Dv = 0.0 });
     }
 
+    // A deliberately large tree (~1800 nodes) to stress the Barnes-Hut spring repulsion and the
+    // iteration cap offline. The all-pairs repulsion this replaced would be ~1800^2 per
+    // iteration over the draw thread (the freeze); Barnes-Hut keeps it near O(n log n). Only the
+    // dot-overlap and label checks run for Spring, and the grid snap must still leave no two
+    // dots sharing a cell at this scale.
+    public static LayoutTree BuildSpringStress()
+    {
+        LayoutNode root = Node("Hub.LO", "Hub Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        Ladder(root, "Hub", surfaceDv: 3000, stationaryDv: 1200, soiDv: 800);
+
+        LayoutNode star = Node("Star.Hub", "Star", LayoutKind.Hub, rank: 0);
+        HubLink(root, star);
+
+        for (int i = 0; i < 600; i++)
+        {
+            string id = "Body" + i.ToString(Inv);
+            LayoutNode lo = Node(id + ".LO", "Body " + i.ToString(Inv) + " Orbit", LayoutKind.LowOrbit, rank: 2);
+            Transfer(star, lo, depart: 1000 + (i % 11) * 60, arrive: 300 + (i % 7) * 40);
+            Ladder(lo, id, surfaceDv: 500 + (i % 9) * 70, stationaryDv: 900 + (i % 5) * 50, soiDv: null);
+        }
+
+        return LayoutTree.FromRoot("synthetic-spring-stress", root);
+    }
+
     // A deliberately wide, shallow fan: one body with many sibling destinations that
     // all land on a narrow band, stressing sibling separation and the grid-snap
     // collision pass on a dense row (a gas giant with many moons, or a busy hub).

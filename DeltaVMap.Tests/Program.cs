@@ -79,6 +79,12 @@ failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), spring, "spring", outDir
 failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), spring, "spring", outDir, minNodes: 0);
 failures += RunCase(SyntheticTree.BuildDenseAggregated(), spring, "spring", outDir, minNodes: 0);
 
+// Large spring stress: exercises the Barnes-Hut repulsion and the iteration cap at a scale
+// (~1800 nodes) the old all-pairs loop could not handle, and confirms the grid snap still
+// leaves it overlap-free. No timing assertion (it would be machine-dependent and flaky); the
+// value is the overlap-free check at this scale.
+failures += RunCase(SyntheticTree.BuildSpringStress(), spring, "spring", outDir, minNodes: 1500);
+
 // The closed-form delta-v kernel (pure math, no game types) gets its own asserts.
 failures += RunMathChecks();
 
