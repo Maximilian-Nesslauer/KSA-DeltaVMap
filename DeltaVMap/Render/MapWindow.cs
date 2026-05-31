@@ -49,11 +49,19 @@ internal sealed class MapWindow : ImGuiWindow
     // Smaller than the node radius so a node always wins a hover near a junction.
     private const double EdgeHoverPx = 7.0;
 
+    // Thickness (screen px) of the invisible drag strips on the transfer-window panel edges.
+    // Sits just outside the bordered child so the child window cannot occlude the grab.
+    private const float ResizeGrip = 8f;
+
     private static readonly byte4 BackgroundColor = new byte4(17, 21, 28, 255);
 
     // The Transfer-windows overlay fill: a touch lighter than the canvas, near-opaque so the
     // map does not bleed through the text.
     private static readonly byte4 TransferOverlayBg = new byte4(24, 30, 40, 238);
+
+    // The overlay resize grips: a faint hint on the edge, brightening while hovered or dragged.
+    private static readonly byte4 ResizeGripIdle = new byte4(120, 140, 165, 90);
+    private static readonly byte4 ResizeGripHot = new byte4(185, 208, 236, 235);
 
     private static MapWindow? _instance;
 
@@ -143,6 +151,17 @@ internal sealed class MapWindow : ImGuiWindow
     // The sibling on the selected route's interplanetary leg, or null. Biases the clock / list
     // emphasis when nothing is hovered (emphasis order: hovered, else this, else soonest).
     private string? _routeSiblingId;
+
+    // User-chosen overlay panel sizes from dragging their edges; null = auto (the per-frame
+    // computed size). Reset to auto on a root or system change (in RebuildAt); clamped to the
+    // canvas and sane minimums each frame for use, without writing the clamp back, so shrinking
+    // then re-enlarging the window restores the chosen size. _resizeStartValue holds the panel
+    // size captured when a drag begins, so the drag tracks the cumulative mouse delta from a
+    // stable origin even as the panel repositions under it.
+    private float? _listWidthOverride;
+    private float? _listHeightOverride;
+    private float? _clockSideOverride;
+    private float _resizeStartValue;
 
     // Display and visibility settings (visibility rebuilds the tree; the rest are display
     // only). Shared with the panel, which edits it, and read by the canvas renderer.
@@ -380,8 +399,20 @@ internal sealed class MapWindow : ImGuiWindow
 
         const float margin = 8f;
         const float gap = 6f;
-        float width = Math.Clamp(size.X * 0.30f, 340f, 480f);
-        width = Math.Min(width, size.X - 2f * margin);
+
+        // The canvas envelope every panel size is clamped into, and the per-panel minimums. A
+        // manual resize (the drag handles below) may push a panel past its auto size but never
+        // past these bounds.
+        float canvasMaxW = size.X - 2f * margin;
+        float canvasMaxH = size.Y - 2f * margin;
+        const float listMinW = 240f;
+        const float listMinH = 90f;
+        const float clockMin = 180f;
+
+        // List width: the user's dragged width if set, else 30% of the canvas (the original auto
+        // rule), clamped to the canvas.
+        float autoWidth = Math.Clamp(size.X * 0.30f, 340f, 480f);
+        float width = ClampSize(_listWidthOverride ?? autoWidth, listMinW, canvasMaxW);
         if (width < 220f || size.Y < 160f)
             return false;
 
@@ -389,22 +420,28 @@ internal sealed class MapWindow : ImGuiWindow
         float collapsedH = f + 16f;
         float topRoom = size.Y - 2f * margin - 76f;
 
-        // The clock panel is a square as large as the canvas height allows. When it fits to the
-        // right of the list, the list panel is grown to the same height so the two read as a
-        // matched pair (bottom-aligned); otherwise the list keeps its content height and the
-        // clock stacks above it (or is dropped on a tiny canvas).
-        float clockSide = Math.Clamp(Math.Min(topRoom, 460f), 200f, 460f);
+        // The clock panel is a square. Auto-sized it is as large as the canvas height allows; the
+        // user can drag it larger (past the auto 460 cap) or smaller, never past the canvas. When
+        // it fits to the right of the list, the list panel is grown to the same height so the two
+        // read as a matched pair (bottom-aligned), unless the user has dragged the list to its own
+        // height; otherwise the list keeps its content height and the clock stacks above it (or is
+        // dropped on a tiny canvas).
+        float autoClock = Math.Clamp(Math.Min(topRoom, 460f), 200f, 460f);
+        float clockSide = ClampSize(_clockSideOverride ?? autoClock, clockMin, Math.Min(canvasMaxW, canvasMaxH));
         bool clockRight = _windowsOverlayExpanded && _windows.Count > 0
             && origin.X + margin + width + gap + clockSide <= origin.X + size.X - margin;
 
         // List-panel content height: room for the markers toggle, the source line, the list and
-        // the footer toggle. The list scrolls internally if it would exceed this.
+        // the footer toggle. The list scrolls internally if it would exceed this. A dragged list
+        // height overrides both the matched-pair height and the content height.
         int rows = Math.Min(_windows.Count, 10);
-        float contentH = Math.Clamp((rows + 5) * f + 28f, collapsedH, Math.Min(topRoom, 460f));
-        float height = !_windowsOverlayExpanded ? collapsedH : (clockRight ? clockSide : contentH);
+        float autoContentH = Math.Clamp((rows + 5) * f + 28f, collapsedH, Math.Min(topRoom, 460f));
+        float baseListH = (clockRight && _listHeightOverride == null) ? clockSide : autoContentH;
+        float expandedH = ClampSize(_listHeightOverride ?? baseListH, listMinH, canvasMaxH);
+        float height = !_windowsOverlayExpanded ? collapsedH : expandedH;
 
         // Anchor the list panel's bottom-left near the canvas corner; the toggle is pinned at its
-        // bottom, so it stays put while the detail above grows upward on expand.
+        // bottom, so it stays put while the detail above grows upward on expand or resize.
         var listPos = new float2(origin.X + margin, origin.Y + size.Y - margin - height);
 
         float2? clockPos = null;
@@ -414,10 +451,24 @@ internal sealed class MapWindow : ImGuiWindow
                 clockPos = new float2(listPos.X + width + gap, origin.Y + size.Y - margin - clockSide);
             else if (listPos.Y - gap - clockSide >= origin.Y + margin)
                 clockPos = new float2(listPos.X, listPos.Y - gap - clockSide);
+            else if (_clockSideOverride != null)
+            {
+                // A manually enlarged clock that will not fit stacked is shrunk to the room above
+                // the list rather than hidden, so its resize handle stays reachable and the user
+                // can drag it back down. (Auto-sized, it is simply dropped on a tiny canvas, as
+                // before - the two branches above are unchanged.)
+                float stackRoom = listPos.Y - gap - (origin.Y + margin);
+                if (stackRoom >= clockMin)
+                {
+                    clockSide = stackRoom;
+                    clockPos = new float2(listPos.X, listPos.Y - gap - clockSide);
+                }
+            }
         }
         bool clockHidden = _windowsOverlayExpanded && _windows.Count > 0 && clockPos == null;
 
         string? hover = null;
+        bool hotEdge = false;
 
         ImGui.SetCursorScreenPos(listPos);
         ImGui.PushStyleColor(ImGuiCol.ChildBg, TransferOverlayBg);
@@ -445,6 +496,26 @@ internal sealed class MapWindow : ImGuiWindow
         {
             // Pop even if BeginChild threw, so the style-color stack stays balanced for the frame.
             ImGui.PopStyleColor();
+        }
+
+        // Drag handles on the list panel's free edges, only while expanded (collapsed it is a one-
+        // line footer with nothing to resize). The right edge grows the width; the top edge grows
+        // the height upward so the bottom-pinned footer never moves. Placed just outside the
+        // border so the bordered child window does not occlude their hover, and submitted after
+        // the canvas button (which allowed overlap) so a drag takes its own clicks instead of
+        // panning the map or selecting a node. Signature: (id, pos, size, resizesWidth,
+        // startValue, grow, min, max, ref hot).
+        if (_windowsOverlayExpanded)
+        {
+            float? nw = EdgeHandle("##dvtw_listw"u8, new float2(listPos.X + width, listPos.Y),
+                new float2(ResizeGrip, height), true, width, +1f, listMinW, canvasMaxW, ref hotEdge);
+            if (nw.HasValue)
+                _listWidthOverride = nw;
+
+            float? nh = EdgeHandle("##dvtw_listh"u8, new float2(listPos.X, listPos.Y - ResizeGrip),
+                new float2(width, ResizeGrip), false, height, -1f, listMinH, canvasMaxH, ref hotEdge);
+            if (nh.HasValue)
+                _listHeightOverride = nh;
         }
 
         bool overList = MouseInRect(listPos, width, height);
@@ -478,10 +549,85 @@ internal sealed class MapWindow : ImGuiWindow
                 ImGui.PopStyleColor();
             }
             overClock = MouseInRect(cp, clockSide, clockSide);
+
+            // The clock's top edge resizes the square (drag up to enlarge), keeping its bottom-
+            // left corner anchored; the side also drives the matched list height. Placed just
+            // above the frame so the bordered child does not occlude the grab.
+            float? ns = EdgeHandle("##dvtw_clock"u8, new float2(cp.X, cp.Y - ResizeGrip),
+                new float2(clockSide, ResizeGrip), false, clockSide, -1f, clockMin,
+                Math.Min(canvasMaxW, canvasMaxH), ref hotEdge);
+            if (ns.HasValue)
+                _clockSideOverride = ns;
         }
 
         _windowsHoverBodyId = hover;
-        return overList || overClock;
+        return overList || overClock || hotEdge;
+    }
+
+    // Clamp a panel dimension into [min, max], except when the canvas is smaller than the minimum,
+    // where the canvas wins so the panel shrinks to fit rather than overflow off the edge.
+    private static float ClampSize(float value, float min, float max)
+    {
+        if (max < min)
+            return max;
+        return Math.Clamp(value, min, max);
+    }
+
+    // A thin invisible drag strip straddling one free edge of an overlay panel. While hovered or
+    // held it shows the matching resize cursor and a brighter grip line, and marks `hot` so the
+    // canvas underneath stays suppressed. On the frame the drag begins it captures the panel's
+    // current size; each later frame it returns that captured size plus the cumulative mouse delta
+    // along the handle's axis (so the drag tracks a stable origin even as the panel moves under
+    // it). resizesWidth picks the horizontal axis and the east-west cursor; grow is +1 when a drag
+    // toward larger screen coordinates enlarges the panel (the list's right edge) and -1 when it
+    // shrinks them (a top edge of a bottom-anchored panel, where dragging up enlarges). Returns the
+    // clamped new size while held, else null.
+    private float? EdgeHandle(ReadOnlySpan<byte> id, float2 pos, float2 sz, bool resizesWidth,
+        float startValue, float grow, float min, float max, ref bool hot)
+    {
+        ImGui.SetCursorScreenPos(pos);
+        ImGui.InvisibleButton(id, in sz);
+        bool active = ImGui.IsItemActive();
+        bool thisHot = ImGui.IsItemHovered() || active;
+        if (thisHot)
+        {
+            ImGui.SetMouseCursor(resizesWidth ? ImGuiMouseCursor.ResizeEW : ImGuiMouseCursor.ResizeNS);
+            hot = true;
+        }
+
+        // A grip hint centered on the strip: a short faint segment normally, a brighter full-length
+        // line while hovered or dragged, so the affordance reads without cluttering the border.
+        ImDrawListPtr dl = ImGui.GetWindowDrawList();
+        byte4 col = thisHot ? ResizeGripHot : ResizeGripIdle;
+        float thickness = thisHot ? 2.5f : 2f;
+        if (resizesWidth)
+        {
+            float x = pos.X + sz.X * 0.5f;
+            float y0 = thisHot ? pos.Y : (pos.Y + sz.Y * 0.5f - 14f);
+            float y1 = thisHot ? pos.Y + sz.Y : (pos.Y + sz.Y * 0.5f + 14f);
+            var a = new float2(x, y0);
+            var b = new float2(x, y1);
+            dl.AddLine(in a, in b, col, thickness);
+        }
+        else
+        {
+            float y = pos.Y + sz.Y * 0.5f;
+            float x0 = thisHot ? pos.X : (pos.X + sz.X * 0.5f - 14f);
+            float x1 = thisHot ? pos.X + sz.X : (pos.X + sz.X * 0.5f + 14f);
+            var a = new float2(x0, y);
+            var b = new float2(x1, y);
+            dl.AddLine(in a, in b, col, thickness);
+        }
+
+        if (ImGui.IsItemActivated())
+            _resizeStartValue = startValue;
+        if (active)
+        {
+            float2 d = ImGui.GetMouseDragDelta(ImGuiMouseButton.Left, 0f);
+            float delta = resizesWidth ? d.X : d.Y;
+            return Math.Clamp(_resizeStartValue + grow * delta, min, max);
+        }
+        return null;
     }
 
     private static bool MouseInRect(float2 pos, float w, float h)
@@ -1464,6 +1610,16 @@ internal sealed class MapWindow : ImGuiWindow
             return;
 
         PhysicalNode node = _graph.Find(rootId) ?? _graph.Root;
+
+        // A genuine root change (a re-root, or a system change, which first nulls _currentRootId)
+        // resets the manual overlay panel sizes back to auto. A same-root rebuild (a visibility,
+        // detail or layout toggle) keeps the user's chosen sizes.
+        if (node.Id != _currentRootId)
+        {
+            _listWidthOverride = null;
+            _listHeightOverride = null;
+            _clockSideOverride = null;
+        }
 
         ClassifiedState? egoState = null;
         Vehicle? vehicle = Program.ControlledVehicle;
