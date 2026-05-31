@@ -21,6 +21,13 @@
       <HintPath>..\..\..\refs\game\Brutal.Core.Numerics.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- double3.Transform(doubleQuat), used to project an orbit position into the parent frame for
+         the map-mode overlay, has a sibling overload referencing BepuUtilities' Symmetric3x3, so
+         overload resolution needs this assembly on the reference path even though we never use it. -->
+    <Reference Include="BepuUtilities">
+      <HintPath>..\..\..\refs\game\BepuUtilities.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- Provides the Ptr type used in some ImGui overload signatures (e.g. InputTextWithHint);
          needed for overload resolution even when calling the ImInputString overload. -->
     <Reference Include="Brutal.Core.Common">

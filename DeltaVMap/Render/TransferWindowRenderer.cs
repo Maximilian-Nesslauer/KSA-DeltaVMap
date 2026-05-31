@@ -74,7 +74,7 @@ internal static class TransferWindowRenderer
     // clock panel could not fit beside this one, to note it. The return reports this frame's
     // toggle click and hovered body.
     public static OverlayResult DrawOverlay(
-        IReadOnlyList<TransferWindowInfo> windows, ref bool showMarkers, bool expanded,
+        IReadOnlyList<TransferWindowInfo> windows, ref bool showMarkers, ref bool showMapMarkers, bool expanded,
         string? highlightBodyId, bool clockHidden)
     {
         string? hover = null;
@@ -82,6 +82,9 @@ internal static class TransferWindowRenderer
         if (expanded)
         {
             ImGui.Checkbox("Show window markers on map"u8, ref showMarkers);
+            // The separate map-mode layer: the optimal-departure markers on the real orbits and
+            // the ejection-angle gizmo, drawn only while the game camera is in map mode.
+            ImGui.Checkbox("Show on game map mode (3D)"u8, ref showMapMarkers);
 
             if (windows.Count == 0)
             {

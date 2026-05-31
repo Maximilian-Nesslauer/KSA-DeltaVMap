@@ -148,6 +148,11 @@ internal sealed class MapWindow : ImGuiWindow
     // Whether the inline transfer-window markers are drawn on the map (off by default; the toggle
     // lives in the list panel). Dense roots are why it defaults off.
     private bool _showWindowMarkers;
+    // Whether the map-mode (the game's 3D orbit view) overlay is drawn: the optimal-departure
+    // markers on the real orbits plus the ejection-angle gizmo. Off by default; its toggle also
+    // lives in the list panel. Independent of _showWindowMarkers (the metro-map badges); this one
+    // only draws while the game camera is in map mode.
+    private bool _showMapMarkers;
     // The sibling on the selected route's interplanetary leg, or null. Biases the clock / list
     // emphasis when nothing is hovered (emphasis order: hovered, else this, else soonest).
     private string? _routeSiblingId;
@@ -478,7 +483,7 @@ internal sealed class MapWindow : ImGuiWindow
             try
             {
                 OverlayResult result = TransferWindowRenderer.DrawOverlay(
-                    _windows, ref _showWindowMarkers, _windowsOverlayExpanded, emphasisHint, clockHidden);
+                    _windows, ref _showWindowMarkers, ref _showMapMarkers, _windowsOverlayExpanded, emphasisHint, clockHidden);
                 hover = result.HoverBodyId;
                 if (result.Toggled)
                     _windowsOverlayExpanded = !_windowsOverlayExpanded;
@@ -1022,6 +1027,16 @@ internal sealed class MapWindow : ImGuiWindow
         // while the cursor is over the overlay.
         if (_windowsHoverBodyId != null)
             _hoverId = FindFocusNode(_windowsHoverBodyId)?.Id;
+
+        // The map-mode (3D orbit) overlay: a purely additive layer that, while the game camera is
+        // in map mode, marks each sibling's optimal-departure position on its real orbit and draws
+        // the ejection-angle gizmo at the departure body. Driven by the same windows refreshed at
+        // the top of this frame; the emphasis is this frame's hovered sibling, else the route's
+        // sibling (the renderer falls back to the soonest). Drawn on the viewport background list,
+        // so it is independent of this window's clip; guarded inside so a projection change never
+        // reaches the render path.
+        if (_showMapMarkers)
+            TransferWindowMapOverlay.Draw(Program.MainViewport, _windows, _windowsHoverBodyId ?? _routeSiblingId);
     }
 
     // Draw the on-canvas layout toggle: a small icon button in the top-left corner whose
