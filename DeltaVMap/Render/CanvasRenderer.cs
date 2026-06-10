@@ -61,6 +61,10 @@ internal readonly struct CanvasTransform
 //     ranked ahead of plain dV badges, so the map reads as a labelled diagram first. A
 //     label is never culled by its own dot (only foreign dots), or zooming out far enough
 //     that the fixed-size dot swallows the scaled-in label gap would hide every name.
+//     Every label sits on a dim background plate so it stays legible where edge lines
+//     pass behind it, and a zoom LOD declutters the overview: below FullLabelMinZoom each
+//     body collapses to one short name label, below MoonLabelMinZoom moon names drop
+//     entirely (root-context moons and the "+N" group headline exempt).
 //  5. Transfer-window markers (only when the toggle is on): an amber clock badge near each
 //     sibling with the countdown to its next window, on its own light cull pass.
 internal static class CanvasRenderer
@@ -78,6 +82,29 @@ internal static class CanvasRenderer
     // zoomed-out overview their names are noise, and the major bodies plus any selected route
     // read better without them. The root, the hovered node and on-route nodes are exempt.
     private const double MinorLabelMinZoom = 0.5;
+
+    // Below this zoom labels drop their rung suffix and collapse to one short body name per
+    // body ("Saturn" instead of three "Saturn <rung>" labels): at overview the rung is
+    // already carried by the glyph, and the duplicates would only repeat the name down the
+    // ladder. Deliberately its own constant (not reusing MinorLabelMinZoom) so the two
+    // transitions can be tuned apart. Special labels (hover, root, you-are-here, on-route)
+    // always draw in full.
+    private const double FullLabelMinZoom = 0.5;
+
+    // Below this zoom moon-level (rank 2) labels are dropped entirely, leaving the far-out
+    // overview to planets, the route and the "+N" group headlines. Moons in the root's
+    // immediate context are exempt (Luna stays named on an Earth-rooted overview), as is
+    // the minor-body group label itself.
+    private const double MoonLabelMinZoom = 0.3;
+
+    // The background plate behind every label, the zoom-robust fix for text crossing edge
+    // lines: placement runs in layout space at 100% zoom, so no placement rule can keep a
+    // fixed-size label clear of lines once the geometry scales away underneath it. Always
+    // on (no UI toggle); the switch stays as a code escape hatch. The plate is more
+    // transparent than the badge background so a sparse map does not read as boxes.
+    private const bool LabelPlateEnabled = true;
+    private const float LabelPadX = 3f;
+    private const float LabelPadY = 1f;
 
     // Plane-change numbers below this are noise (a near-coplanar leg), so they are not
     // drawn even when the toggle is on. Matches the calculator's own half-degree floor in
@@ -105,6 +132,7 @@ internal static class CanvasRenderer
     private static readonly byte4 BadgeMarginSub = new byte4(192, 158, 104, 255);
     private static readonly byte4 LabelText = new byte4(205, 214, 224, 255);
     private static readonly byte4 LabelShadow = new byte4(0, 0, 0, 200);
+    private static readonly byte4 LabelPlateBg = new byte4(16, 20, 28, 200);
     private static readonly byte4 RootRing = new byte4(255, 210, 194, 255);
     private static readonly byte4 RootHalo = new byte4(255, 170, 120, 60);
     private static readonly byte4 YouAreHereRing = new byte4(255, 210, 63, 255);
@@ -404,7 +432,10 @@ internal static class CanvasRenderer
     // names - the root first - show even at the zoomed-out auto-fit view; a name resting on
     // a dot is fine and beats hiding it. dV badges are hidden entirely below BadgeMinZoom
     // (they only clutter when the whole system is squeezed onto the screen) and avoid dots
-    // when shown. Zooming in spreads the anchors apart and reveals more of both.
+    // when shown. Zooming in spreads the anchors apart and reveals more of both. Which
+    // labels even become candidates, and with which text, is the zoom LOD decided by
+    // SelectLabelText: per-rank zoom floors plus the overview collapse to one short
+    // body-name label per body.
     private static void DrawLabelsAndBadges(
         ImDrawListPtr dl,
         LayoutResult layout,
@@ -418,17 +449,43 @@ internal static class CanvasRenderer
     {
         bool routing = routeNodes != null;
         bool showBadges = t.Zoom >= BadgeMinZoom;
-        // Zoomed far out the minor-body names only clutter the overview, so drop them below
-        // this floor (their dots and the route still show); zooming in brings them back.
-        bool showMinorLabels = t.Zoom >= MinorLabelMinZoom;
+        bool shortLabels = t.Zoom < FullLabelMinZoom;
         LayoutMode mode = layout.Config.Mode;
         var items = new List<DrawItem>();
 
+        // At overview zoom every body collapses to one short label, carried by its most
+        // recognizable rung; pick that representative per body first. A body whose label
+        // is special (hover, root, you-are-here, on-route - always drawn in full) needs
+        // no representative: the special stands in, so the map never shows "Earth" next
+        // to "Earth Low Orbit".
+        Dictionary<string, LayoutNode>? reps = null;
+        HashSet<string>? specialBodies = null;
+        if (shortLabels)
+        {
+            reps = new Dictionary<string, LayoutNode>();
+            specialBodies = new HashSet<string>();
+            foreach (LayoutNode node in layout.Tree.Nodes)
+            {
+                if (!node.LabelPlaced)
+                    continue;
+                if (IsSpecialLabel(node, hoverId, routing, routeNodes))
+                {
+                    specialBodies.Add(BodyKey(node));
+                    continue;
+                }
+                if (!RankShowsLabel(node, t.Zoom))
+                    continue;
+                string key = BodyKey(node);
+                if (!reps.TryGetValue(key, out LayoutNode? cur) || RungPreference(node.Kind) < RungPreference(cur.Kind))
+                    reps[key] = node;
+            }
+        }
+
         foreach (LayoutNode node in layout.Tree.Nodes)
         {
-            if (node.LabelPlaced && (showMinorLabels || node.Rank < 3 || node.IsRoot || node.Id == hoverId
-                || (routing && routeNodes!.Contains(node.Id))))
-                items.Add(BuildLabelItem(node, in t, hoverId, routing, routeNodes));
+            if (node.LabelPlaced
+                && SelectLabelText(node, t.Zoom, shortLabels, hoverId, routing, routeNodes, reps, specialBodies) is { } text)
+                items.Add(BuildLabelItem(node, text, in t, hoverId, routing, routeNodes));
 
             if (!showBadges)
                 continue;
@@ -476,20 +533,101 @@ internal static class CanvasRenderer
         }
     }
 
+    // Decides whether a node's label draws this frame and with which text. Special labels
+    // always draw in full: they are the user's current anchors, so the zoom LOD never
+    // hides or shortens them. Everything else passes the per-rank zoom floors, and at
+    // overview zoom only the per-body representative survives, carrying the short text.
+    private static string? SelectLabelText(
+        LayoutNode node, double zoom, bool shortLabels, string? hoverId,
+        bool routing, IReadOnlySet<string>? routeNodes,
+        Dictionary<string, LayoutNode>? reps, HashSet<string>? specialBodies)
+    {
+        if (IsSpecialLabel(node, hoverId, routing, routeNodes))
+            return node.Label;
+        if (!RankShowsLabel(node, zoom))
+            return null;
+        if (!shortLabels)
+            return node.Label;
+        string key = BodyKey(node);
+        if (specialBodies!.Contains(key) || !ReferenceEquals(reps![key], node))
+            return null;
+        return node.ShortLabel.Length > 0 ? node.ShortLabel : node.Label;
+    }
+
+    private static bool IsSpecialLabel(LayoutNode node, string? hoverId, bool routing, IReadOnlySet<string>? routeNodes)
+    {
+        return node.IsRoot || node.IsYouAreHere || node.Id == hoverId
+            || (routing && routeNodes!.Contains(node.Id));
+    }
+
+    // The zoom floors by cosmetic rank: minor-body (rank 3) names go first, then moon-level
+    // (rank 2) names, leaving the far-out overview to planets. A minor-body group is exempt
+    // (its "+N" count is the headline of a dense overview), as are moons in the root's
+    // immediate context.
+    private static bool RankShowsLabel(LayoutNode node, double zoom)
+    {
+        if (node.Rank >= 3)
+            return zoom >= MinorLabelMinZoom;
+        if (node.Rank == 2 && node.Kind != LayoutKind.MinorGroup && !IsNearRootContext(node))
+            return zoom >= MoonLabelMinZoom;
+        return true;
+    }
+
+    // Whether a node's body is immediate context of the root: its well hangs off the root
+    // itself or off the root's nearest hub (a spine node at depth <= 1). That covers the
+    // root's own moons (Luna on an Earth root) and, when rooted on a moon, its sibling
+    // moons; a distant planet's moons attach much deeper down the spine and fail the test.
+    private static bool IsNearRootContext(LayoutNode node)
+    {
+        string body = BodyKey(node);
+        for (LayoutNode? p = node.Parent; p != null; p = p.Parent)
+        {
+            if (BodyKey(p) != body)
+                return p.Depth <= 1;
+        }
+        return true;
+    }
+
+    private static string BodyKey(LayoutNode node)
+    {
+        return node.BodyId.Length > 0 ? node.BodyId : node.Id;
+    }
+
+    // Which rung carries a body's single short label at overview zoom. Low orbit is the
+    // canonical "go here" rung; the rest order by how strongly they read as the body itself.
+    private static int RungPreference(LayoutKind kind)
+    {
+        return kind switch
+        {
+            LayoutKind.LowOrbit => 0,
+            LayoutKind.Hub => 1,
+            LayoutKind.Surface => 2,
+            LayoutKind.Intercept => 3,
+            LayoutKind.Stationary => 4,
+            LayoutKind.SoiEdge => 5,
+            _ => 6
+        };
+    }
+
     private static DrawItem BuildLabelItem(
-        LayoutNode node, in CanvasTransform t, string? hoverId, bool routing, IReadOnlySet<string>? routeNodes)
+        LayoutNode node, string text, in CanvasTransform t, string? hoverId, bool routing, IReadOnlySet<string>? routeNodes)
     {
         float2 pos = t.ToScreen(node.LabelX, node.LabelY);
-        float2 size = ImGui.CalcTextSize(node.Label);
+        float2 size = ImGui.CalcTextSize(text);
         bool onRoute = !routing || routeNodes!.Contains(node.Id);
+        // The cull rect spans the plate, not just the text, so neighbouring plates never touch.
+        float2 bgMin = pos - new float2(LabelPadX, LabelPadY);
+        float2 bgMax = pos + size + new float2(LabelPadX, LabelPadY);
 
         return new DrawItem
         {
             Priority = LabelPriority(node, hoverId, routing, routeNodes),
-            Rect = new ScreenRect(pos.X, pos.Y, size.X, size.Y),
+            Rect = new ScreenRect(bgMin.X, bgMin.Y, bgMax.X - bgMin.X, bgMax.Y - bgMin.Y),
             IsBadge = false,
-            Text = node.Label,
+            Text = text,
             TextPos = pos,
+            BgMin = bgMin,
+            BgMax = bgMax,
             Alpha = onRoute ? 1.0 : OffRouteAlpha
         };
     }
@@ -763,6 +901,12 @@ internal static class CanvasRenderer
 
     private static void DrawLabelItem(ImDrawListPtr dl, in DrawItem item)
     {
+        if (LabelPlateEnabled)
+        {
+            float2 bgMin = item.BgMin;
+            float2 bgMax = item.BgMax;
+            dl.AddRectFilled(in bgMin, in bgMax, Fade(LabelPlateBg, item.Alpha), 3f);
+        }
         float2 shadow = item.TextPos + new float2(1f, 1f);
         dl.AddText(in shadow, Fade(LabelShadow, item.Alpha), item.Text);
         dl.AddText(in item.TextPos, Fade(LabelText, item.Alpha), item.Text);
