@@ -96,6 +96,17 @@ internal sealed class LayoutNode
     public required string Label { get; init; }
     public required LayoutKind Kind { get; init; }
 
+    // Short display text for the zoomed-out overview: the body name alone ("Saturn"
+    // instead of "Saturn Low Orbit"), since the rung is already carried by the glyph
+    // at that zoom. A minor-body group keeps its "+N" headline. Empty falls back to
+    // Label in the renderer (synthetic offline trees do not set it).
+    public string ShortLabel { get; init; } = "";
+
+    // Groups every rung of one body under one key so the overview can show a single
+    // short label per body instead of one per rung. Empty falls back to Id in the
+    // renderer (again for synthetic trees).
+    public string BodyId { get; init; } = "";
+
     // 0 ego root, 1 planet-level, 2 moon-level, 3 minor. Drives the dot radius and is
     // purely cosmetic; it does not affect positioning.
     public int Rank { get; init; }

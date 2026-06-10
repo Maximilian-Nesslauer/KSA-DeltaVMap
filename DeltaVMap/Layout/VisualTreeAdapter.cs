@@ -40,6 +40,12 @@ internal static class VisualTreeAdapter
         {
             Id = source.Id,
             Label = source.Label,
+            // The overview short label is just the body name; a minor-body group keeps its
+            // "+N" headline (a body name would be the hub's, which is wrong and collides).
+            // The group also keys its dedup group by its own id, not the borrowed hub body,
+            // so the hub's own short label and the "+N" never dedup against each other.
+            ShortLabel = source.Kind == StateKind.MinorGroup ? source.Label : source.Body.Id,
+            BodyId = source.Kind == StateKind.MinorGroup ? source.Id : source.Body.Id,
             Kind = MapKind(source.Kind),
             // A minor-body group gets a fixed mid rank (a moon-sized dot whose name survives
             // the low-zoom minor-label cull), rather than the rank of the hub body it borrows.
