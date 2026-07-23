@@ -248,7 +248,7 @@ internal static class RoutePanelRenderer
         dl.AddRectFilled(in pos, in fillMax, fill, 3f);
 
         // "needed out of available": the needed figure is our estimate (~), the available
-        // is the staged-analyzer total.
+        // is the vehicle's total staged dV.
         string label = "~" + Fmt(needed) + " / " + Fmt(available) + " m/s";
         float2 ts = ImGui.CalcTextSize(label);
         float2 textPos = pos + new float2((width - ts.X) * 0.5f, (BarHeight - ts.Y) * 0.5f);

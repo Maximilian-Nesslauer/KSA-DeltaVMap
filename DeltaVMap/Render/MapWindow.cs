@@ -1371,13 +1371,22 @@ internal sealed class MapWindow : ImGuiWindow
         return null;
     }
 
-    // The vehicle's total staged vacuum dV for the comparison bar: the controlled vehicle
-    // in flight, else the vehicle under construction in the editor. Uses the mod's own
-    // staged analyzer, not NavBallData.DeltaVInVacuum (a single-stage blend that badly
-    // understates a staged vehicle). Null (bar shows n/a) when neither exists.
+    // The vehicle's total staged dV for the comparison bar: the controlled vehicle in flight,
+    // else the vehicle under construction in the editor. Flight uses the mod's own staged walk
+    // (it reads accurately against stock there); the editor delegates to stock's
+    // SequencePerformanceList, which is far more reliable on a full multi-stage stack and kept
+    // fresh by stock's own worker job. Null (bar shows n/a) when neither exists.
     private static double? TryGetAvailableDv()
     {
-        double? dv = VehicleDvAnalyzer.TryControlledVehicleDv() ?? VehicleDvAnalyzer.TryEditorVehicleDv();
+        double? modControlled = VehicleDvAnalyzer.TryControlledVehicleDv();
+        double? dv = modControlled ?? StockVehicleDv.TryEditorTotalDeltaV();
+
+        // Debug-only: keep measuring the mod's own walk against stock in both contexts, so the
+        // editor divergence that motivated the delegation stays visible and flight accuracy is
+        // watched.
+        if (DebugConfig.CrossCheck)
+            DvCrossCheck.Run(modControlled);
+
         return dv is double value && double.IsFinite(value) ? value : null;
     }
 

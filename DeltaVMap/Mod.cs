@@ -91,6 +91,7 @@ public sealed class Mod
         LogHelper.Reset();
 #if DEBUG
         PerfTracker.Reset();
+        DvCrossCheck.Reset();
 #endif
         DefaultCategory.Log.Info("[DvMap] Unloaded.");
     }

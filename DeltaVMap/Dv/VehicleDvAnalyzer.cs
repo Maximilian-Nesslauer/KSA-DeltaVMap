@@ -44,7 +44,7 @@ internal static class VehicleDvAnalyzer
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("vehicle-dv", $"[DvMap] Vehicle dV analysis failed: {ex.Message}");
+            LogHelper.WarnOnce("vehicle-dv", $"[DvMap] Vehicle dV analysis failed: {ex}");
             return null;
         }
     }
@@ -71,7 +71,7 @@ internal static class VehicleDvAnalyzer
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("editor-dv", $"[DvMap] Editor dV analysis failed: {ex.Message}");
+            LogHelper.WarnOnce("editor-dv", $"[DvMap] Editor dV analysis failed: {ex}");
             return null;
         }
     }
@@ -151,8 +151,9 @@ internal static class VehicleDvAnalyzer
         }
     }
 
-    // Reachable propellant via each engine core's SameStage tank list. Tanks are claimed
-    // once so a later sequence (or a jettison walk) does not count the same fuel twice.
+    // Reachable propellant via each engine core's same-stage tank list, with player-disabled
+    // tanks excluded. Tanks are claimed once so a later sequence (or a jettison walk) does not
+    // count the same fuel twice.
     private static float ComputeSequenceFuel(ReadOnlySpan<MoleState> moleStates)
     {
         float total = 0f;
@@ -170,6 +171,10 @@ internal static class VehicleDvAnalyzer
 
     private static float WalkSameStage(ResourceManager resourceManager, ReadOnlySpan<MoleState> moleStates)
     {
+        // The same-stage set, not the engine's active ConsumptionOrder: this staged walk
+        // attributes fuel per stage, so feeding it a cross-stage flow rule's tank set would
+        // mis-attribute an upper stage's propellant. The walk only sums, so drain order is
+        // irrelevant.
         Tank[][]? nodes = resourceManager.FurtherestToNearestNodeSameStage;
         if (nodes == null || nodes.Length == 0)
             return 0f;
@@ -186,6 +191,11 @@ internal static class VehicleDvAnalyzer
             {
                 Tank tank = tanks[j];
                 if (tank == null)
+                    continue;
+                // A tank the player disabled for propellant use is not burnable; stock's
+                // AccumulateReactantDrain skips it too. Guard before the claim so its mass is
+                // left unclaimed and still counted as jettison/dead mass, only excluded from fuel.
+                if (!tank.PropellantUseEnabled)
                     continue;
                 if (!_fuelClaimedTankIds.Add(tank.InstanceId))
                     continue;
