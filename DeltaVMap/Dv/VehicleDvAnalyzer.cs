@@ -29,6 +29,7 @@ internal static class VehicleDvAnalyzer
 
     private static readonly HashSet<uint> _jettisonedPartIds = new();
     private static readonly HashSet<ulong> _fuelClaimedTankIds = new();
+    private static readonly HashSet<int> _fuelClaimedGrainIdx = new();
     private static readonly List<EngineController> _engines = new();
 
     // Total staged vacuum dV of the controlled vehicle, or null when there is no vehicle or
@@ -80,6 +81,7 @@ internal static class VehicleDvAnalyzer
     {
         _jettisonedPartIds.Clear();
         _fuelClaimedTankIds.Clear();
+        _fuelClaimedGrainIdx.Clear();
 
         // Sequences are iterated in ascending activation order, on which the running-mass
         // propagation depends. The game keeps SequenceList sorted by Number.
@@ -151,8 +153,9 @@ internal static class VehicleDvAnalyzer
         }
     }
 
-    // Reachable propellant via each engine core's same-stage tank list, with player-disabled
-    // tanks excluded. Tanks are claimed once so a later sequence (or a jettison walk) does not
+    // Reachable propellant per engine core: a liquid Combustor draws from its same-stage tank
+    // list (player-disabled tanks excluded); a solid motor burns its own grain segments. Each
+    // tank and each grain is claimed once so a later sequence (or a jettison walk) does not
     // count the same fuel twice.
     private static float ComputeSequenceFuel(ReadOnlySpan<MoleState> moleStates)
     {
@@ -161,9 +164,15 @@ internal static class VehicleDvAnalyzer
         {
             foreach (RocketCore core in engine.Cores)
             {
-                if (core.ResourceManager == null)
-                    continue;
-                total += WalkSameStage(core.ResourceManager, moleStates);
+                switch (core)
+                {
+                    case Combustor combustor when combustor.ResourceManager != null:
+                        total += WalkSameStage(combustor.ResourceManager, moleStates);
+                        break;
+                    case SolidMotor motor:
+                        total += WalkSolidGrains(motor, moleStates);
+                        break;
+                }
             }
         }
         return total;
@@ -201,6 +210,34 @@ internal static class VehicleDvAnalyzer
                     continue;
                 current += tank.ComputeSubstanceMass(moleStates);
             }
+        }
+        return current;
+    }
+
+    // Burnable grain propellant of a solid motor: per segment, grain mass above the unburnable
+    // floor (the residual that never reaches ignition pressure), summed over the stack. This
+    // mirrors the game's own dV model in SequencePerformanceList.SnapshotSolidStarts and the
+    // per-segment floor in SolidMotor.TryAccumulateDrain. The mole-index claim is defensive
+    // parity with the tank walk: a grain shared between two motors invalidates both their stacks
+    // in PartTree.RecomputeSolidMotorStacks, so the Stack.IsValid guard already keeps valid
+    // stacks disjoint. SolidGrainSegment.UnburnableGrainMass is set by
+    // SolidMotor.RefreshUnburnableGrain; before that runs it reads zero, the same basis stock uses.
+    private static float WalkSolidGrains(SolidMotor motor, ReadOnlySpan<MoleState> moleStates)
+    {
+        if (!motor.Stack.IsValid)
+            return 0f;
+
+        float current = 0f;
+        SolidGrainSegment[] segments = motor.Stack.Segments;
+        for (int i = 0; i < segments.Length; i++)
+        {
+            SolidGrainSegment segment = segments[i];
+            Mole? grain = segment.Grain;
+            if (grain == null)
+                continue;
+            if (!_fuelClaimedGrainIdx.Add(grain.StatesIdx))
+                continue;
+            current += Math.Max(0f, moleStates[grain.StatesIdx].Mass - segment.UnburnableGrainMass);
         }
         return current;
     }
@@ -254,6 +291,24 @@ internal static class VehicleDvAnalyzer
         {
             if (!_fuelClaimedTankIds.Contains(tanks[i].InstanceId))
                 mass += tanks[i].ComputeSubstanceMass(moleStates);
+        }
+
+        Span<SolidGrainSegment> grains = components.Get<SolidGrainSegment>();
+        for (int i = 0; i < grains.Length; i++)
+        {
+            SolidGrainSegment segment = grains[i];
+            Mole? grain = segment.Grain;
+            if (grain == null)
+                continue;
+            float grainMass = moleStates[grain.StatesIdx].Mass;
+            // Unlike a drained tank, a burned grain leaves its unburnable residual behind, so a
+            // grain already claimed as fuel still contributes that floor as dead mass here; an
+            // unclaimed grain (an SRB never fired, or dropped before its motor's stage) is wholly
+            // dead mass. Either way the grain's mass is counted exactly once, split across the
+            // fuel walk and this jettison walk.
+            mass += _fuelClaimedGrainIdx.Contains(grain.StatesIdx)
+                ? Math.Min(grainMass, segment.UnburnableGrainMass)
+                : grainMass;
         }
         return mass;
     }
