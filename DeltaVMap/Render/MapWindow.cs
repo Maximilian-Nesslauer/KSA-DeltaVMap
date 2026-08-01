@@ -1371,21 +1371,15 @@ internal sealed class MapWindow : ImGuiWindow
         return null;
     }
 
-    // The vehicle's total staged dV for the comparison bar: the controlled vehicle in flight,
-    // else the vehicle under construction in the editor. Flight uses the mod's own staged walk
-    // (it reads accurately against stock there); the editor delegates to stock's
-    // SequencePerformanceList, which is far more reliable on a full multi-stage stack and kept
-    // fresh by stock's own worker job. Null (bar shows n/a) when neither exists.
+    // The vehicle's total staged dV for the comparison bar: the controlled vehicle in flight, else
+    // the vehicle under construction in the editor. Both go through the game's own staged model,
+    // repaired for the sub-part inert mass it leaves out. Null (bar shows n/a) when neither exists.
     private static double? TryGetAvailableDv()
     {
-        double? modControlled = VehicleDvAnalyzer.TryControlledVehicleDv();
-        double? dv = modControlled ?? StockVehicleDv.TryEditorTotalDeltaV();
+        double? dv = StagedDv.TryTotalDv();
 
-        // Debug-only: keep measuring the mod's own walk against stock in both contexts, so the
-        // editor divergence that motivated the delegation stays visible and flight accuracy is
-        // watched.
         if (DebugConfig.CrossCheck)
-            DvCrossCheck.Run(modControlled);
+            DvCrossCheck.Run();
 
         return dv is double value && double.IsFinite(value) ? value : null;
     }

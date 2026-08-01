@@ -105,8 +105,15 @@ internal static class DvValidationDump
         BodyLadder ladder = OrbitalStates.BuildLadder(vehicle.Parent);
         ClassifiedState state = StateClassifier.Classify(vehicle, ladder);
 
+        // The mod's own reading, not NavBallData.DeltaV: stock only refreshes that in flight while
+        // the staging window or engine control gauge is open, so at the point this dump runs it is
+        // almost always zero.
+        string available = StagedDv.TryTotalDv() is double dv
+            ? FormattableString.Invariant($"{dv:F0} m/s")
+            : "n/a";
+
         DefaultCategory.Log.Info(FormattableString.Invariant(
-            $"{Tag} You are here: {vehicle.Id} around {ladder.Body.Id} -> {state.Kind} at r={state.Radius / 1000.0:F1}km, active-sequence dV (stock)={vehicle.NavBallData.DeltaV:F0} m/s"));
+            $"{Tag} You are here: {vehicle.Id} around {ladder.Body.Id} -> {state.Kind} at r={state.Radius / 1000.0:F1}km, staged dV remaining={available}"));
     }
 
     private static void LogSpotChecks(CelestialSystem system, DvCache cache)

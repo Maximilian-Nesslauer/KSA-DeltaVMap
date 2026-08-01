@@ -88,6 +88,9 @@ public sealed class Mod
         _validationDumped = false;
 
         MapWindow.ResetStatic();
+        // Drops the cached part tree and its private analyzer so a reload cannot keep a stale
+        // vehicle alive through this mod.
+        StagedDv.Reset();
         LogHelper.Reset();
 #if DEBUG
         PerfTracker.Reset();
