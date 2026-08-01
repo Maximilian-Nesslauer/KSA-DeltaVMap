@@ -13,6 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="DeltaVMap.HarnessTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="KSA">
       <HintPath>..\..\..\refs\game\KSA.dll</HintPath>
       <Private>false</Private>
