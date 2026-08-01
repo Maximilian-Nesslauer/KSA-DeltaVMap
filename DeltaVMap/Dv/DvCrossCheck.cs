@@ -15,13 +15,13 @@ namespace DeltaVMap.Dv;
 //
 // It reads stock's already-computed TotalDeltaV and never drives a recompute, so it adds no
 // concurrency risk: stock keeps that value fresh on its own worker job in the editor, and in
-// flight only while the staging window is open. The freshness state is logged (stockFresh,
-// stockDirty, atmoSeqs) so a stale or pressure-corrected stock value is not read as real
-// divergence. In the editor the value is a pure-vacuum staged total, the same basis as the
-// analyzer; in flight it is fresh only while ResourceGroups.IsOpen, and the active sequence is
-// pressure-corrected to real altitude regardless of its Environment toggle, so a flight
-// comparison holds only with the staging window open, out of atmosphere (near-zero ambient),
-// and every sequence on its default Vacuum.
+// flight only while the staging window or the engine control gauge is open. The freshness state
+// is logged (stockFresh, stockDirty, atmoSeqs) so a stale or pressure-corrected stock value is
+// not read as real divergence. In the editor the value is a pure-vacuum staged total, the same
+// basis as the analyzer; in flight it is fresh only while one of those two windows is open, and
+// the active sequence is pressure-corrected to real altitude regardless of its Environment
+// toggle, so a flight comparison holds only with such a window open, out of atmosphere
+// (near-zero ambient), and every sequence on its default Vacuum.
 //
 // Gated behind DebugConfig.CrossCheck (false in release) and throttled to changes, so a settled
 // vehicle logs once instead of every frame.
@@ -45,7 +45,8 @@ internal static class DvCrossCheck
             Vehicle? vehicle = Program.ControlledVehicle;
             if (vehicle != null)
             {
-                Compare("flight", modControlledDv, vehicle.Parts, ResourceGroups.IsOpen);
+                Compare("flight", modControlledDv, vehicle.Parts,
+                    ResourceGroups.IsOpen || Program.EngineControlGaugeOpen);
                 return;
             }
 

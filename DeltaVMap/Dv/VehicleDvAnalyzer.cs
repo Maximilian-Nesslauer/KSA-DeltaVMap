@@ -7,13 +7,11 @@ using KSA;
 namespace DeltaVMap.Dv;
 
 // Self-contained staged delta-v analyzer for the controlled (flight) or editor vehicle.
-// The game's NavBallData.DeltaVInVacuum is a single-stage rocket equation over the whole
-// vehicle (one blended exhaust velocity, total wet / total dry mass), so it hides the dV
-// a staged vehicle actually has: a high-Isp upper stage gets averaged in with the boosters
-// and the staged gain is lost. This walks the part tree's activation sequences instead.
-// For each sequence, in firing order: its decouplers jettison their subtrees, then its
-// engines burn the fuel reachable in that stage, and Tsiolkovsky gives the stage dV; the
-// sum is the vehicle total.
+// The game's NavBallData.DeltaV covers only the active sequence, so it cannot answer what
+// the whole vehicle still has left across the stages ahead, which is what the route bar
+// needs. This walks the part tree's activation sequences instead. For each sequence, in
+// firing order: its decouplers jettison their subtrees, then its engines burn the fuel
+// reachable in that stage, and Tsiolkovsky gives the stage dV; the sum is the vehicle total.
 //
 // The logic is adapted from the StageInfo mod's analyzer, trimmed to the vacuum total the
 // route bar needs: no ambient pressure, no TWR, burn time or per-stage breakdown. Kept in

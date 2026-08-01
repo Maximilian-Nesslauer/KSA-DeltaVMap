@@ -106,7 +106,7 @@ internal static class DvValidationDump
         ClassifiedState state = StateClassifier.Classify(vehicle, ladder);
 
         DefaultCategory.Log.Info(FormattableString.Invariant(
-            $"{Tag} You are here: {vehicle.Id} around {ladder.Body.Id} -> {state.Kind} at r={state.Radius / 1000.0:F1}km, available dV={vehicle.NavBallData.DeltaVInVacuum:F0} m/s"));
+            $"{Tag} You are here: {vehicle.Id} around {ladder.Body.Id} -> {state.Kind} at r={state.Radius / 1000.0:F1}km, active-sequence dV (stock)={vehicle.NavBallData.DeltaV:F0} m/s"));
     }
 
     private static void LogSpotChecks(CelestialSystem system, DvCache cache)

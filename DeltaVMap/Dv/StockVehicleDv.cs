@@ -25,8 +25,8 @@ internal static class StockVehicleDv
 {
     // Stock's total staged dV for the vehicle under construction in the editor, or null when
     // there is no editor vehicle. Read-only: never drives a recompute, so it cannot race stock's
-    // worker job into corruption. The float read can at worst observe a stale or mid-recompute
-    // (briefly low) total, which self-corrects on the next frame.
+    // worker job into corruption. Stock publishes the total once with a Volatile.Write after its
+    // accumulation loop, so the read can at worst be one frame stale, never a partial sum.
     internal static double? TryEditorTotalDeltaV()
     {
         try
