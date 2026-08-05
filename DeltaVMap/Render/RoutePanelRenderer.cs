@@ -55,18 +55,18 @@ internal static class RoutePanelRenderer
         LegendRenderer.Draw();
 
         ImGui.SeparatorText("Route options"u8);
-        changed |= ImGui.Checkbox("From surface"u8, ref options.FromSurface);
-        changed |= ImGui.Checkbox("Land at destination"u8, ref options.LandAtDestination);
+        changed |= ConsoleUi.CheckboxRow("FROM SURFACE".AsSpan(), "DvmFromSurface".AsSpan(), ref options.FromSurface);
+        changed |= ConsoleUi.CheckboxRow("LAND AT DESTINATION".AsSpan(), "DvmLand".AsSpan(), ref options.LandAtDestination);
 
         // Aerobraking only makes sense when the route captures into a body with a usable
         // atmosphere; show a disabled hint otherwise so the toggle does not look broken.
         if (summary != null && !summary.HasAerobrakeOption)
             ImGui.TextDisabled("Aerobraking (no atmosphere on route)");
         else
-            changed |= ImGui.Checkbox("Aerobraking at arrival"u8, ref options.Aerobraking);
+            changed |= ConsoleUi.CheckboxRow("AEROBRAKING AT ARRIVAL".AsSpan(), "DvmAero".AsSpan(), ref options.Aerobraking);
 
-        changed |= ImGui.Checkbox("Include plane change"u8, ref options.IncludePlaneChange);
-        changed |= ImGui.Checkbox("Show return trip"u8, ref options.ShowReturnTrip);
+        changed |= ConsoleUi.CheckboxRow("INCLUDE PLANE CHANGE".AsSpan(), "DvmPlaneChange".AsSpan(), ref options.IncludePlaneChange);
+        changed |= ConsoleUi.CheckboxRow("SHOW RETURN TRIP".AsSpan(), "DvmReturn".AsSpan(), ref options.ShowReturnTrip);
 
         // The return aerobrakes at the origin body, a separate burn from the outbound
         // capture, so it gets its own toggle, shown only once a return trip is on.
@@ -75,7 +75,7 @@ internal static class RoutePanelRenderer
             if (summary != null && !summary.HasReturnAerobrakeOption)
                 ImGui.TextDisabled("Aerobraking on return (airless origin)");
             else
-                changed |= ImGui.Checkbox("Aerobraking on return"u8, ref options.AerobrakingReturn);
+                changed |= ConsoleUi.CheckboxRow("AEROBRAKING ON RETURN".AsSpan(), "DvmAeroReturn".AsSpan(), ref options.AerobrakingReturn);
         }
 
         rebuild = DrawViewOptions(view);
@@ -120,18 +120,18 @@ internal static class RoutePanelRenderer
         bool rebuild = false;
         ImGui.SeparatorText("View"u8);
 
-        rebuild |= ImGui.Checkbox("Show minor bodies"u8, ref view.ShowMinorBodies);
+        rebuild |= ConsoleUi.CheckboxRow("SHOW MINOR BODIES".AsSpan(), "DvmMinor".AsSpan(), ref view.ShowMinorBodies);
         // Comets are a subset of minor bodies, so the comet toggle only bites while minor
         // bodies are shown; otherwise they are already hidden.
         if (view.ShowMinorBodies)
-            rebuild |= ImGui.Checkbox("Show comets"u8, ref view.ShowComets);
+            rebuild |= ConsoleUi.CheckboxRow("SHOW COMETS".AsSpan(), "DvmComets".AsSpan(), ref view.ShowComets);
         else
             ImGui.TextDisabled("Show comets (minor bodies hidden)");
 
-        ImGui.Checkbox("Show transfer times"u8, ref view.ShowTransferTimes);
+        ConsoleUi.CheckboxRow("SHOW TRANSFER TIMES".AsSpan(), "DvmTimes".AsSpan(), ref view.ShowTransferTimes);
         // These are the ring ellipse, the atmosphere/jet halo and the aerobrake arrow - body
         // feature markers, not just "feasibility", so the label says what it actually hides.
-        ImGui.Checkbox("Show body markers (rings, atmosphere)"u8, ref view.ShowBodyMarkers);
+        ConsoleUi.CheckboxRow("SHOW BODY MARKERS".AsSpan(), "DvmBodyMarkers".AsSpan(), ref view.ShowBodyMarkers);
 
         // Piloting margin: a full-width 0-50% slider that inflates every shown dV (display
         // only). The label rides above a full-width slider that shows the current percent in

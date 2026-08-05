@@ -4,6 +4,7 @@ using System.Globalization;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
 using DeltaVMap.Model;
+using KSA;
 
 namespace DeltaVMap.Render;
 
@@ -36,9 +37,8 @@ internal static class TransferWindowRenderer
 {
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
-    // A subtle wash on the soonest window's row and a brighter name, reusing the panel green.
+    // A subtle wash on the soonest window's row; the name itself uses the console pending colour.
     private static readonly byte4 SoonestRowBg = new byte4(70, 168, 104, 60);
-    private static readonly byte4 SoonestText = new byte4(150, 226, 178, 255);
     // A faint wash on the hovered row, distinct from the soonest green.
     private static readonly byte4 HoverRowBg = new byte4(96, 116, 156, 70);
 
@@ -81,10 +81,10 @@ internal static class TransferWindowRenderer
 
         if (expanded)
         {
-            ImGui.Checkbox("Show window markers on map"u8, ref showMarkers);
+            ConsoleUi.CheckboxRow("SHOW WINDOW MARKERS ON MAP".AsSpan(), "DvmTwMarkers".AsSpan(), ref showMarkers);
             // The separate map-mode layer: the optimal-departure markers on the real orbits and
             // the ejection-angle gizmo, drawn only while the game camera is in map mode.
-            ImGui.Checkbox("Show on game map mode (3D)"u8, ref showMapMarkers);
+            ConsoleUi.CheckboxRow("SHOW ON GAME MAP MODE (3D)".AsSpan(), "DvmTwMapMarkers".AsSpan(), ref showMapMarkers);
 
             if (windows.Count == 0)
             {
@@ -417,7 +417,7 @@ internal static class TransferWindowRenderer
         string name = w.IsApproximate ? (w.TargetId + " *") : w.TargetId;
         if (soonest)
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, SoonestText);
+            ImGui.PushStyleColor(ImGuiCol.Text, in ConsoleStyle.Pending);
             ImGui.Text(name);
             ImGui.PopStyleColor();
         }

@@ -770,7 +770,7 @@ internal sealed class MapWindow : ImGuiWindow
         }
 
         bool isolate = _isolate;
-        if (ImGui.Checkbox("Isolate to found bodies"u8, ref isolate))
+        if (ConsoleUi.CheckboxRow("ISOLATE TO FOUND BODIES".AsSpan(), "DvmIsolate".AsSpan(), ref isolate))
         {
             _isolate = isolate;
             // The effect only exists once something is revealed, so only rebuild when isolate
