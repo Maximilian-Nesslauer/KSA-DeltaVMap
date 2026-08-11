@@ -22,7 +22,8 @@ internal readonly record struct DvSnapshot(
 //
 // The list is always a private instance, never the vehicle's shared one:
 //   - in flight stock refreshes the shared list only while the staging window or the engine
-//     control gauge is open (VehicleUpdateTask), so reading it would freeze this readout;
+//     control gauge is open (PhysicsBubble.RunVehiclePostWorkInner), so reading it would freeze
+//     this readout;
 //   - stock double-buffers the published SequencePerformance array, so the per-sequence
 //     AttachedParts sets read here are rewritten in place two recomputes later.
 // A private instance touches nothing outside itself. The only write SequencePerformanceList makes
@@ -30,8 +31,12 @@ internal readonly record struct DvSnapshot(
 // call; everything else it mutates is its own scratch. Re-verify that on a game update, because a
 // scratch field moving to a static would make this silently racy.
 //
-// Called from the draw path, which runs after JobSystems.VehicleSolvers.Wait(), so the part tree is
-// not being mutated concurrently.
+// Called from the draw path, which is NOT ordered after the vehicle solver: Program.PrepareFrame
+// joins JobSystems.VehicleSolver and publishes results at its start, then queues the next batch
+// through Universe.ExecuteNextVehicleSolvers before Program.OnFrame draws. So this reads the part
+// tree with a solver batch in flight, exactly as stock's own draw-thread reads of
+// PartTree.PerformanceSequences do; what keeps it safe is the private analyzer above, not an
+// ordering guarantee.
 internal static class StagedDv
 {
     // A stock recompute costs single-digit milliseconds, far too much to run per frame on the draw

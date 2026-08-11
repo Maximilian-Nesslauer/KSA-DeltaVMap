@@ -39,7 +39,7 @@ public sealed class StagedDvTest : IHarnessTest
         bool ok = true;
         try
         {
-            Orbit orbit = VehicleSpawner.CircularCci(home, body.MeanRadius + 500_000.0, Universe.GetElapsedSimTime());
+            Orbit orbit = VehicleSpawner.CircularCci(home, body.MeanRadius + 500_000.0, Universe.GetElapsedTime());
             Vehicle vehicle = VehicleSpawner.SpawnFromSave(saveId, system, home, "DvMapStagedDvTest", orbit);
             Program.ControlledVehicle = vehicle;
             StagedDv.Reset();

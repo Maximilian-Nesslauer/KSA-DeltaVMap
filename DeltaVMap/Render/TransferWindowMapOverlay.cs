@@ -16,12 +16,12 @@ namespace DeltaVMap.Render;
 // changes nothing in the panel, the list, the clock-face or the dV map; it only reads the
 // already-built, already-refreshed window list.
 //
-// It mirrors the proven stock path (TransferPlanner "Show Parent/Target Alignment",
-// TransferPlanner.cs:319-331): take an orbit position, transform it to the parent's CCE frame,
-// lift it to ECL via the parent body, project with Camera.EclToScreen, and draw on the
-// viewport's background draw list. The position projection is the same rendering step the stock
-// planner uses, so this recomputes none of the closed-form window math. Everything is wrapped so
-// a camera or projection change can never reach the render path.
+// It mirrors the proven stock path (the "Show Parent/Target Alignment" marker in
+// TransferPlanner.DrawPlanWindow): take an orbit position in the parent's CCE frame, lift it to
+// ECL via the parent body, project with Camera.EclToScreen, and draw on the viewport's background
+// draw list. The position projection is the same rendering step the stock planner uses, so this
+// recomputes none of the closed-form window math. Everything is wrapped so a camera or projection
+// change can never reach the render path.
 internal static class TransferWindowMapOverlay
 {
     // Amber, matching the clock-face required marker and the on-canvas window badges, so the
@@ -77,8 +77,7 @@ internal static class TransferWindowMapOverlay
             // its own window draw list.
             ImDrawListPtr dl = (viewport.Index == 0) ? ImGui.GetBackgroundDrawList() : ImGui.GetWindowDrawList();
 
-            SimTime now = Universe.GetElapsedSimTime();
-            double nowSec = now.Seconds();
+            UniverseTime now = Universe.GetElapsedTime();
             string? emphasis = ResolveEmphasis(windows, emphasisHint);
             TransferWindowInfo? focus = Find(windows, emphasis);
 
@@ -90,7 +89,7 @@ internal static class TransferWindowMapOverlay
             // Where each sibling will be when its window opens. The emphasized one is drawn
             // prominently and labeled; the rest are faint rings so a dense root does not smear.
             foreach (TransferWindowInfo w in windows)
-                DrawDestinationMarker(dl, camera, vpPos, w, nowSec, w.TargetId == emphasis);
+                DrawDestinationMarker(dl, camera, vpPos, w, now, w.TargetId == emphasis);
 
             // The ejection-angle gizmo, only for the emphasized window, at the departure body.
             if (focus != null)
@@ -107,16 +106,13 @@ internal static class TransferWindowMapOverlay
     // mark it. Mirrors the stock alignment path; the window time is the already-computed countdown
     // added to now, not a re-derived alignment.
     private static void DrawDestinationMarker(
-        ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, double nowSec, bool emphasized)
+        ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, UniverseTime now, bool emphasized)
     {
         if (!double.IsFinite(w.TimeToWindowSeconds) || w.Target is not IOrbiter orbiter)
             return;
 
         Orbit orbit = orbiter.Orbit;
-        var windowTime = new SimTime(nowSec + w.TimeToWindowSeconds);
-        double3 posOrb = orbit.GetPositionOrb(orbit.GetTimeSincePeriapsisThisOrbit(windowTime));
-        double3 cce = posOrb.Transform(orbit.GetOrb2ParentCce());
-        float2 s = CceToScreen(orbit, cce, camera, vpPos);
+        float2 s = CceToScreen(orbit, PositionCce(orbit, now + w.TimeToWindowSeconds), camera, vpPos);
         if (!Valid(s))
             return;
 
@@ -143,13 +139,13 @@ internal static class TransferWindowMapOverlay
     // tilted) map view; the angle drawn between them is therefore the projected angle, so the
     // numeric label carries the exact value.
     private static void DrawEjectionGizmo(
-        ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, SimTime now)
+        ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, UniverseTime now)
     {
         if (w.Source is not IOrbiter src)
             return;
 
         Orbit orbit = src.Orbit;
-        double3 pCce = orbit.GetPositionOrb(orbit.GetTimeSincePeriapsisThisOrbit(now)).Transform(orbit.GetOrb2ParentCce());
+        double3 pCce = PositionCce(orbit, now);
         double3 vCce = src.GetVelocityCce();
         double rLen = pCce.Length();
         double vLen = vCce.Length();
@@ -204,15 +200,15 @@ internal static class TransferWindowMapOverlay
     // the destination line ends at the game's own body marker; the amber optimal-departure marker
     // drawn elsewhere shows where that body moves to by the window. As with the gizmo, the drawn
     // span is the projected angle in a tilted view, so the numeric label carries the exact value.
-    private static void DrawPhaseAngle(ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, SimTime now)
+    private static void DrawPhaseAngle(ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, UniverseTime now)
     {
         if (w.Source is not IOrbiter src || w.Target is not IOrbiter tgt)
             return;
 
         Orbit so = src.Orbit;
         Orbit to = tgt.Orbit;
-        double3 srcCce = so.GetPositionOrb(so.GetTimeSincePeriapsisThisOrbit(now)).Transform(so.GetOrb2ParentCce());
-        double3 tgtCce = to.GetPositionOrb(to.GetTimeSincePeriapsisThisOrbit(now)).Transform(to.GetOrb2ParentCce());
+        double3 srcCce = PositionCce(so, now);
+        double3 tgtCce = PositionCce(to, now);
 
         // The hub sits at the CCE origin for both orbits (the shared parent), so project that.
         float2 hub = CceToScreen(so, double3.Zero, camera, vpPos);
@@ -244,6 +240,13 @@ internal static class TransferWindowMapOverlay
         var sh = new float2(lp.X + 1f, lp.Y + 1f);
         dl.AddText(in sh, LabelShadow, label);
         dl.AddText(in lp, LabelColor, label);
+    }
+
+    // The orbiting body's position in its parent's CCE frame at an absolute game time. The orbit
+    // takes time since its own periapsis, so the absolute time is converted first.
+    private static double3 PositionCce(Orbit orbit, UniverseTime gameTime)
+    {
+        return orbit.GetPositionCce(orbit.GetTimeSincePeriapsisThisOrbit(gameTime));
     }
 
     // Lift a parent-frame CCE point to ECL and project it to viewport screen coordinates, exactly

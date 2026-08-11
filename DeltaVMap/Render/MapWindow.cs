@@ -650,11 +650,11 @@ internal sealed class MapWindow : ImGuiWindow
             return;
         try
         {
-            TransferWindows.RefreshAll(_windows, Universe.GetElapsedSimTime());
+            TransferWindows.RefreshAll(_windows, Universe.GetElapsedTime());
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("twindow-refresh", $"[DvMap] Transfer window refresh failed: {ex.Message}");
+            LogHelper.WarnOnce("twindow-refresh", $"[DvMap] Transfer window refresh failed: {ex}");
         }
     }
 
@@ -689,7 +689,7 @@ internal sealed class MapWindow : ImGuiWindow
         try
         {
             HashSet<string> shown = CollectShownBodyIds();
-            List<TransferWindowInfo> built = TransferWindows.Build(_cache, root, shown, Universe.GetElapsedSimTime());
+            List<TransferWindowInfo> built = TransferWindows.Build(_cache, root, shown, Universe.GetElapsedTime());
             _windows.AddRange(built);
         }
         catch (Exception ex)

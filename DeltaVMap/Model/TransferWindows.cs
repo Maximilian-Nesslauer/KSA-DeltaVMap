@@ -38,7 +38,7 @@ internal static class TransferWindows
     // swarm. Returns an empty list when the root has no hub above it (a star or parentless root
     // has no siblings to phase against).
     public static List<TransferWindowInfo> Build(
-        DvCache cache, PhysicalNode root, IReadOnlySet<string> visibleBodyIds, SimTime now)
+        DvCache cache, PhysicalNode root, IReadOnlySet<string> visibleBodyIds, UniverseTime now)
     {
         var list = new List<TransferWindowInfo>();
 
@@ -70,7 +70,7 @@ internal static class TransferWindows
     }
 
     private static TransferWindowInfo? TryBuildPair(
-        DvCache cache, PhysicalNode root, IOrbiter sourceOrbiter, Orbit sourceOrbit, PhysicalNode sibling, SimTime now)
+        DvCache cache, PhysicalNode root, IOrbiter sourceOrbiter, Orbit sourceOrbit, PhysicalNode sibling, UniverseTime now)
     {
         try
         {
@@ -141,13 +141,13 @@ internal static class TransferWindows
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("twindow-" + sibling.Id, $"[DvMap] Transfer window for '{sibling.Id}' failed: {ex.Message}");
+            LogHelper.WarnOnce("twindow-" + sibling.Id, $"[DvMap] Transfer window for '{sibling.Id}' failed: {ex}");
             return null;
         }
     }
 
     // Recompute the two live fields for every window at a new time.
-    public static void RefreshAll(IReadOnlyList<TransferWindowInfo> windows, SimTime now)
+    public static void RefreshAll(IReadOnlyList<TransferWindowInfo> windows, UniverseTime now)
     {
         for (int i = 0; i < windows.Count; i++)
             Refresh(windows[i], now);
@@ -158,7 +158,7 @@ internal static class TransferWindows
     // own MathEx.ToOrbitAngle so the figure agrees with the stock alignment planner; the
     // retrograde branch measures it the other way round. The countdown then folds that gap
     // through the synodic rate (without the wrap on the retrograde branch, matching the game).
-    public static void Refresh(TransferWindowInfo info, SimTime now)
+    public static void Refresh(TransferWindowInfo info, UniverseTime now)
     {
         try
         {
@@ -179,8 +179,11 @@ internal static class TransferWindows
         }
         catch (Exception ex)
         {
+            // The full exception, not just its message: the arithmetic here spans several game
+            // calls and UniverseTime rejects a NaN with no call-site information, so only a stack
+            // localizes the fault from the log alone.
             LogHelper.WarnOnce("twindow-refresh-" + info.TargetId,
-                $"[DvMap] Transfer window refresh for '{info.TargetId}' failed: {ex.Message}");
+                $"[DvMap] Transfer window refresh for '{info.TargetId}' failed: {ex}");
         }
     }
 

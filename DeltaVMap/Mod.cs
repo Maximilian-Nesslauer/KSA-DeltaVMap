@@ -17,7 +17,7 @@ public sealed class Mod
     private static Harmony? _harmony;
     private static bool _validationDumped;
 
-    private const string TestedGameVersion = "v2026.8.5.5168";
+    private const string TestedGameVersion = "v2026.8.19.5261";
 
     [StarMapAllModsLoaded]
     public void OnFullyLoaded()
@@ -31,9 +31,9 @@ public sealed class Mod
 
         _harmony = new Harmony("com.maxi.deltavmap");
         // Apply each menu hook on its own so a future game change to one target does not
-        // stop the other from being patched. Patch_MenuBar adds the flight View-menu
+        // stop the other from being patched. Patch_MenuBar adds the flight HUD-menu
         // item; Patch_EditorMenuBar adds the editor's top-level tab.
-        ApplyPatch(typeof(Patch_MenuBar), "flight View menu");
+        ApplyPatch(typeof(Patch_MenuBar), "flight HUD menu");
         ApplyPatch(typeof(Patch_EditorMenuBar), "editor menu bar");
 
         DefaultCategory.Log.Info("[DvMap] Loaded.");
