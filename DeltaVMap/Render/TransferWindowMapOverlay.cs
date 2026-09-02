@@ -9,19 +9,12 @@ using KSA;
 
 namespace DeltaVMap.Render;
 
-// Map-mode (the game's 3D orbit view) overlay for the transfer windows. Purely additive: a draw
-// layer keyed off the existing TransferWindowInfo that, while the game camera is in map mode,
-// marks where each sibling destination will be at its next departure window (its position
-// projected onto the real orbit) and draws an ejection-angle gizmo at the departure body. It
-// changes nothing in the panel, the list, the clock-face or the dV map; it only reads the
-// already-built, already-refreshed window list.
+// Draws the transfer windows into the game's 3D map view: each destination at its next
+// departure window, plus an ejection gizmo at the departure body. Read-only over the built
+// window list.
 //
-// It mirrors the proven stock path (the "Show Parent/Target Alignment" marker in
-// TransferPlanner.DrawPlanWindow): take an orbit position in the parent's CCE frame, lift it to
-// ECL via the parent body, project with Camera.EclToScreen, and draw on the viewport's background
-// draw list. The position projection is the same rendering step the stock planner uses, so this
-// recomputes none of the closed-form window math. Everything is wrapped so a camera or projection
-// change can never reach the render path.
+// Projection mirrors the stock alignment marker in TransferPlanner.DrawPlanWindow: orbit
+// position in the parent's CCE frame, lifted to ECL via the parent, through Camera.EclToScreen.
 internal static class TransferWindowMapOverlay
 {
     // Amber, matching the clock-face required marker and the on-canvas window badges, so the
@@ -56,10 +49,8 @@ internal static class TransferWindowMapOverlay
     // later check shows the arm on the wrong side.
     private const double EjectionSign = -1.0;
 
-    // Draw the map-mode markers for the current window list. No-op unless the game camera is in
-    // map mode. emphasisHint is the body to highlight (the hovered sibling, else the selected
-    // route's sibling); it falls back to the soonest window here, matching the clock-face.
-    public static void Draw(Viewport viewport, IReadOnlyList<TransferWindowInfo> windows, string? emphasisHint)
+    // A null emphasisHint falls back to the soonest window, matching the clock-face.
+    public static void Draw(IViewport viewport, IReadOnlyList<TransferWindowInfo> windows, string? emphasisHint)
     {
         if (windows.Count == 0)
             return;
@@ -68,14 +59,10 @@ internal static class TransferWindowMapOverlay
             if (viewport.Mode != CameraMode.Map)
                 return;
 
-            // Project with the same viewport whose Mode and Position we use, so the camera is not
-            // coupled to which viewport happens to be the frame viewport at this hook.
+            // This viewport's camera, not Program's: the frame viewport at this hook may differ.
             Camera camera = viewport.GetCamera();
             float2 vpPos = viewport.Position;
-            // Background draw list for the main viewport (index 0), as the stock planner does, so
-            // the markers sit on the 3D scene behind the floating windows; a child viewport uses
-            // its own window draw list.
-            ImDrawListPtr dl = (viewport.Index == 0) ? ImGui.GetBackgroundDrawList() : ImGui.GetWindowDrawList();
+            ImDrawListPtr dl = ImGuiHelper.GetOverlayDrawList(viewport);
 
             UniverseTime now = Universe.GetElapsedTime();
             string? emphasis = ResolveEmphasis(windows, emphasisHint);

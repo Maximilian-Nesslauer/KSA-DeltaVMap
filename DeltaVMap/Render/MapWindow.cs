@@ -176,9 +176,8 @@ internal sealed class MapWindow : ImGuiWindow
 
     public static MapWindow Instance => _instance ??= new MapWindow();
 
-    // Draw the window if it exists and is shown. Does not create the instance, so the
-    // draw hook never touches ImGui state before the user first opens the map.
-    public static void DrawActive(Viewport viewport)
+    // Never creates the instance: the draw hook must not touch ImGui before the user opens the map.
+    public static void DrawActive(IGameViewport viewport)
     {
         if (_instance != null && _instance.IsShown)
         {
@@ -312,14 +311,10 @@ internal sealed class MapWindow : ImGuiWindow
             RebuildAt(_currentRootId);
     }
 
-    public override void DrawContent(Viewport viewport)
+    public override void DrawContent(IViewport viewport)
     {
-        // The base class draws us between ImGui.Begin and ImGui.End. An exception
-        // escaping here would skip End and leave the window/clip stacks unbalanced,
-        // corrupting later frames, so contain everything (the same guarantee the
-        // debug dumps already get for the render path). Each BeginChild is paired with
-        // an EndChild in a finally so a throw inside one column cannot unbalance the
-        // child stack either.
+        // A throw escaping here skips the base class's ImGui.End and corrupts the window,
+        // clip and child stacks for every later frame. Hence the catch and the finally pairs.
         try
         {
             if (!EnsureBuilt())
@@ -334,17 +329,17 @@ internal sealed class MapWindow : ImGuiWindow
             float panelWidth = (float)Math.Clamp(avail.X * 0.30, 320.0, 470.0);
             float canvasWidth = avail.X - panelWidth - 8f;
 
-            // Below a sensible width the split is not worth it; show the canvas alone.
+            // Too narrow to split; canvas alone.
             if (canvasWidth < 220f)
             {
-                DrawCanvas();
+                DrawCanvas(viewport);
                 return;
             }
 
             ImGui.BeginChild("##dvmap_canvas_col"u8, new float2?(new float2(canvasWidth, 0f)));
             try
             {
-                DrawCanvas();
+                DrawCanvas(viewport);
             }
             finally
             {
@@ -942,9 +937,7 @@ internal sealed class MapWindow : ImGuiWindow
             RebuildPreservingSelection(_currentRootId);
     }
 
-    // The canvas column. Assumes the build succeeded (DrawContent gates on EnsureBuilt);
-    // a defensive null check keeps a throw out of the render path regardless.
-    private void DrawCanvas()
+    private void DrawCanvas(IViewport viewport)
     {
         LayoutResult? built = _layout;
         if (built == null)
@@ -1028,15 +1021,9 @@ internal sealed class MapWindow : ImGuiWindow
         if (_windowsHoverBodyId != null)
             _hoverId = FindFocusNode(_windowsHoverBodyId)?.Id;
 
-        // The map-mode (3D orbit) overlay: a purely additive layer that, while the game camera is
-        // in map mode, marks each sibling's optimal-departure position on its real orbit and draws
-        // the ejection-angle gizmo at the departure body. Driven by the same windows refreshed at
-        // the top of this frame; the emphasis is this frame's hovered sibling, else the route's
-        // sibling (the renderer falls back to the soonest). Drawn on the viewport background list,
-        // so it is independent of this window's clip; guarded inside so a projection change never
-        // reaches the render path.
+        // Draws on the viewport overlay list, so it escapes this window's clip rect.
         if (_showMapMarkers)
-            TransferWindowMapOverlay.Draw(Program.MainViewport, _windows, _windowsHoverBodyId ?? _routeSiblingId);
+            TransferWindowMapOverlay.Draw(viewport, _windows, _windowsHoverBodyId ?? _routeSiblingId);
     }
 
     // Draw the on-canvas layout toggle: a small icon button in the top-left corner whose
