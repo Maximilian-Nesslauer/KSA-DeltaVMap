@@ -1359,15 +1359,11 @@ internal sealed class MapWindow : ImGuiWindow
     }
 
     // The vehicle's total staged dV for the comparison bar: the controlled vehicle in flight, else
-    // the vehicle under construction in the editor. Both go through the game's own staged model,
-    // repaired for the sub-part inert mass it leaves out. Null (bar shows n/a) when neither exists.
+    // the vehicle under construction in the editor. Both go through the game's own staged model.
+    // Null (bar shows n/a) when neither exists.
     private static double? TryGetAvailableDv()
     {
         double? dv = StagedDv.TryTotalDv();
-
-        if (DebugConfig.CrossCheck)
-            DvCrossCheck.Run();
-
         return dv is double value && double.IsFinite(value) ? value : null;
     }
 

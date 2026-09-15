@@ -7,15 +7,16 @@ namespace DeltaVMap.HarnessTests;
 
 // Covers the staged-dV readout that feeds the route bar. The number itself comes from the game's
 // own SequencePerformanceList, so what is worth testing is the seam around it: that the sequence
-// arrays line up, that the sub-part inert repair engages and only ever removes dV, and above all
-// that re-walking stock's drain phases reproduces the fuel stock actually burned. That last one is
-// the load-bearing assumption of the repair, and a game update could break it silently.
+// arrays line up with stock's own accumulator, that the cache is keyed on the part tree, and that
+// stock's start mass still weighs the whole vehicle. The readout adds nothing to stock's masses, so
+// a game update that drops a mass term from the model would make every figure too favourable.
 public sealed class StagedDvTest : IHarnessTest
 {
-    // Stock accumulates thrust and mass flow per phase in floats over many drain steps, so the
-    // phase-derived burn will not match its running total to the last kilogram.
-    private const double BurnReconcileTolerance = 0.02;
     private const double DvEqualityTolerance = 0.01;
+
+    // Stock sums the part masses in floats, so its start mass will not match the vehicle total to
+    // the last kilogram.
+    private const double MassTolerance = 1e-3;
 
     public string Name => "dvmap-staged-dv";
 
@@ -44,33 +45,18 @@ public sealed class StagedDvTest : IHarnessTest
             Program.ControlledVehicle = vehicle;
             StagedDv.Reset();
 
-            if (StagedDv.TryDetailed() is not DvSnapshot snapshot)
+            if (StagedDv.TryTotalDv() is not double dv)
             {
-                HarnessLog.Line("[dvmap-staged-dv] FAIL: no snapshot for the controlled vehicle.");
+                HarnessLog.Line("[dvmap-staged-dv] FAIL: no staged dV for the controlled vehicle.");
                 return 1;
             }
 
-            string totals = FormattableString.Invariant(
-                $"[dvmap-staged-dv] '{saveId}': corrected {snapshot.CorrectedDv:F1} m/s, stock {snapshot.RawDv:F1} m/s, diff {snapshot.CorrectedDv - snapshot.RawDv:+0.0;-0.0} m/s");
-            string detail = FormattableString.Invariant(
-                $", subpart inert {snapshot.SubPartInertMassKg:F1} kg, {snapshot.SequenceCount} sequence(s), atmoSeqs={snapshot.AtmosphericSequenceCount}");
-            HarnessLog.Line(totals + detail);
+            HarnessLog.Line(FormattableString.Invariant($"[dvmap-staged-dv] '{saveId}': staged dV {dv:F1} m/s"));
 
-            ok &= Check("corrected dV is a positive, finite number",
-                double.IsFinite(snapshot.CorrectedDv) && snapshot.CorrectedDv > 0.0);
-
-            // Adding the omitted mass can only worsen the mass ratio, never improve it.
-            ok &= Check(FormattableString.Invariant(
-                    $"repair never raises dV (corrected {snapshot.CorrectedDv:F1} <= stock {snapshot.RawDv:F1})"),
-                snapshot.CorrectedDv <= snapshot.RawDv + DvEqualityTolerance);
-
-            ok &= Check(FormattableString.Invariant(
-                    $"the repair engages on a real vehicle (subpart inert {snapshot.SubPartInertMassKg:F1} kg > 0)"),
-                snapshot.SubPartInertMassKg > 0.0);
-
-            ok &= CheckAgainstOwnAnalyzer(vehicle, in snapshot);
-            ok &= CheckPhaseBurnReconciles(vehicle);
-            ok &= CheckCacheKeyedOnTree(vehicle, in snapshot);
+            ok &= Check("staged dV is a positive, finite number", double.IsFinite(dv) && dv > 0.0);
+            ok &= CheckAgainstOwnAnalyzer(vehicle, dv);
+            ok &= CheckStartMassWeighsVehicle(vehicle);
+            ok &= CheckCacheKeyedOnTree(dv);
             LogRecomputeCost();
         }
         catch (Exception ex)
@@ -89,58 +75,72 @@ public sealed class StagedDvTest : IHarnessTest
         return ok ? 0 : 1;
     }
 
-    // The reported raw total must be stock's own accumulator, which only holds if the per-sequence
-    // read is index-aligned with SequenceList.Sequences and reads SequencePerformance.DeltaV.
-    private static bool CheckAgainstOwnAnalyzer(Vehicle vehicle, ref readonly DvSnapshot snapshot)
+    // The total must be stock's own accumulator, which only holds if the per-sequence read is
+    // index-aligned with SequenceList.Sequences and reads SequencePerformance.DeltaV.
+    private static bool CheckAgainstOwnAnalyzer(Vehicle vehicle, double dv)
     {
         var reference = new SequencePerformanceList(vehicle.Parts);
         reference.RecomputeForFlight(0f);
         double stockTotal = reference.TotalDeltaV;
         return Check(FormattableString.Invariant(
-                $"raw total matches stock's own accumulator ({snapshot.RawDv:F1} vs {stockTotal:F1} m/s)"),
-            Math.Abs(snapshot.RawDv - stockTotal) <= Math.Max(DvEqualityTolerance, Math.Abs(stockTotal) * 1e-4));
+                $"total matches stock's own accumulator ({dv:F1} vs {stockTotal:F1} m/s)"),
+            Math.Abs(dv - stockTotal) <= Math.Max(DvEqualityTolerance, Math.Abs(stockTotal) * 1e-4));
     }
 
-    // The repair re-integrates stock's drain phases from a heavier start mass, which is only valid
-    // if mass flow times duration per phase is the fuel stock itself burned in that sequence.
-    private static bool CheckPhaseBurnReconciles(Vehicle vehicle)
+    // Before anything is jettisoned, the first sequence starts with the whole vehicle. Engines ship
+    // as sub-parts, so the save must carry sub-part inert mass for the comparison to catch a model
+    // that leaves it out.
+    private static bool CheckStartMassWeighsVehicle(Vehicle vehicle)
     {
         var reference = new SequencePerformanceList(vehicle.Parts);
         reference.RecomputeForFlight(0f);
-
-        bool ok = true;
-        int checkedSequences = 0;
         ReadOnlySpan<SequencePerformance> perf = reference.PerformanceSequences;
-        for (int i = 0; i < perf.Length; i++)
+        if (perf.Length == 0)
+            return Check("stock reports at least one sequence", false);
+
+        ref readonly SequencePerformance first = ref perf[0];
+        double subPartInert = SubPartInertMassKg(vehicle.Parts);
+        double total = vehicle.TotalMass;
+        HarnessLog.Line(FormattableString.Invariant(
+            $"[dvmap-staged-dv] first sequence start mass {first.WetMass:F1} kg, vehicle {total:F1} kg, sub-part inert {subPartInert:F1} kg"));
+
+        bool ok = Check(FormattableString.Invariant(
+                $"the save carries sub-part inert mass ({subPartInert:F1} kg > 0)"),
+            subPartInert > 0.0);
+        if (first.AttachedParts == null || first.AttachedParts.Count != vehicle.Parts.Parts.Length)
         {
-            ref readonly SequencePerformance p = ref perf[i];
-            if (p.Phases == null || p.Phases.Count == 0 || !(p.BurnedFuelMass > 0f))
-                continue;
-
-            double phaseBurn = 0.0;
-            for (int j = 0; j < p.Phases.Count; j++)
-                phaseBurn += (double)p.Phases[j].MassFlowRate * p.Phases[j].Duration;
-
-            checkedSequences++;
-            double error = Math.Abs(phaseBurn - p.BurnedFuelMass) / p.BurnedFuelMass;
-            ok &= Check(FormattableString.Invariant(
-                    $"sequence {i} phase burn reconciles ({phaseBurn:F1} vs {p.BurnedFuelMass:F1} kg, err {error:P2})"),
-                error <= BurnReconcileTolerance);
+            HarnessLog.Line("[dvmap-staged-dv] SKIP start mass check: the first sequence already jettisons parts.");
+            return ok;
         }
 
-        return ok & Check("at least one burning sequence was reconciled", checkedSequences > 0);
+        return ok & Check(FormattableString.Invariant(
+                $"the first sequence's start mass is the vehicle mass ({first.WetMass:F1} vs {total:F1} kg)"),
+            Math.Abs(first.WetMass - total) <= MassTolerance * Math.Max(total, 1.0));
+    }
+
+    private static double SubPartInertMassKg(PartTree tree)
+    {
+        double mass = 0.0;
+        foreach (Part part in tree.Parts)
+        {
+            foreach (Part subPart in part.SubParts)
+            {
+                foreach (InertMass inert in subPart.Modules.Get<InertMass>())
+                    mass += inert.MassPropertiesAsmb.Props.Mass;
+            }
+        }
+        return mass;
     }
 
     // The cached analyzer is keyed on the part tree, so dropping the cache must produce the same
     // reading for the same vehicle rather than a stale or empty one.
-    private static bool CheckCacheKeyedOnTree(Vehicle vehicle, ref readonly DvSnapshot snapshot)
+    private static bool CheckCacheKeyedOnTree(double dv)
     {
-        _ = vehicle;
         StagedDv.Reset();
         double? again = StagedDv.TryTotalDv();
         return Check(FormattableString.Invariant(
-                $"reading is reproducible across a cache reset ({snapshot.CorrectedDv:F1} vs {again ?? double.NaN:F1} m/s)"),
-            again is double value && Math.Abs(value - snapshot.CorrectedDv) <= DvEqualityTolerance);
+                $"reading is reproducible across a cache reset ({dv:F1} vs {again ?? double.NaN:F1} m/s)"),
+            again is double value && Math.Abs(value - dv) <= DvEqualityTolerance);
     }
 
     // Not assertions (wall-clock in a headless run is too noisy to gate on), but the readout is

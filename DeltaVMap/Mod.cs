@@ -17,7 +17,7 @@ public sealed class Mod
     private static Harmony? _harmony;
     private static bool _validationDumped;
 
-    private const string TestedGameVersion = "v2026.9.7.5402";
+    private const string TestedGameVersion = "v2026.9.10.5438";
 
     [StarMapAllModsLoaded]
     public void OnFullyLoaded()
@@ -94,7 +94,6 @@ public sealed class Mod
         LogHelper.Reset();
 #if DEBUG
         PerfTracker.Reset();
-        DvCrossCheck.Reset();
 #endif
         DefaultCategory.Log.Info("[DvMap] Unloaded.");
     }

@@ -43,6 +43,10 @@
       <HintPath>..\..\..\refs\game\CommunityToolkit.HighPerformance.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Planet.Render.Core">
+      <HintPath>..\..\..\refs\game\Planet.Render.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

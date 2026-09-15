@@ -6,7 +6,7 @@ An interactive, auto-generated delta-v subway map and transfer-window planner fo
 
 This mod is written against the [StarMap loader](https://github.com/StarMapLoader/StarMap).
 
-Validated against KSA build version 2026.9.7.5402.
+Validated against KSA build version 2026.9.10.5438.
 
 ## What it does
 
