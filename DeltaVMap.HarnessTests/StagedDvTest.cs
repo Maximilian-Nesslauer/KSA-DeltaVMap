@@ -7,9 +7,10 @@ namespace DeltaVMap.HarnessTests;
 
 // Covers the staged-dV readout that feeds the route bar. The number itself comes from the game's
 // own SequencePerformanceList, so what is worth testing is the seam around it: that the sequence
-// arrays line up with stock's own accumulator, that the cache is keyed on the part tree, and that
-// stock's start mass still weighs the whole vehicle. The readout adds nothing to stock's masses, so
-// a game update that drops a mass term from the model would make every figure too favourable.
+// arrays line up with stock's own accumulator, that the cache is keyed on the part tree, that a
+// flight read waits for pending derived data, and that stock's start mass still weighs the whole
+// vehicle. The readout adds nothing to stock's masses, so a game update that drops a mass term from
+// the model would make every figure too favourable.
 public sealed class StagedDvTest : IHarnessTest
 {
     private const double DvEqualityTolerance = 0.01;
@@ -43,7 +44,11 @@ public sealed class StagedDvTest : IHarnessTest
             Orbit orbit = VehicleSpawner.CircularCci(home, body.MeanRadius + 500_000.0, Universe.GetElapsedTime());
             Vehicle vehicle = VehicleSpawner.SpawnFromSave(saveId, system, home, "DvMapStagedDvTest", orbit);
             Program.ControlledVehicle = vehicle;
+            // Stands in for Program.PrepareFrame, which this headless run has no frame loop for.
+            PartTree.FlushDirtyDerived();
             StagedDv.Reset();
+
+            ok &= CheckWaitsForDerivedFlush(vehicle);
 
             if (StagedDv.TryTotalDv() is not double dv)
             {
@@ -73,6 +78,16 @@ public sealed class StagedDvTest : IHarnessTest
 
         HarnessLog.Line($"[dvmap-staged-dv] {TestSupport.Verdict(ok)}");
         return ok ? 0 : 1;
+    }
+
+    // A flight read must not rebuild pending derived data, because a solver batch may be running
+    // on the same tree. FlushDirtyDerived is the step Program.PrepareFrame runs before the draw.
+    private static bool CheckWaitsForDerivedFlush(Vehicle vehicle)
+    {
+        vehicle.Parts.MarkDerivedDirty(DerivedData.Sequences);
+        bool waited = StagedDv.TryTotalDv() == null;
+        PartTree.FlushDirtyDerived();
+        return Check("a flight read waits for the derived-data flush", waited);
     }
 
     // The total must be stock's own accumulator, which only holds if the per-sequence read is
