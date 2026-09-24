@@ -7,7 +7,7 @@ namespace DeltaVMap.Patches;
 
 // Adds a "Delta-V Map" toggle to the stock HUD menu. GaugeCanvas.OnDrawMenuBar is a trivial
 // static method the game calls inside that menu, right where the gauge canvases list
-// themselves. A postfix appends our item there, the same hook KSASM uses for its window.
+// themselves. A postfix appends our item there.
 // Accessing MapWindow.Instance here lazily creates the window inside an active ImGui frame,
 // which is required by the ImGuiWindow base constructor.
 [HarmonyPatch(typeof(GaugeCanvas), nameof(GaugeCanvas.OnDrawMenuBar))]
