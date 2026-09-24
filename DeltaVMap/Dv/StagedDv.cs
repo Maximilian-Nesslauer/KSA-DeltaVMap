@@ -1,5 +1,7 @@
 using System;
+using System.Reflection;
 using DeltaVMap.Core;
+using HarmonyLib;
 using KSA;
 
 namespace DeltaVMap.Dv;
@@ -16,17 +18,19 @@ namespace DeltaVMap.Dv;
 //     this readout;
 //   - stock double-buffers the published SequencePerformance array, so the per-sequence entries
 //     read here are rewritten in place two recomputes later.
-// A private instance touches nothing outside itself. The only write SequencePerformanceList makes
-// to the part tree is PartTree.HasUnsavedChanges inside SetDirty, which RecomputeForFlight does not
-// call; everything else it mutates is its own scratch. Re-verify that on a game update, because a
-// scratch field moving to a static would make this silently racy.
+// The analyzer's scratch is its own, but Recompute calls PartTree.EnsureDerived for substance
+// stores, solid motor stacks and sequences, and that rebuilds shared tree state whenever the tree
+// has pending derived work.
 //
 // Called from the draw path, which is NOT ordered after the vehicle solver: Program.PrepareFrame
-// joins JobSystems.VehicleSolver and publishes results at its start, then queues the next batch
-// through Universe.ExecuteNextVehicleSolvers before Program.OnFrame draws. So this reads the part
-// tree with a solver batch in flight, exactly as stock's own draw-thread reads of
-// PartTree.PerformanceSequences do; what keeps it safe is the private analyzer above, not an
-// ordering guarantee.
+// joins JobSystems.VehicleSolver at its start, then flushes pending derived work
+// (PartTree.FlushDirtyDerived) and queues the next batch through Universe.ExecuteNextVehicleSolvers
+// before Program.OnFrame draws. Stock marks a flight tree dirty only on the main thread before that
+// flush, so a tree that is clean at the draw stays clean while the batch runs and EnsureDerived only
+// reads it. A flight recompute therefore waits while the tree has pending derived work, instead of
+// racing the solver's own EnsureDerived in PhysicsBubble.RunVehiclePostWorkInner. Re-verify on each
+// game update the flush order, the main-thread-only dirtying, the private PartTree._derivedDirty
+// field, and that no SequencePerformanceList scratch field has moved to a static.
 internal static class StagedDv
 {
     // A stock recompute costs single-digit milliseconds, far too much to run per frame on the draw
@@ -38,6 +42,11 @@ internal static class StagedDv
     // Propellant mass wanders by rounding alone while nothing is burning, so ignore changes that
     // cannot move a delta-v readout.
     private const double PropellantEpsilonKg = 0.05;
+
+    private const DerivedData RecomputeInputs =
+        DerivedData.SubstanceStores | DerivedData.SolidMotorStacks | DerivedData.Sequences;
+
+    private static readonly AccessTools.FieldRef<PartTree, DerivedData>? DerivedDirty = BindDerivedDirty();
 
     private static PartTree? _tree;
     private static SequencePerformanceList? _analyzer;
@@ -80,6 +89,11 @@ internal static class StagedDv
 
             if (_totalDv == null || (intervalElapsed && changed))
             {
+                // Pending work clears at the next PrepareFrame, so the readout keeps its last
+                // value, or shows n/a for a frame on a fresh tree.
+                if (inFlight && HasPendingDerivedWork(tree))
+                    return _totalDv;
+
                 // The baseline is the state the cached total was computed from, so it moves only
                 // here. Advancing it on a frame that skipped the recompute would let a slow drain
                 // stay under the epsilon forever and freeze the readout.
@@ -128,6 +142,25 @@ internal static class StagedDv
         return mass;
     }
 
+    private static bool HasPendingDerivedWork(PartTree tree)
+    {
+        if (DerivedDirty == null)
+        {
+            LogHelper.WarnOnce("staged-dv-derived-dirty",
+                "[DvMap] PartTree._derivedDirty not found, staged dV no longer waits for the derived-data flush.");
+            return false;
+        }
+        return (DerivedDirty(tree) & RecomputeInputs) != DerivedData.None;
+    }
+
+    private static AccessTools.FieldRef<PartTree, DerivedData>? BindDerivedDirty()
+    {
+        FieldInfo? field = AccessTools.DeclaredField(typeof(PartTree), "_derivedDirty");
+        return field != null && field.FieldType == typeof(DerivedData) && !field.IsStatic
+            ? AccessTools.FieldRefAccess<PartTree, DerivedData>(field)
+            : null;
+    }
+
     private static PartTree? ResolveTree(out bool inFlight)
     {
         Vehicle? vehicle = Program.ControlledVehicle;
@@ -145,7 +178,9 @@ internal static class StagedDv
         // Stock's editor readout runs the plain recompute, and inserting a sequence in the editor
         // raises ActiveSequence, so flight mode there would drop whole stages. The editor gets a
         // fresh list instead, which starts dirty, because SetDirty would also mark the craft as
-        // unsaved.
+        // unsaved. The editor recompute does not wait for the flush, because no job touches the
+        // editor tree during the draw (stock queues its editor recompute after the UI draw), so any
+        // derived rebuild it triggers is the one the next flush would run anyway.
         if (inFlight)
         {
             analyzer.RecomputeForFlight(0f);
