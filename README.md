@@ -57,7 +57,7 @@ id = "DeltaVMap"
 enabled = true
 ```
 
-Open the map from the **View** -> "Delta-V Map" menu in flight, or the top-level **Delta-V Map** tab in the editor.
+Open the map from the top-level **Delta-V Map** menu, in flight and in the editor.
 
 ## Dependencies
 

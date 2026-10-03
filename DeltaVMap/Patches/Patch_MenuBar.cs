@@ -5,24 +5,28 @@ using KSA;
 
 namespace DeltaVMap.Patches;
 
-// Adds a "Delta-V Map" toggle to the stock HUD menu. GaugeCanvas.OnDrawMenuBar is a trivial
-// static method the game calls inside that menu, right where the gauge canvases list
-// themselves. A postfix appends our item there.
+// Adds a top-level "Delta-V Map" menu to the main menu bar in flight and in the vehicle editor.
+// Program.DrawProgramMenusHook is an empty hook the game calls inside the menu bar after its own
+// menus in both contexts, so the entry does not depend on the layout of the stock menus.
 // Accessing MapWindow.Instance here lazily creates the window inside an active ImGui frame,
-// which is required by the ImGuiWindow base constructor.
-[HarmonyPatch(typeof(GaugeCanvas), nameof(GaugeCanvas.OnDrawMenuBar))]
+// which the ImGuiWindow base constructor requires.
+[HarmonyPatch(typeof(Program), nameof(Program.DrawProgramMenusHook))]
 internal static class Patch_MenuBar
 {
     [HarmonyPostfix]
     private static void Postfix()
     {
+        if (!ImGui.BeginMenu("Delta-V Map"u8))
+            return;
+
         bool shown = MapWindow.Instance.IsShown;
-        if (ImGui.MenuItem("Delta-V Map"u8, default(ImString), shown))
+        if (ImGui.MenuItem("Show Map"u8, default(ImString), shown))
         {
             if (shown)
                 MapWindow.Instance.Close();
             else
                 MapWindow.Instance.Open();
         }
+        ImGui.EndMenu();
     }
 }

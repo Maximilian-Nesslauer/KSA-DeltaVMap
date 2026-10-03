@@ -30,26 +30,17 @@ public sealed class Mod
                 "Some features may not work correctly.");
 
         _harmony = new Harmony("com.maxi.deltavmap");
-        // Apply each menu hook on its own so a future game change to one target does not
-        // stop the other from being patched. Patch_MenuBar adds the flight HUD-menu
-        // item; Patch_EditorMenuBar adds the editor's top-level tab.
-        ApplyPatch(typeof(Patch_MenuBar), "flight HUD menu");
-        ApplyPatch(typeof(Patch_EditorMenuBar), "editor menu bar");
-
-        DefaultCategory.Log.Info("[DvMap] Loaded.");
-    }
-
-    private static void ApplyPatch(Type patchClass, string description)
-    {
         try
         {
-            _harmony!.CreateClassProcessor(patchClass).Patch();
+            _harmony.CreateClassProcessor(typeof(Patch_MenuBar)).Patch();
         }
         catch (Exception ex)
         {
-            // A missing hook should not unload the mod or block the other patch.
-            LogHelper.ErrorOnce("patch-" + patchClass.Name, $"[DvMap] Failed to apply {description} patch: {ex}");
+            // A missing menu hook leaves the map unreachable but must not unload the mod.
+            LogHelper.ErrorOnce("patch-" + nameof(Patch_MenuBar), $"[DvMap] Failed to apply the menu bar patch: {ex}");
         }
+
+        DefaultCategory.Log.Info("[DvMap] Loaded.");
     }
 
     // Runs every frame after KSA's own ImGui, while the frame is still active. Draws
