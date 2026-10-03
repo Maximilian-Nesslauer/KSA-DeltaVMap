@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
+using DeltaVMap.Core;
 using DeltaVMap.Model;
 using KSA;
 
@@ -31,11 +31,30 @@ internal readonly struct OverlayResult
 // away on each row. The separate clock panel beside it holds the live polar clock-face: a top-
 // down schematic of the hub and its bodies at their current phase, where the soonest (or
 // hovered) window gets a required-position marker, an arc to the body's current position and
-// the countdown. It reuses the panel's time formatting and the per-system color palette. The
+// the countdown. It reuses the shared time formatting and the per-system color palette. The
 // list panel's markers toggle controls the on-map window badges, which the canvas draws.
-internal static class TransferWindowRenderer
+//
+// An instance owned by the map window: every string it shows is kept until the number it
+// shows changes, so an open overlay draws without allocating.
+internal sealed class TransferWindowRenderer
 {
-    private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+    private const string ExpandedToggleLabel = "   Transfer windows###dvtwtoggle";
+
+    private readonly CachedText _sourceLine = new();
+    private readonly CachedText _toggleLabel = new();
+    private readonly CachedText _clockTitle = new();
+    private readonly CachedText _decode = new();
+    private readonly List<RowTexts> _rows = new();
+    private readonly List<(string Text, bool Disabled)> _tooltip = new();
+    private TransferWindowInfo? _tooltipWindow;
+    private long _tooltipKey;
+
+    private sealed class RowTexts
+    {
+        public readonly CachedText Name = new();
+        public readonly CachedText Time = new();
+        public readonly CachedText Eject = new();
+    }
 
     // A subtle wash on the soonest window's row; the name itself uses the console pending colour.
     private static readonly byte4 SoonestRowBg = new byte4(70, 168, 104, 60);
@@ -73,7 +92,7 @@ internal static class TransferWindowRenderer
     // emphasize (the hover, else the selected route's sibling); clockHidden is true when the
     // clock panel could not fit beside this one, to note it. The return reports this frame's
     // toggle click and hovered body.
-    public static OverlayResult DrawOverlay(
+    public OverlayResult DrawOverlay(
         IReadOnlyList<TransferWindowInfo> windows, ref bool showMarkers, ref bool showMapMarkers, bool expanded,
         string? highlightBodyId, bool clockHidden)
     {
@@ -94,7 +113,11 @@ internal static class TransferWindowRenderer
             {
                 // Source (the root) named once; the "*" marker and the dropped figures are
                 // explained in the per-row hover.
-                ImGui.TextDisabled("From " + windows[0].SourceId + " - hover a row for detail");
+                TransferWindowInfo first = windows[0];
+                string source = _sourceLine.IsStale(first.Source, 0)
+                    ? _sourceLine.Set(first.Source, 0, "From " + first.SourceId + " - hover a row for detail")
+                    : _sourceLine.Text;
+                ImGui.TextDisabled(source);
                 if (clockHidden)
                     ImGui.TextDisabled("(widen the window to show the phase clock)");
 
@@ -116,7 +139,7 @@ internal static class TransferWindowRenderer
     // Draw the clock-face filling its own panel (a second overlay frame MapWindow places beside
     // the list, big enough to read). Draws a small title in the top-left corner (outside the
     // circle), centers the square clock, and returns the hovered body, or null.
-    public static string? DrawClockPanel(IReadOnlyList<TransferWindowInfo> windows, ColorPalette? palette, string? highlightBodyId)
+    public string? DrawClockPanel(IReadOnlyList<TransferWindowInfo> windows, ColorPalette? palette, string? highlightBodyId)
     {
         if (windows.Count == 0)
             return null;
@@ -124,7 +147,10 @@ internal static class TransferWindowRenderer
         float2 panelOrigin = ImGui.GetCursorScreenPos();
         ImDrawListPtr dl = ImGui.GetWindowDrawList();
         var titlePos = new float2(panelOrigin.X + 4f, panelOrigin.Y + 3f);
-        dl.AddText(in titlePos, TitleColor, "Phase clock - " + windows[0].SourceId);
+        string title = _clockTitle.IsStale(windows[0].Source, 0)
+            ? _clockTitle.Set(windows[0].Source, 0, "Phase clock - " + windows[0].SourceId)
+            : _clockTitle.Text;
+        dl.AddText(in titlePos, TitleColor, title);
 
         float2 avail = ImGui.GetContentRegionAvail();
         float side = Math.Min(avail.X, avail.Y);
@@ -142,13 +168,12 @@ internal static class TransferWindowRenderer
     // The footer toggle: a full-width clickable row (stable id via "###" so the live label can
     // change between press and release without dropping the click) with a real triangle arrow
     // drawn at its left.
-    private static bool DrawToggle(IReadOnlyList<TransferWindowInfo> windows, bool expanded)
+    private bool DrawToggle(IReadOnlyList<TransferWindowInfo> windows, bool expanded)
     {
         // Expanded, the list and clock carry the detail, so the footer just identifies the
         // section; collapsed, it names the next window. The "###" id keeps the toggle stable
         // across the changing label.
-        string text = expanded ? "Transfer windows" : CollapsedHeaderLabel(windows);
-        string label = "   " + text + "###dvtwtoggle";
+        string label = expanded ? ExpandedToggleLabel : CollapsedToggleLabel(windows);
         bool clicked = ImGui.Selectable(label, false, ImGuiSelectableFlags.None, (float2?)null);
 
         float2 rmin = ImGui.GetItemRectMin();
@@ -190,7 +215,7 @@ internal static class TransferWindowRenderer
     // line and hollow marker where the target must be, labeled with that lead and the countdown.
     // A line at the bottom decodes it ("<target>: lead +X, now +Y, in ~T"). Reserves the square
     // via Dummy. Returns the body id whose dot the mouse is over, or null.
-    private static string? DrawClockFace(
+    private string? DrawClockFace(
         IReadOnlyList<TransferWindowInfo> windows, ColorPalette? palette, string? highlightBodyId, float side)
     {
         float2 region = ImGui.GetCursorScreenPos();
@@ -208,8 +233,9 @@ internal static class TransferWindowRenderer
         // SMA range across the source and every sibling, for the log radius scale.
         double minSma = sourceRef.SourceSemiMajorAxis;
         double maxSma = sourceRef.SourceSemiMajorAxis;
-        foreach (TransferWindowInfo w in windows)
+        for (int i = 0; i < windows.Count; i++)
         {
+            TransferWindowInfo w = windows[i];
             if (w.TargetSemiMajorAxis < minSma) minSma = w.TargetSemiMajorAxis;
             if (w.TargetSemiMajorAxis > maxSma) maxSma = w.TargetSemiMajorAxis;
         }
@@ -231,11 +257,11 @@ internal static class TransferWindowRenderer
         dl.AddCircle(in center, rSrc, FaintRing, 64, 1f);
 
         TransferWindowInfo? emphasisInfo = null;
-        foreach (TransferWindowInfo w in windows)
+        for (int i = 0; i < windows.Count; i++)
         {
-            if (w.TargetId == emphasis)
+            if (windows[i].TargetId == emphasis)
             {
-                emphasisInfo = w;
+                emphasisInfo = windows[i];
                 break;
             }
         }
@@ -267,11 +293,12 @@ internal static class TransferWindowRenderer
 
             // The numbers go on one line at the bottom, not on the crowded center where labels
             // would collide; shortened to a "lead + countdown" form if it would not fit the width.
-            string time = RoutePanelRenderer.FormatTime(emphasisInfo.TimeToWindowSeconds);
-            string decode = "lead " + DegSigned(emphasisInfo.TargetPhaseAngle) + " deg, now "
-                + DegSigned(emphasisInfo.CurrentPhaseAngle) + ", in ~" + time;
-            if (ImGui.CalcTextSize(decode).X > side - 8f)
-                decode = "lead " + DegSigned(emphasisInfo.TargetPhaseAngle) + " deg, in ~" + time;
+            long decodeKey = Format.DurationKey(emphasisInfo.TimeToWindowSeconds)
+                ^ (RoundedDegrees(emphasisInfo.CurrentPhaseAngle) << 44)
+                ^ ((long)side << 24);
+            string decode = _decode.IsStale(emphasisInfo, decodeKey)
+                ? _decode.Set(emphasisInfo, decodeKey, BuildDecode(emphasisInfo, side))
+                : _decode.Text;
             var decodePos = new float2(region.X + 4f, region.Y + side - 17f);
             var decodeShadow = new float2(decodePos.X + 1f, decodePos.Y + 1f);
             dl.AddText(in decodeShadow, LabelShadow, decode);
@@ -281,8 +308,9 @@ internal static class TransferWindowRenderer
         // Dots on top of the geometry; the emphasized / hovered dot is enlarged and named.
         float2 mouse = ImGui.GetMousePos();
         string? hovered = null;
-        foreach (TransferWindowInfo w in windows)
+        for (int i = 0; i < windows.Count; i++)
         {
+            TransferWindowInfo w = windows[i];
             float r = RingRadius(w.TargetSemiMajorAxis, minSma, maxSma, minR, maxR);
             float2 p = Polar(center, r, w.TargetPhaseAngleNow);
             byte4 col = palette?.ColorFor(w.TargetId) ?? DefaultDot;
@@ -302,6 +330,21 @@ internal static class TransferWindowRenderer
 
         ImGui.Dummy(new float2(side, side));
         return hovered;
+    }
+
+    private static string BuildDecode(TransferWindowInfo w, float side)
+    {
+        string time = Format.Duration(w.TimeToWindowSeconds);
+        string decode = "lead " + Format.DegreesSigned(w.TargetPhaseAngle) + " deg, now "
+            + Format.DegreesSigned(w.CurrentPhaseAngle) + ", in ~" + time;
+        if (ImGui.CalcTextSize(decode).X > side - 8f)
+            decode = "lead " + Format.DegreesSigned(w.TargetPhaseAngle) + " deg, in ~" + time;
+        return decode;
+    }
+
+    private static long RoundedDegrees(double radians)
+    {
+        return (long)Math.Round(radians * 180.0 / Math.PI) & 0xFFF;
     }
 
     private static float2 Polar(float2 center, float r, double angle)
@@ -369,7 +412,7 @@ internal static class TransferWindowRenderer
 
     // The compact per-sibling list below the clock-face. Highlights the soonest (green) and the
     // emphasized (hovered) row, and returns the body id of the row the mouse is over, or null.
-    private static string? DrawCompactList(IReadOnlyList<TransferWindowInfo> windows, string? highlightBodyId, float height)
+    private string? DrawCompactList(IReadOnlyList<TransferWindowInfo> windows, string? highlightBodyId, float height)
     {
         int soonest = SoonestIndex(windows);
         string? hovered = null;
@@ -389,9 +432,11 @@ internal static class TransferWindowRenderer
             ImGui.TableSetupScrollFreeze(0, 1);
             ImGui.TableHeadersRow();
 
+            while (_rows.Count < windows.Count)
+                _rows.Add(new RowTexts());
             for (int i = 0; i < windows.Count; i++)
             {
-                string? h = DrawCompactRow(windows[i], i == soonest, windows[i].TargetId == highlightBodyId);
+                string? h = DrawCompactRow(windows[i], _rows[i], i == soonest, windows[i].TargetId == highlightBodyId);
                 if (h != null)
                     hovered = h;
             }
@@ -405,7 +450,7 @@ internal static class TransferWindowRenderer
         return hovered;
     }
 
-    private static string? DrawCompactRow(TransferWindowInfo w, bool soonest, bool highlight)
+    private string? DrawCompactRow(TransferWindowInfo w, RowTexts texts, bool soonest, bool highlight)
     {
         ImGui.TableNextRow();
         if (soonest)
@@ -414,7 +459,8 @@ internal static class TransferWindowRenderer
             ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0, ImGui.GetColorU32(HoverRowBg));
 
         ImGui.TableNextColumn();
-        string name = w.IsApproximate ? (w.TargetId + " *") : w.TargetId;
+        string name = !w.IsApproximate ? w.TargetId
+            : texts.Name.IsStale(w, 0) ? texts.Name.Set(w, 0, w.TargetId + " *") : texts.Name.Text;
         if (soonest)
         {
             ImGui.PushStyleColor(ImGuiCol.Text, in ConsoleStyle.Pending);
@@ -432,31 +478,55 @@ internal static class TransferWindowRenderer
             ShowRowTooltip(w);
 
         ImGui.TableNextColumn();
-        ImGui.Text("~" + RoutePanelRenderer.FormatTime(w.TimeToWindowSeconds));
+        long timeKey = Format.DurationKey(w.TimeToWindowSeconds);
+        ImGui.Text(texts.Time.IsStale(w, timeKey)
+            ? texts.Time.Set(w, timeKey, "~" + Format.Duration(w.TimeToWindowSeconds))
+            : texts.Time.Text);
 
         ImGui.TableNextColumn();
-        ImGui.Text(Deg(w.EjectionAngle) + (w.EjectionAhead ? " >" : " <"));
+        ImGui.Text(texts.Eject.IsStale(w, 0)
+            ? texts.Eject.Set(w, 0, Format.Degrees(w.EjectionAngle) + (w.EjectionAhead ? " >" : " <"))
+            : texts.Eject.Text);
 
         return isHovered ? w.TargetId : null;
     }
 
-    private static void ShowRowTooltip(TransferWindowInfo w)
+    // The row tooltip, rebuilt only when the hovered window or one of its live figures changes.
+    private void ShowRowTooltip(TransferWindowInfo w)
     {
+        long key = Format.DurationKey(w.TimeToWindowSeconds) ^ (RoundedDegrees(w.CurrentPhaseAngle) << 44);
+        if (!ReferenceEquals(w, _tooltipWindow) || key != _tooltipKey)
+        {
+            _tooltipWindow = w;
+            _tooltipKey = key;
+            _tooltip.Clear();
+            _tooltip.Add((w.SourceId + " -> " + w.TargetId, false));
+            _tooltip.Add(("", false));
+            _tooltip.Add(("Optimal (lead) phase: " + Format.DegreesSigned(w.TargetPhaseAngle) + " deg", false));
+            _tooltip.Add(("Current phase: " + Format.DegreesSigned(w.CurrentPhaseAngle) + " deg", false));
+            _tooltip.Add(("Window in: ~" + Format.Duration(w.TimeToWindowSeconds), false));
+            _tooltip.Add(("Recurs every: ~" + Format.Duration(w.SynodicPeriodSeconds), false));
+            _tooltip.Add(("Transfer time: ~" + Format.Duration(w.TransferTimeSeconds), false));
+            _tooltip.Add(("Ejection angle: " + Format.Degrees(w.EjectionAngle) + " deg "
+                + (w.EjectionAhead ? "ahead of" : "behind") + " prograde", false));
+            _tooltip.Add(("Relative inclination: " + Format.Degrees(w.RelativeInclination) + " deg", false));
+            if (w.Retrograde)
+                _tooltip.Add(("Retrograde sibling (orbits the hub the opposite way)", true));
+            if (w.IsApproximate)
+                _tooltip.Add(("* eccentric or open orbit, window less precise", true));
+        }
+
         ImGui.BeginTooltip();
-        ImGui.Text(w.SourceId + " -> " + w.TargetId);
-        ImGui.Separator();
-        ImGui.Text("Optimal (lead) phase: " + DegSigned(w.TargetPhaseAngle) + " deg");
-        ImGui.Text("Current phase: " + DegSigned(w.CurrentPhaseAngle) + " deg");
-        ImGui.Text("Window in: ~" + RoutePanelRenderer.FormatTime(w.TimeToWindowSeconds));
-        ImGui.Text("Recurs every: ~" + RoutePanelRenderer.FormatTime(w.SynodicPeriodSeconds));
-        ImGui.Text("Transfer time: ~" + RoutePanelRenderer.FormatTime(w.TransferTimeSeconds));
-        ImGui.Text("Ejection angle: " + Deg(w.EjectionAngle) + " deg "
-            + (w.EjectionAhead ? "ahead of" : "behind") + " prograde");
-        ImGui.Text("Relative inclination: " + Deg(w.RelativeInclination) + " deg");
-        if (w.Retrograde)
-            ImGui.TextDisabled("Retrograde sibling (orbits the hub the opposite way)");
-        if (w.IsApproximate)
-            ImGui.TextDisabled("* eccentric or open orbit, window less precise");
+        for (int i = 0; i < _tooltip.Count; i++)
+        {
+            (string text, bool disabled) = _tooltip[i];
+            if (i == 1)
+                ImGui.Separator();
+            else if (disabled)
+                ImGui.TextDisabled(text);
+            else
+                ImGui.Text(text);
+        }
         ImGui.EndTooltip();
     }
 
@@ -477,22 +547,15 @@ internal static class TransferWindowRenderer
         return best;
     }
 
-    private static string CollapsedHeaderLabel(IReadOnlyList<TransferWindowInfo> windows)
+    private string CollapsedToggleLabel(IReadOnlyList<TransferWindowInfo> windows)
     {
         int soonest = SoonestIndex(windows);
         if (soonest < 0)
-            return "Transfer windows";
+            return ExpandedToggleLabel;
         TransferWindowInfo w = windows[soonest];
-        return "next: " + w.TargetId + " ~" + RoutePanelRenderer.FormatTime(w.TimeToWindowSeconds);
-    }
-
-    private static string Deg(double radians)
-    {
-        return Math.Round(radians * 180.0 / Math.PI).ToString("0", Inv);
-    }
-
-    private static string DegSigned(double radians)
-    {
-        return Math.Round(radians * 180.0 / Math.PI).ToString("+0;-0;0", Inv);
+        long key = Format.DurationKey(w.TimeToWindowSeconds);
+        return _toggleLabel.IsStale(w, key)
+            ? _toggleLabel.Set(w, key, "   next: " + w.TargetId + " ~" + Format.Duration(w.TimeToWindowSeconds) + "###dvtwtoggle")
+            : _toggleLabel.Text;
     }
 }

@@ -4,11 +4,12 @@ using Brutal.Numerics;
 
 namespace DeltaVMap.Render;
 
-// The map legend, drawn in the route panel's spare vertical space below the summary. It
-// renders the very same NodeGlyphs the canvas draws, next to one-line labels, so the symbol
-// set is self-documenting and can never drift from the map. Static and compact; no
-// interaction. Colors are a fixed representative system color rather than any one body's, so
-// the legend reads the same whatever is on screen.
+// The map legend, drawn at the top of the route panel. It renders the very same NodeGlyphs
+// the canvas draws, next to one-line labels, so the symbol set is self-documenting and can
+// never drift from the map. Static and compact; no interaction. Colors are a fixed
+// representative system color rather than any one body's, so the legend reads the same
+// whatever is on screen. The star-system rows only show when the universe holds several star
+// systems, the only time the map draws them.
 internal static class LegendRenderer
 {
     private static readonly byte4 Fill = new byte4(120, 170, 210, 255);
@@ -19,11 +20,17 @@ internal static class LegendRenderer
     private const float CellH = 22f;
     private const float R = 7f;
 
-    public static void Draw()
+    public static void Draw(bool severalSystems)
     {
         // Controls first, so the map's interactions are discoverable without a manual.
         ImGui.SeparatorText("Controls"u8);
         ImGui.TextDisabled("Click a body: plan a route to it");
+        if (severalSystems)
+        {
+            ImGui.PushTextWrapPos(0f);
+            ImGui.TextDisabled("Click a star system: plan a trip there and open it");
+            ImGui.PopTextWrapPos();
+        }
         ImGui.TextDisabled("Click it again: clear the route");
         ImGui.TextDisabled("Shift+click: re-root the map here");
         ImGui.TextDisabled("Drag: pan,  mouse wheel: zoom");
@@ -49,6 +56,19 @@ internal static class LegendRenderer
             NodeGlyphs.RingEllipse(dl, c, 5f, Stroke);
         });
         PlaneChangeRow("Max plane change (when on)");
+
+        if (severalSystems)
+        {
+            Row("Interstellar trip (length not to scale)", static (dl, c) =>
+            {
+                var a = new float2(c.X - CellW * 0.5f + 2f, c.Y);
+                var b = new float2(c.X + CellW * 0.5f - 2f, c.Y);
+                NodeGlyphs.DashedSegment(dl, a, b, ColorPalette.InterstellarLine, 2.2f, a - new float2(1f, 4f), b + new float2(1f, 4f));
+            });
+            Row("Star", static (dl, c) => NodeGlyphs.Star(dl, c, R, Fill, Stroke));
+            Row("Barycenter (multiple star)", static (dl, c) => NodeGlyphs.Barycenter(dl, c, R, Fill, Stroke));
+            Row("Star system (click to open)", static (dl, c) => NodeGlyphs.SystemStub(dl, c, R + 1f, Fill, Stroke, barycenter: false));
+        }
 
         ImGui.TextDisabled("Color = planetary system");
         ImGui.TextDisabled("Transfer dV: injection + capture, then total");

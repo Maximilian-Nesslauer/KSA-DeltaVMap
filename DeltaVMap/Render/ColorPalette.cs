@@ -7,8 +7,8 @@ using KSA;
 namespace DeltaVMap.Render;
 
 // Per-planetary-system colors for the map. Every body is mapped to the hue of its
-// "system anchor" (the planet it belongs to, or itself if it is a planet or the
-// star), so a planet and all its moons share one family of colors and read as one
+// "system anchor" (the planet it belongs to, or itself if it is a planet, a star or
+// a barycenter), so a planet and all its moons share one family of colors and read as one
 // metro line. A small stock hue table pins the well-known bodies; everything else
 // hashes its anchor name to a stable hue. Moons are lightened and minor bodies
 // desaturated so a body's role still reads at a glance within its system color.
@@ -16,6 +16,11 @@ internal sealed class ColorPalette
 {
     private readonly Dictionary<string, byte4> _byBodyId;
     private static readonly byte4 Fallback = new byte4(144, 164, 174, 255);
+
+    // The dashed interstellar connector between star systems: a lavender apart from the hub bus,
+    // focus ring, root and window badge colors, so with its dashes it reads as its own kind of
+    // line.
+    internal static readonly byte4 InterstellarLine = new byte4(190, 150, 255, 255);
 
     private ColorPalette(Dictionary<string, byte4> byBodyId)
     {
@@ -47,9 +52,9 @@ internal sealed class ColorPalette
 
             // A moon sits brighter than its planet's base color; a minor body is
             // washed out. The star keeps the base values.
-            if (node.Astro.IsMoon())
+            if (node.IsMoon)
                 lightness = 0.70;
-            if (node.Astro is MinorBody)
+            if (node.IsMinor)
                 saturation = 0.50;
 
             map[node.Id] = HslToByte4(hue, saturation, lightness);
@@ -57,14 +62,15 @@ internal sealed class ColorPalette
         return new ColorPalette(map);
     }
 
-    // Climb to the planet directly under the star, which defines the planetary system
-    // this body belongs to. A planet returns itself; the star returns itself.
+    // Climb to the planet directly under its star, which defines the planetary system
+    // this body belongs to. A planet returns itself; a star or barycenter returns itself,
+    // so each star of a multiple system keeps its own hue.
     private static PhysicalNode SystemAnchor(PhysicalNode node)
     {
-        if (node.IsStar)
+        if (node.IsHubOnly)
             return node;
         PhysicalNode current = node;
-        while (current.Parent != null && !current.Parent.IsStar)
+        while (current.Parent != null && !current.Parent.IsHubOnly)
             current = current.Parent;
         return current;
     }

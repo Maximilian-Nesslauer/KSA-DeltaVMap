@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
+using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using DeltaVMap.Layout;
 using DeltaVMap.Model;
@@ -41,15 +41,45 @@ internal readonly struct CanvasTransform
     }
 }
 
-// Draws the laid-out tree with ImGui DrawList primitives every frame the window is
-// visible. Reads positions and routed polylines straight off the LayoutResult (the
-// layout engine already produced overlap-free, octilinear geometry); this class only
-// turns that into lines, symbols, badges and labels. The StateNode lookup gives each
-// layout node its game body for the per-system color.
+// The transfer-window markers to draw: the marker node of each window (null when the body
+// is not on the map), its countdown, and the cached countdown text with its measured width.
+// MapWindow keeps the arrays and only rewrites a text when the shown value changes.
+internal readonly struct WindowMarkerSet
+{
+    public readonly int Count;
+    public readonly LayoutNode?[] Nodes;
+    public readonly double[] Seconds;
+    public readonly string[] Texts;
+    public readonly float[] Widths;
+
+    public WindowMarkerSet(int count, LayoutNode?[] nodes, double[] seconds, string[] texts, float[] widths)
+    {
+        Count = count;
+        Nodes = nodes;
+        Seconds = seconds;
+        Texts = texts;
+        Widths = widths;
+    }
+}
+
+// The badge on the interstellar connector of the selected route: the leg's delta-v and coast
+// time at the chosen cruise speed, with their measured widths. InterstellarSection rebuilds the
+// strings only when a figure changes, so a speed change touches nothing but this text.
+internal readonly record struct ConnectorBadge(string DestinationRootId, string DvText, float DvW, string TimeText, float TimeW);
+
+// Draws the laid-out scene with ImGui DrawList primitives every frame the window is
+// visible. Reads positions and routed polylines straight off the LayoutScene (the
+// layout engine already produced overlap-free, octilinear geometry, and SceneComposer
+// placed the other star systems beside it); this class only turns that into lines,
+// symbols, badges and labels. The StateNode lookup gives each layout node its game body
+// for the per-system color.
 //
-// Five passes per frame:
-//  1. Edge polylines (off-route faded, then the route heavy and white on top).
-//  2. Node dots, their state-kind glyphs, and the atmosphere/ring node markers.
+// Six passes per frame:
+//  1. Edge polylines and the dashed interstellar connectors (off-route faded, then the
+//     route heavy and white on top), plus the scale-break mark on the connector trunk.
+//  2. Node dots, their state-kind glyphs, and the atmosphere/ring node markers. With other
+//     star systems shown, each system root gets a quiet ring and a collapsed system its
+//     larger square with a faint fan under it.
 //  3. Edge markers: aerobrake triangles, plus plane-change numbers when that toggle is on.
 //  4. Labels and dV badges through a screen-space culling pass: the layout placement is
 //     overlap-free at 100% zoom, but text renders at a fixed screen size while positions
@@ -62,12 +92,23 @@ internal readonly struct CanvasTransform
 //     label is never culled by its own dot (only foreign dots), or zooming out far enough
 //     that the fixed-size dot swallows the scaled-in label gap would hide every name.
 //     Every label sits on a dim background plate so it stays legible where edge lines
-//     pass behind it, and a zoom LOD declutters the overview: below FullLabelMinZoom each
-//     body collapses to one short name label, below MoonLabelMinZoom moon names drop
-//     entirely (root-context moons and the "+N" group headline exempt).
+//     pass behind it, and the zoom LOD of LabelLod declutters the overview. Below its
+//     FullLabelMinZoom each body collapses to one short name label, and below its
+//     MoonLabelMinZoom moon names drop entirely (root-context moons and the "+N" group
+//     headline exempt). A system root's
+//     label is its system title instead: the name in bold white, the distance in the
+//     interstellar color and, for a collapsed system, a dim summary line. Titles are never
+//     shortened or culled, and take the first spot of SceneComposer.SystemTitleSpots that
+//     covers no drawn text, no other dot and no connector line. No other label covers the
+//     glyph of another system's root.
 //  5. Transfer-window markers (only when the toggle is on): an amber clock badge near each
 //     sibling with the countdown to its next window, on its own light cull pass.
-internal static class CanvasRenderer
+//
+// The renderer is an instance owned by the window, so every buffer it needs is reused frame
+// to frame. What depends only on the scene (node colors, body markers) is resolved once per
+// scene, and the badge strings with their measured widths once per scene and display setting,
+// so a frame draws without allocating.
+internal sealed class CanvasRenderer
 {
     // How far off-route geometry fades when a route is highlighted.
     private const double OffRouteAlpha = 0.2;
@@ -78,31 +119,10 @@ internal static class CanvasRenderer
     // culling). Zooming past it brings the numbers back.
     private const double BadgeMinZoom = 0.45;
 
-    // Below this zoom minor-body (rank 3) labels are dropped from the culling pass: at a
-    // zoomed-out overview their names are noise, and the major bodies plus any selected route
-    // read better without them. The root, the hovered node and on-route nodes are exempt.
-    private const double MinorLabelMinZoom = 0.5;
-
-    // Below this zoom labels drop their rung suffix and collapse to one short body name per
-    // body ("Saturn" instead of three "Saturn <rung>" labels): at overview the rung is
-    // already carried by the glyph, and the duplicates would only repeat the name down the
-    // ladder. Deliberately its own constant (not reusing MinorLabelMinZoom) so the two
-    // transitions can be tuned apart. Special labels (hover, root, you-are-here, on-route)
-    // always draw in full.
-    private const double FullLabelMinZoom = 0.5;
-
-    // Below this zoom moon-level (rank 2) labels are dropped entirely, leaving the far-out
-    // overview to planets, the route and the "+N" group headlines. Moons in the root's
-    // immediate context are exempt (Luna stays named on an Earth-rooted overview), as is
-    // the minor-body group label itself.
-    private const double MoonLabelMinZoom = 0.3;
-
     // The background plate behind every label, the zoom-robust fix for text crossing edge
     // lines: placement runs in layout space at 100% zoom, so no placement rule can keep a
-    // fixed-size label clear of lines once the geometry scales away underneath it. Always
-    // on (no UI toggle); the switch stays as a code escape hatch. The plate is more
-    // transparent than the badge background so a sparse map does not read as boxes.
-    private const bool LabelPlateEnabled = true;
+    // fixed-size label clear of lines once the geometry scales away underneath it. The plate
+    // is more transparent than the badge background so a sparse map does not read as boxes.
     private const float LabelPadX = 3f;
     private const float LabelPadY = 1f;
 
@@ -121,6 +141,11 @@ internal static class CanvasRenderer
     private const float ArrowH = 7f;
     private const float ArrowGap = 3f;
     private const float DualSegGap = 8f;
+
+    // The cell size of the screen-space cull grids.
+    private const float CullBucketPx = 48f;
+
+    internal static readonly byte4 CanvasBackground = new byte4(17, 21, 28, 255);
 
     private static readonly byte4 HubBus = new byte4(122, 138, 152, 255);
     private static readonly byte4 BadgeBg = new byte4(16, 20, 28, 210);
@@ -141,18 +166,73 @@ internal static class CanvasRenderer
     // from the orange root, yellow you-are-here and white hover rings.
     private static readonly byte4 FocusRing = new byte4(96, 226, 232, 255);
     private static readonly byte4 RouteLine = new byte4(255, 255, 255, 255);
+    private static readonly byte4 TitleName = new byte4(255, 255, 255, 255);
+    private static readonly byte4 TitleSummary = new byte4(133, 147, 163, 255);
+
+    // Off the selected route a system title fades less than other text, since it names where
+    // the parts of the map are.
+    private const double TitleOffRouteAlpha = 0.55;
+    private const double SystemRingAlpha = 0.75;
 
     // The transfer-window markers ("Show window markers" overlay): an amber clock badge near
     // each sibling, distinct from the grey dV badges.
     private static readonly byte4 WindowBadgeBg = new byte4(20, 24, 32, 215);
     private static readonly byte4 WindowBadgeText = new byte4(240, 200, 90, 255);
 
-    public static void Draw(
+    private const float ConnectorWidth = 2.2f;
+    private const float ConnectorRouteWidth = 4f;
+
+    // Per-scene caches.
+    private LayoutScene? _styleScene;
+    private ColorPalette? _stylePalette;
+    private NodeStyle[] _styles = Array.Empty<NodeStyle>();
+
+    // The system titles of the scene, split once per scene: the name, the distance part with
+    // its offset after the name, by node index (null for a node that is no system root).
+    private string?[] _titleNames = Array.Empty<string?>();
+    private string?[] _titleDistances = Array.Empty<string?>();
+    private float[] _titleDistanceX = Array.Empty<float>();
+
+    // Where each system title was drawn this frame, for the window's hit test.
+    private ScreenRect[] _titleRects = Array.Empty<ScreenRect>();
+    private bool[] _titleDrawn = Array.Empty<bool>();
+    private int _titleCount;
+
+    private LayoutScene? _badgeScene;
+    private double _badgeScale = double.NaN;
+    private bool _badgeTimes;
+    private BadgeText?[] _badges = Array.Empty<BadgeText?>();
+
+    // Per-frame buffers, reused.
+    private readonly List<DrawItem> _items = new();
+    private readonly Dictionary<string, LayoutNode> _reps = new();
+    private readonly HashSet<string> _specialBodies = new();
+    private readonly ScreenGrid _dots = new(CullBucketPx);
+    private readonly ScreenGrid _occupied = new(CullBucketPx);
+    private readonly ScreenGrid _markerGrid = new(CullBucketPx);
+    private int[] _markerOrder = Array.Empty<int>();
+
+    private float _lineHeight;
+    private float2 _clipMin;
+    private float2 _clipMax;
+
+    private static readonly Comparison<DrawItem> ByPriority = static (a, b) =>
+    {
+        int byPriority = a.Priority.CompareTo(b.Priority);
+        if (byPriority != 0)
+            return byPriority;
+        int byY = a.Rect.Y.CompareTo(b.Rect.Y);
+        return byY != 0 ? byY : a.Rect.X.CompareTo(b.Rect.X);
+    };
+
+    public void Draw(
         ImDrawListPtr dl,
-        LayoutResult layout,
+        LayoutScene scene,
         IReadOnlyDictionary<string, StateNode> lookup,
         ColorPalette palette,
         in CanvasTransform t,
+        float2 canvasMin,
+        float2 canvasMax,
         string? hoverId,
         string? focusId,
         IReadOnlySet<string>? routeNodes,
@@ -160,95 +240,244 @@ internal static class CanvasRenderer
         double dvScale,
         bool showTransferTimes,
         bool showBodyMarkers,
-        IReadOnlyDictionary<string, double>? windowMarkers)
+        in WindowMarkerSet windowMarkers,
+        ConnectorBadge? connectorBadge)
     {
-        DrawEdgeLines(dl, layout, lookup, palette, in t, routeNodes);
-        DrawNodeDots(dl, layout, lookup, palette, in t, hoverId, focusId, routeNodes, showBodyMarkers);
-        DrawEdgeMarkers(dl, layout, lookup, palette, in t, routeNodes, showPlaneChange, dvScale, showBodyMarkers);
-        DrawLabelsAndBadges(dl, layout, lookup, palette, in t, hoverId, routeNodes, dvScale, showTransferTimes);
-        if (windowMarkers != null)
-            DrawWindowMarkers(dl, layout, in t, windowMarkers);
+        _clipMin = canvasMin;
+        _clipMax = canvasMax;
+        _lineHeight = ImGui.GetTextLineHeight();
+        EnsureStyles(scene, lookup, palette);
+        if (t.Zoom >= BadgeMinZoom)
+            EnsureBadges(scene, dvScale, showTransferTimes);
+
+        DrawEdgeLines(dl, scene, in t, routeNodes);
+        DrawNodeDots(dl, scene, in t, hoverId, focusId, routeNodes, showBodyMarkers);
+        DrawEdgeMarkers(dl, scene, in t, routeNodes, showPlaneChange, dvScale, showBodyMarkers);
+        DrawLabelsAndBadges(dl, scene, in t, hoverId, routeNodes, dvScale, connectorBadge);
+        if (windowMarkers.Count > 0)
+            DrawWindowMarkers(dl, in t, in windowMarkers);
     }
 
-    private static void DrawEdgeLines(
-        ImDrawListPtr dl,
-        LayoutResult layout,
-        IReadOnlyDictionary<string, StateNode> lookup,
-        ColorPalette palette,
-        in CanvasTransform t,
-        IReadOnlySet<string>? routeNodes)
+    // Drop the per-scene caches, for a new system or an unload.
+    public void Reset()
+    {
+        _styleScene = null;
+        _stylePalette = null;
+        _styles = Array.Empty<NodeStyle>();
+        _badgeScene = null;
+        _badges = Array.Empty<BadgeText?>();
+        _titleNames = Array.Empty<string?>();
+        _titleDistances = Array.Empty<string?>();
+        _titleDistanceX = Array.Empty<float>();
+        _titleDrawn = Array.Empty<bool>();
+        _titleRects = Array.Empty<ScreenRect>();
+        _titleCount = 0;
+        _items.Clear();
+        _reps.Clear();
+        _specialBodies.Clear();
+    }
+
+    // The colors and body markers of every node, resolved once per scene: the game body gives
+    // the system color and whether the body has a usable atmosphere or rings.
+    private void EnsureStyles(LayoutScene scene, IReadOnlyDictionary<string, StateNode> lookup, ColorPalette palette)
+    {
+        if (ReferenceEquals(scene, _styleScene) && ReferenceEquals(palette, _stylePalette))
+            return;
+        IReadOnlyList<LayoutNode> nodes = scene.Nodes;
+        if (_styles.Length < nodes.Count)
+            _styles = new NodeStyle[nodes.Count];
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            LayoutNode node = nodes[i];
+            lookup.TryGetValue(node.Id, out StateNode? state);
+            byte4 baseColor = state != null ? palette.ColorFor(state.Body) : palette.ColorFor(node.Id);
+            // The atmosphere/ring markers belong on a body's in-atmosphere rungs (the ones you
+            // can fly a jet at or see the rings from), not on its high orbits or its hub bus.
+            bool bodyNode = node.Kind == LayoutKind.Surface || node.Kind == LayoutKind.LowOrbit;
+            _styles[i] = new NodeStyle(
+                baseColor,
+                Lighten(baseColor, 0.45),
+                Lighten(baseColor, 0.4),
+                bodyNode && state != null && OrbitalStates.HasUsableAtmosphere(state.Body),
+                bodyNode && state != null && OrbitalStates.HasRings(state.Body));
+        }
+        EnsureTitles(scene);
+        _styleScene = scene;
+        _stylePalette = palette;
+    }
+
+    // Split every system title at its double space into the name and the distance, and measure
+    // where the distance starts.
+    private void EnsureTitles(LayoutScene scene)
+    {
+        IReadOnlyList<LayoutNode> nodes = scene.Nodes;
+        if (_titleNames.Length < nodes.Count)
+        {
+            _titleNames = new string?[nodes.Count];
+            _titleDistances = new string?[nodes.Count];
+            _titleDistanceX = new float[nodes.Count];
+            _titleRects = new ScreenRect[nodes.Count];
+            _titleDrawn = new bool[nodes.Count];
+        }
+        Array.Clear(_titleNames);
+        Array.Clear(_titleDistances);
+        Array.Clear(_titleDrawn);
+        _titleCount = nodes.Count;
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            LayoutNode node = nodes[i];
+            if (!node.IsSystemRoot)
+                continue;
+            string title = node.ShortLabel.Length > 0 ? node.ShortLabel : node.Label;
+            int cut = title.IndexOf("  ", StringComparison.Ordinal);
+            _titleNames[i] = cut > 0 ? title.Substring(0, cut) : title;
+            if (cut > 0)
+            {
+                _titleDistances[i] = title.Substring(cut + 2);
+                _titleDistanceX[i] = ImGui.CalcTextSize(title.Substring(0, cut + 2)).X + 1f;
+            }
+        }
+    }
+
+    // The system root whose title box holds the point, from the titles drawn last frame, or -1.
+    public int TitleAt(float2 point)
+    {
+        for (int i = 0; i < _titleCount; i++)
+        {
+            if (!_titleDrawn[i])
+                continue;
+            ref readonly ScreenRect r = ref _titleRects[i];
+            if (point.X >= r.X && point.X <= r.Right && point.Y >= r.Y && point.Y <= r.Bottom)
+                return i;
+        }
+        return -1;
+    }
+
+    private void DrawEdgeLines(ImDrawListPtr dl, LayoutScene scene, in CanvasTransform t, IReadOnlySet<string>? routeNodes)
     {
         bool routing = routeNodes != null;
+        IReadOnlyList<LayoutNode> nodes = scene.Nodes;
+        IReadOnlyList<LayoutConnector> connectors = scene.Connectors;
+        byte4 lane = routing ? Fade(ColorPalette.InterstellarLine, OffRouteAlpha) : ColorPalette.InterstellarLine;
 
         // Base pass: every edge except the highlighted route (deferred so the heavy
         // white line draws on top). Off-route edges fade when a route is active.
-        foreach (LayoutNode node in layout.Tree.Nodes)
+        for (int n = 0; n < nodes.Count; n++)
         {
-            foreach (LayoutEdge edge in node.Out)
+            LayoutNode node = nodes[n];
+            for (int e = 0; e < node.Out.Count; e++)
             {
+                LayoutEdge edge = node.Out[e];
                 if (edge.Polyline.Count < 2)
                     continue;
                 if (routing && OnRoute(edge, routeNodes!))
                     continue;
 
-                (byte4 color, float width) = EdgeStyle(edge, lookup, palette);
-                double alpha = routing ? OffRouteAlpha : 1.0;
-                DrawPolyline(dl, edge, in t, Fade(color, alpha), width);
+                byte4 color;
+                float width;
+                if (edge.IsHubLink)
+                {
+                    color = HubBus;
+                    width = 3.5f;
+                }
+                else
+                {
+                    // Color the line by the body it leads to, so a transfer reads in the
+                    // destination's system color and a ladder edge in its own body's color. An
+                    // Approach edge inside another system is a thin line of the same color.
+                    color = _styles[edge.To.Index].Fill;
+                    width = edge.IsApproach ? 1.4f : edge.Class == EdgeClass.Transfer ? 2.2f : 1.6f;
+                }
+                DrawPolyline(dl, edge.Polyline, in t, routing ? Fade(color, OffRouteAlpha) : color, width);
             }
         }
+
+        // The shared trunk and buses once, then the branch of every connector off the route.
+        IReadOnlyList<IReadOnlyList<LayoutPoint>> network = scene.Network;
+        for (int i = 0; i < network.Count; i++)
+            DrawDashedPolyline(dl, network[i], in t, lane, ConnectorWidth);
+        for (int i = 0; i < connectors.Count; i++)
+        {
+            LayoutConnector connector = connectors[i];
+            if (routing && OnRoute(connector, routeNodes!))
+                continue;
+            DrawDashedBranch(dl, connector, in t, lane, ConnectorWidth);
+        }
+        if (scene.HasBreakMark)
+            NodeGlyphs.ScaleBreak(dl, t.ToScreen(scene.BreakMark.X, scene.BreakMark.Y), lane, CanvasBackground, scene.BreakMarkVertical);
 
         if (!routing)
             return;
 
         // Route pass: the selected path, heavy and white.
-        foreach (LayoutNode node in layout.Tree.Nodes)
+        for (int n = 0; n < nodes.Count; n++)
         {
-            foreach (LayoutEdge edge in node.Out)
+            LayoutNode node = nodes[n];
+            for (int e = 0; e < node.Out.Count; e++)
             {
+                LayoutEdge edge = node.Out[e];
                 if (edge.Polyline.Count < 2 || !OnRoute(edge, routeNodes!))
                     continue;
-                DrawPolyline(dl, edge, in t, RouteLine, RouteLineWidth);
+                DrawPolyline(dl, edge.Polyline, in t, RouteLine, RouteLineWidth);
             }
+        }
+        for (int i = 0; i < connectors.Count; i++)
+        {
+            LayoutConnector connector = connectors[i];
+            if (OnRoute(connector, routeNodes!))
+                DrawDashedPolyline(dl, connector.Polyline, in t, RouteLine, ConnectorRouteWidth);
         }
     }
 
+    // In a tree, two route nodes are adjacent only if the edge between them is on the path, so
+    // membership of both endpoints is enough. A connector stands for the Interstellar edge
+    // between the same two nodes.
     private static bool OnRoute(LayoutEdge edge, IReadOnlySet<string> routeNodes)
     {
-        // In a tree, two route nodes are adjacent only if the edge between them is on
-        // the path, so membership of both endpoints is enough.
         return routeNodes.Contains(edge.From.Id) && routeNodes.Contains(edge.To.Id);
     }
 
-    private static void DrawPolyline(ImDrawListPtr dl, LayoutEdge edge, in CanvasTransform t, byte4 color, float width)
+    internal static bool OnRoute(LayoutConnector connector, IReadOnlySet<string> routeNodes)
     {
-        for (int i = 1; i < edge.Polyline.Count; i++)
+        return routeNodes.Contains(connector.From.Id) && routeNodes.Contains(connector.To.Id);
+    }
+
+    private static void DrawPolyline(ImDrawListPtr dl, IReadOnlyList<LayoutPoint> line, in CanvasTransform t, byte4 color, float width)
+    {
+        for (int i = 1; i < line.Count; i++)
         {
-            float2 a = t.ToScreen(edge.Polyline[i - 1].X, edge.Polyline[i - 1].Y);
-            float2 b = t.ToScreen(edge.Polyline[i].X, edge.Polyline[i].Y);
+            float2 a = t.ToScreen(line[i - 1].X, line[i - 1].Y);
+            float2 b = t.ToScreen(line[i].X, line[i].Y);
             dl.AddLine(in a, in b, color, width);
         }
     }
 
-    private static (byte4 Color, float Width) EdgeStyle(
-        LayoutEdge edge,
-        IReadOnlyDictionary<string, StateNode> lookup,
-        ColorPalette palette)
+    private void DrawDashedPolyline(ImDrawListPtr dl, IReadOnlyList<LayoutPoint> line, in CanvasTransform t, byte4 color, float width)
     {
-        if (edge.IsHubLink)
-            return (HubBus, 3.5f);
-
-        // Color the line by the body it leads to, so a transfer reads in the
-        // destination's system color and a ladder edge in its own body's color.
-        byte4 color = BodyColor(edge.To, lookup, palette);
-        float width = edge.Class == EdgeClass.Transfer ? 2.2f : 1.6f;
-        return (color, width);
+        for (int i = 1; i < line.Count; i++)
+        {
+            float2 a = t.ToScreen(line[i - 1].X, line[i - 1].Y);
+            float2 b = t.ToScreen(line[i].X, line[i].Y);
+            NodeGlyphs.DashedSegment(dl, a, b, color, width, _clipMin, _clipMax);
+        }
     }
 
-    private static void DrawNodeDots(
+    // A connector's own branch: from its badge anchor on the bus to its root.
+    private void DrawDashedBranch(ImDrawListPtr dl, LayoutConnector connector, in CanvasTransform t, byte4 color, float width)
+    {
+        IReadOnlyList<LayoutPoint> line = connector.Polyline;
+        float2 a = t.ToScreen(connector.BadgeAnchor.X, connector.BadgeAnchor.Y);
+        for (int i = connector.BranchStart; i < line.Count; i++)
+        {
+            float2 b = t.ToScreen(line[i].X, line[i].Y);
+            NodeGlyphs.DashedSegment(dl, a, b, color, width, _clipMin, _clipMax);
+            a = b;
+        }
+    }
+
+    private void DrawNodeDots(
         ImDrawListPtr dl,
-        LayoutResult layout,
-        IReadOnlyDictionary<string, StateNode> lookup,
-        ColorPalette palette,
+        LayoutScene scene,
         in CanvasTransform t,
         string? hoverId,
         string? focusId,
@@ -256,30 +485,22 @@ internal static class CanvasRenderer
         bool showBodyMarkers)
     {
         bool routing = routeNodes != null;
-
-        foreach (LayoutNode node in layout.Tree.Nodes)
+        IReadOnlyList<LayoutNode> nodes = scene.Nodes;
+        for (int i = 0; i < nodes.Count; i++)
         {
+            LayoutNode node = nodes[i];
             float2 p = t.ToScreen(node.SnappedX, node.SnappedY);
-            float r = (float)node.DotRadius;
+            float r = (float)SceneComposer.GlyphRadiusPx(node);
+            if (p.X + r + 16f < _clipMin.X || p.X - r - 16f > _clipMax.X || p.Y + r + 16f < _clipMin.Y || p.Y - r - 16f > _clipMax.Y)
+                continue;
             bool onRoute = !routing || routeNodes!.Contains(node.Id);
             double alpha = onRoute ? 1.0 : OffRouteAlpha;
 
-            // Resolve the node's game body once: it supplies the system color and the
-            // body-property markers (a usable atmosphere -> jet halo, a ring system -> ring
-            // ellipse). Hubs resolve too (they back a real body), but the markers below skip
-            // them via the kind check; only a purely synthetic node misses the lookup.
-            lookup.TryGetValue(node.Id, out StateNode? state);
-            byte4 baseColor = state != null ? palette.ColorFor(state.Body) : palette.ColorFor(node.Id);
-            byte4 fill = Fade(baseColor, alpha);
-            byte4 stroke = Fade(Lighten(baseColor, 0.45), alpha);
-
-            // The atmosphere/ring markers belong on a body's in-atmosphere rungs (the ones
-            // you can fly a jet at or see the rings from), not on its high orbits or its
-            // hub bus, so they key off the surface and low-orbit glyphs. The body-markers
-            // toggle hides them for a plainer map.
-            bool bodyNode = node.Kind == LayoutKind.Surface || node.Kind == LayoutKind.LowOrbit;
-            bool atmoBody = showBodyMarkers && bodyNode && state != null && OrbitalStates.HasUsableAtmosphere(state.Body);
-            bool ringedBody = showBodyMarkers && bodyNode && state != null && OrbitalStates.HasRings(state.Body);
+            ref readonly NodeStyle style = ref _styles[i];
+            byte4 fill = Fade(style.Fill, alpha);
+            byte4 stroke = Fade(style.Stroke, alpha);
+            bool atmoBody = showBodyMarkers && style.Atmosphere;
+            bool ringedBody = showBodyMarkers && style.Rings;
 
             // A soft filled halo behind the root so the ego anchor pops out of a dense
             // cluster even when zoomed out. Drawn before the dot so it sits underneath.
@@ -289,6 +510,11 @@ internal static class CanvasRenderer
             // Rings sit behind the body disc, like a planet seen against its ring plane.
             if (ringedBody)
                 NodeGlyphs.RingEllipse(dl, p, r, stroke);
+
+            if (node.IsSystemStub)
+                NodeGlyphs.SystemFan(dl, p, r, Fade(style.Fill, 0.35 * alpha));
+            if (node.IsSystemRoot && !node.IsRoot)
+                dl.AddCircle(in p, r + 6f, Fade(style.Stroke, SystemRingAlpha * alpha), 32, 1.5f);
 
             DrawSymbol(dl, node, p, r, fill, stroke);
 
@@ -315,7 +541,8 @@ internal static class CanvasRenderer
     }
 
     // The node shape carries the state kind (the KSP concentric-ring vocabulary); the fill
-    // carries the planetary system color, the stroke a lightened accent of it.
+    // carries the planetary system color, the stroke a lightened accent of it. With several
+    // star systems a hub draws as its star or barycenter, and a collapsed system as its stub.
     private static void DrawSymbol(ImDrawListPtr dl, LayoutNode node, float2 p, float r, byte4 fill, byte4 stroke)
     {
         switch (node.Kind)
@@ -336,7 +563,14 @@ internal static class CanvasRenderer
                 NodeGlyphs.Intercept(dl, p, r, fill, stroke);
                 break;
             case LayoutKind.Hub:
-                NodeGlyphs.Hub(dl, p, r, fill, stroke);
+                if (node.IsSystemStub)
+                    NodeGlyphs.SystemStub(dl, p, r, fill, stroke, node.HubRole == HubRole.Barycenter);
+                else if (node.HubRole == HubRole.Star)
+                    NodeGlyphs.Star(dl, p, r, fill, stroke);
+                else if (node.HubRole == HubRole.Barycenter)
+                    NodeGlyphs.Barycenter(dl, p, r, fill, stroke);
+                else
+                    NodeGlyphs.Hub(dl, p, r, fill, stroke);
                 break;
             case LayoutKind.MinorGroup:
                 NodeGlyphs.MinorGroup(dl, p, r, fill, stroke);
@@ -356,11 +590,9 @@ internal static class CanvasRenderer
     // legible. They are gated by the same zoom floor as the dV badges, so the zoomed-out
     // auto-fit stays a clean diagram of glyphs and names; zooming in reveals them. There are
     // few of either, so neither joins the label/badge culling pass.
-    private static void DrawEdgeMarkers(
+    private void DrawEdgeMarkers(
         ImDrawListPtr dl,
-        LayoutResult layout,
-        IReadOnlyDictionary<string, StateNode> lookup,
-        ColorPalette palette,
+        LayoutScene scene,
         in CanvasTransform t,
         IReadOnlySet<string>? routeNodes,
         bool showPlaneChange,
@@ -371,31 +603,33 @@ internal static class CanvasRenderer
             return;
 
         bool routing = routeNodes != null;
-        foreach (LayoutNode node in layout.Tree.Nodes)
+        IReadOnlyList<LayoutNode> nodes = scene.Nodes;
+        for (int n = 0; n < nodes.Count; n++)
         {
-            foreach (LayoutEdge edge in node.Out)
+            LayoutNode node = nodes[n];
+            for (int e = 0; e < node.Out.Count; e++)
             {
+                LayoutEdge edge = node.Out[e];
                 if (edge.Polyline.Count < 2)
                     continue;
                 bool onRoute = !routing || OnRoute(edge, routeNodes!);
                 double alpha = onRoute ? 1.0 : OffRouteAlpha;
 
                 if (showBodyMarkers && edge.Aerobrake)
-                    DrawAerobrake(dl, edge, lookup, palette, in t, alpha);
+                    DrawAerobrake(dl, edge, in t, alpha);
 
                 // The plane-change figure scales with the piloting margin like the dV badges,
                 // so the on-map number agrees with the breakdown the panel inflates.
-                if (showPlaneChange && edge.Class == EdgeClass.Transfer && edge.PlaneChangeDv * dvScale >= PlaneChangeMinDv)
-                    DrawPlaneChange(dl, edge, in t, alpha, dvScale);
+                if (showPlaneChange && edge.Class == EdgeClass.Transfer && edge.PlaneChangeDv * dvScale >= PlaneChangeMinDv
+                    && _badges[edge.To.Index]?.PlaneText is string planeText)
+                    DrawPlaneChange(dl, edge, in t, alpha, planeText);
             }
         }
     }
 
     // A filled triangle partway along the capture edge, pointing the way the capture runs
     // (from the loose ellipse down into low orbit), in the destination's lightened color.
-    private static void DrawAerobrake(
-        ImDrawListPtr dl, LayoutEdge edge, IReadOnlyDictionary<string, StateNode> lookup,
-        ColorPalette palette, in CanvasTransform t, double alpha)
+    private void DrawAerobrake(ImDrawListPtr dl, LayoutEdge edge, in CanvasTransform t, double alpha)
     {
         IReadOnlyList<LayoutPoint> pts = edge.Polyline;
         float2 a = t.ToScreen(pts[0].X, pts[0].Y);
@@ -408,21 +642,93 @@ internal static class CanvasRenderer
         dx /= len;
         dy /= len;
         var at = new float2(a.X + (b.X - a.X) * 0.45f, a.Y + (b.Y - a.Y) * 0.45f);
-        byte4 color = Fade(Lighten(BodyColor(edge.To, lookup, palette), 0.4), alpha);
-        NodeGlyphs.AerobrakeTriangle(dl, at, dx, dy, 8f, color);
+        NodeGlyphs.AerobrakeTriangle(dl, at, dx, dy, 8f, Fade(_styles[edge.To.Index].Accent, alpha));
     }
 
     // The plane-change figure near the transfer's arrival node, offset up and to the right
     // to sit clear of the dV badge. Drawn as a plain number (DrawList text cannot rotate, so
     // there is no literal KSP slant); its warm color and the legend entry key its meaning.
-    private static void DrawPlaneChange(ImDrawListPtr dl, LayoutEdge edge, in CanvasTransform t, double alpha, double dvScale)
+    private static void DrawPlaneChange(ImDrawListPtr dl, LayoutEdge edge, in CanvasTransform t, double alpha, string text)
     {
         float2 to = t.ToScreen(edge.To.SnappedX, edge.To.SnappedY);
         var pos = to + new float2(8f, -(float)edge.To.DotRadius - 16f);
-        string text = "i ~" + DvNumber(edge.PlaneChangeDv * dvScale) + " m/s";
         var shadow = pos + new float2(1f, 1f);
         dl.AddText(in shadow, Fade(LabelShadow, alpha), text);
         dl.AddText(in pos, Fade(NodeGlyphs.PlaneChangeColor, alpha), text);
+    }
+
+    // The badge strings and their measured widths, once per scene, margin and transfer-time
+    // setting. A frame then only positions them.
+    private void EnsureBadges(LayoutScene scene, double dvScale, bool showTransferTimes)
+    {
+        if (ReferenceEquals(scene, _badgeScene) && dvScale == _badgeScale && showTransferTimes == _badgeTimes)
+            return;
+        IReadOnlyList<LayoutNode> nodes = scene.Nodes;
+        if (_badges.Length < nodes.Count)
+            _badges = new BadgeText?[nodes.Count];
+        Array.Clear(_badges);
+        bool paired = dvScale > 1.0001;
+        for (int n = 0; n < nodes.Count; n++)
+        {
+            LayoutNode node = nodes[n];
+            for (int e = 0; e < node.Out.Count; e++)
+            {
+                LayoutEdge edge = node.Out[e];
+                string? plane = edge.Class == EdgeClass.Transfer && edge.PlaneChangeDv * dvScale >= PlaneChangeMinDv
+                    ? "i ~" + Format.DvNumber(edge.PlaneChangeDv * dvScale) + " m/s"
+                    : null;
+                bool badge = !edge.IsHubLink && edge.RouteDv >= 1.0;
+                if (badge || plane != null)
+                    _badges[edge.To.Index] = BuildBadgeText(edge, dvScale, paired, showTransferTimes, badge, plane);
+            }
+        }
+        _badgeScene = scene;
+        _badgeScale = dvScale;
+        _badgeTimes = showTransferTimes;
+    }
+
+    // An Ascent edge on an atmospheric body shows both directions: an up triangle with the
+    // ascent dV, then a down triangle with the cheaper descent dV. Unlike the stacked badges the
+    // dual badge cannot show base | margin side by side, so when a margin is set it is tinted
+    // amber instead. Every other badge is a stack of rows. A transfer shows its injection (the
+    // departure / ejection burn) and its capture (the arrival burn) individually, then the
+    // coupled total, matching the panel breakdown. A ladder edge is just its single cost. The
+    // transfer-time toggle appends a dimmer coast-time line. Each dV row carries the canonical
+    // (no-margin) figure and, when a piloting margin is set, the inflated figure too.
+    private static BadgeText BuildBadgeText(LayoutEdge edge, double dvScale, bool paired, bool showTransferTimes, bool badge, string? plane)
+    {
+        var text = new BadgeText { PlaneText = plane, HasBadge = badge, Paired = paired };
+        if (!badge)
+            return text;
+
+        text.Dual = edge.DescentDv > 1.0 && Math.Abs(edge.DescentDv - edge.RouteDv) > 1.0;
+        if (text.Dual)
+        {
+            text.AscText = "~" + Format.DvNumber(edge.RouteDv * dvScale);
+            text.DescText = "~" + Format.DvNumber(edge.DescentDv * dvScale) + " m/s";
+            text.AscW = ImGui.CalcTextSize(text.AscText).X;
+            text.DescW = ImGui.CalcTextSize(text.DescText).X;
+            return text;
+        }
+
+        if (edge.Class == EdgeClass.Transfer)
+        {
+            // Show the injection / capture split only when both legs are non-trivial;
+            // otherwise the total already equals the single leg.
+            if (edge.InjectionDv >= 1.0 && edge.CaptureDv >= 1.0)
+            {
+                text.AddDvRow("inj ~", edge.InjectionDv, dvScale, paired, unit: false, main: false);
+                text.AddDvRow("cap ~", edge.CaptureDv, dvScale, paired, unit: false, main: false);
+            }
+            text.AddDvRow("~", edge.RouteDv, dvScale, paired, unit: true, main: true);
+            if (showTransferTimes && edge.TransferTimeSeconds > 0.0)
+                text.AddRow(Format.TransferTime(edge.TransferTimeSeconds), null, false);
+        }
+        else
+        {
+            text.AddDvRow("~", edge.RouteDv, dvScale, paired, unit: true, main: true);
+        }
+        return text;
     }
 
     // The screen-space label + badge culling pass (see the class summary). Builds a
@@ -431,423 +737,438 @@ internal static class CanvasRenderer
     // drawn. Names are NOT blocked by node dots (only by other text), so the highest-rank
     // names - the root first - show even at the zoomed-out auto-fit view; a name resting on
     // a dot is fine and beats hiding it. dV badges are hidden entirely below BadgeMinZoom
-    // (they only clutter when the whole system is squeezed onto the screen) and avoid dots
-    // when shown. Zooming in spreads the anchors apart and reveals more of both. Which
-    // labels even become candidates, and with which text, is the zoom LOD decided by
-    // SelectLabelText: per-rank zoom floors plus the overview collapse to one short
-    // body-name label per body.
-    private static void DrawLabelsAndBadges(
+    // and avoid dots when shown. Candidates wholly off the canvas are skipped.
+    private void DrawLabelsAndBadges(
         ImDrawListPtr dl,
-        LayoutResult layout,
-        IReadOnlyDictionary<string, StateNode> lookup,
-        ColorPalette palette,
+        LayoutScene scene,
         in CanvasTransform t,
         string? hoverId,
         IReadOnlySet<string>? routeNodes,
         double dvScale,
-        bool showTransferTimes)
+        ConnectorBadge? connectorBadge)
     {
         bool routing = routeNodes != null;
         bool showBadges = t.Zoom >= BadgeMinZoom;
-        bool shortLabels = t.Zoom < FullLabelMinZoom;
-        LayoutMode mode = layout.Config.Mode;
-        var items = new List<DrawItem>();
+        bool shortLabels = t.Zoom < LabelLod.FullLabelMinZoom;
+        Array.Clear(_titleDrawn, 0, _titleCount);
+        LayoutMode mode = scene.Config.Mode;
+        IReadOnlyList<LayoutNode> nodes = scene.Nodes;
+        _items.Clear();
 
         // At overview zoom every body collapses to one short label, carried by its most
         // recognizable rung; pick that representative per body first. A body whose label
         // is special (hover, root, you-are-here, on-route - always drawn in full) needs
         // no representative: the special stands in, so the map never shows "Earth" next
         // to "Earth Low Orbit".
-        Dictionary<string, LayoutNode>? reps = null;
-        HashSet<string>? specialBodies = null;
+        _reps.Clear();
+        _specialBodies.Clear();
         if (shortLabels)
         {
-            reps = new Dictionary<string, LayoutNode>();
-            specialBodies = new HashSet<string>();
-            foreach (LayoutNode node in layout.Tree.Nodes)
+            for (int i = 0; i < nodes.Count; i++)
             {
+                LayoutNode node = nodes[i];
                 if (!node.LabelPlaced)
                     continue;
-                if (IsSpecialLabel(node, hoverId, routing, routeNodes))
+                if (LabelLod.IsSpecial(node, hoverId, routing, routeNodes))
                 {
-                    specialBodies.Add(BodyKey(node));
+                    _specialBodies.Add(LabelLod.BodyKey(node));
                     continue;
                 }
-                if (!RankShowsLabel(node, t.Zoom))
+                if (!LabelLod.RankShows(node, t.Zoom))
                     continue;
-                string key = BodyKey(node);
-                if (!reps.TryGetValue(key, out LayoutNode? cur) || RungPreference(node.Kind) < RungPreference(cur.Kind))
-                    reps[key] = node;
+                string key = LabelLod.BodyKey(node);
+                if (!_reps.TryGetValue(key, out LayoutNode? cur) || LabelLod.RungPreference(node.Kind) < LabelLod.RungPreference(cur.Kind))
+                    _reps[key] = node;
             }
         }
 
-        foreach (LayoutNode node in layout.Tree.Nodes)
+        for (int i = 0; i < nodes.Count; i++)
         {
-            if (node.LabelPlaced
-                && SelectLabelText(node, t.Zoom, shortLabels, hoverId, routing, routeNodes, reps, specialBodies) is { } text)
-                items.Add(BuildLabelItem(node, text, in t, hoverId, routing, routeNodes));
+            LayoutNode node = nodes[i];
+            if (node.IsSystemRoot)
+            {
+                TryAddTitleItem(node, in t, hoverId, routing, routeNodes);
+            }
+            else if (node.LabelPlaced)
+            {
+                LabelChoice which = SelectLabelText(node, t.Zoom, shortLabels, hoverId, routing, routeNodes);
+                if (which != LabelChoice.None)
+                    TryAddLabelItem(node, which, in t, hoverId, routing, routeNodes);
+            }
 
             if (!showBadges)
                 continue;
-            foreach (LayoutEdge edge in node.Out)
+            for (int e = 0; e < node.Out.Count; e++)
             {
+                LayoutEdge edge = node.Out[e];
                 if (edge.IsHubLink || edge.RouteDv < 1.0 || edge.Polyline.Count < 2)
                     continue;
-                items.Add(BuildBadgeItem(edge, in t, mode, routing, routeNodes, dvScale, showTransferTimes));
+                if (_badges[edge.To.Index] is { HasBadge: true } text)
+                    TryAddBadgeItem(edge, text, in t, mode, routing, routeNodes);
             }
         }
 
+        if (connectorBadge is ConnectorBadge cb && routing)
+            TryAddConnectorBadge(scene, cb, in t, routeNodes!);
+
         // Highest priority (smallest number) first; a stable screen-position tiebreak
         // keeps the survivor set from flickering between frames at equal priority.
-        items.Sort(static (a, b) =>
-        {
-            int byPriority = a.Priority.CompareTo(b.Priority);
-            if (byPriority != 0)
-                return byPriority;
-            int byY = a.Rect.Y.CompareTo(b.Rect.Y);
-            return byY != 0 ? byY : a.Rect.X.CompareTo(b.Rect.X);
-        });
+        _items.Sort(ByPriority);
 
-        // A badge must not cover a node dot; labels may (they identify the very dots they
-        // sit near). So only badges test against this dot hash.
-        var dots = new ScreenHash(48.0);
-        foreach (LayoutNode node in layout.Tree.Nodes)
+        // A badge or a title must not cover a node dot; labels may (they identify the very dots
+        // they sit near). So only badges and titles test against this dot grid. The glyph of
+        // another system's root is the one dot no label covers, so it also goes in as drawn.
+        _dots.Reset(_clipMin, _clipMax);
+        _occupied.Reset(_clipMin, _clipMax);
+        int egoCount = scene.Ego.Tree.Nodes.Count;
+        for (int i = 0; i < nodes.Count; i++)
         {
+            LayoutNode node = nodes[i];
             float2 p = t.ToScreen(node.SnappedX, node.SnappedY);
-            float r = (float)node.DotRadius;
-            dots.Insert(new ScreenRect(p.X - r, p.Y - r, 2f * r, 2f * r));
+            float r = (float)SceneComposer.GlyphRadiusPx(node);
+            var dot = new ScreenRect(p.X - r, p.Y - r, 2f * r, 2f * r);
+            if (!Visible(in dot))
+                continue;
+            _dots.Insert(in dot);
+            if (node.IsSystemRoot && i >= egoCount)
+                _occupied.Insert(in dot);
         }
 
-        var occupied = new ScreenHash(48.0);
-        foreach (DrawItem item in items)
+        Span<(double X, double Y)> spots = stackalloc (double, double)[SceneComposer.TitleSpotCount];
+        for (int i = 0; i < _items.Count; i++)
         {
-            if (occupied.AnyOverlap(item.Rect))
+            DrawItem item = _items[i];
+            if (item.Kind == ItemKind.Title)
+            {
+                PlaceTitle(dl, scene, in t, ref item, nodes[item.NodeIndex], spots);
                 continue;
-            if (item.IsBadge && dots.AnyOverlap(item.Rect))
+            }
+            if (item.Kind == ItemKind.ConnectorBadge)
+            {
+                PlaceConnectorBadge(dl, in item, connectorBadge!.Value);
                 continue;
-            occupied.Insert(item.Rect);
-            if (item.IsBadge)
-                DrawBadgeItem(dl, item);
-            else
-                DrawLabelItem(dl, item);
+            }
+            if (_occupied.AnyOverlap(in item.Rect))
+                continue;
+            if (item.Kind != ItemKind.Label && _dots.AnyOverlap(in item.Rect))
+                continue;
+            _occupied.Insert(in item.Rect);
+            switch (item.Kind)
+            {
+                case ItemKind.Label:
+                    DrawLabelItem(dl, in item, nodes[item.NodeIndex]);
+                    break;
+                case ItemKind.Badge:
+                    DrawBadgeItem(dl, in item, _badges[item.NodeIndex]!);
+                    break;
+            }
         }
+    }
+
+    private enum LabelChoice
+    {
+        None,
+        Full,
+        Short
     }
 
     // Decides whether a node's label draws this frame and with which text. Special labels
     // always draw in full: they are the user's current anchors, so the zoom LOD never
     // hides or shortens them. Everything else passes the per-rank zoom floors, and at
     // overview zoom only the per-body representative survives, carrying the short text.
-    private static string? SelectLabelText(
+    private LabelChoice SelectLabelText(
         LayoutNode node, double zoom, bool shortLabels, string? hoverId,
-        bool routing, IReadOnlySet<string>? routeNodes,
-        Dictionary<string, LayoutNode>? reps, HashSet<string>? specialBodies)
+        bool routing, IReadOnlySet<string>? routeNodes)
     {
-        if (IsSpecialLabel(node, hoverId, routing, routeNodes))
-            return node.Label;
-        if (!RankShowsLabel(node, zoom))
-            return null;
+        if (LabelLod.IsSpecial(node, hoverId, routing, routeNodes))
+            return LabelChoice.Full;
+        if (!LabelLod.RankShows(node, zoom))
+            return LabelChoice.None;
         if (!shortLabels)
-            return node.Label;
-        string key = BodyKey(node);
-        if (specialBodies!.Contains(key) || !ReferenceEquals(reps![key], node))
-            return null;
-        return node.ShortLabel.Length > 0 ? node.ShortLabel : node.Label;
+            return LabelChoice.Full;
+        string key = LabelLod.BodyKey(node);
+        if (_specialBodies.Contains(key) || !_reps.TryGetValue(key, out LayoutNode? rep) || !ReferenceEquals(rep, node))
+            return LabelChoice.None;
+        return node.ShortLabel.Length > 0 ? LabelChoice.Short : LabelChoice.Full;
     }
 
-    private static bool IsSpecialLabel(LayoutNode node, string? hoverId, bool routing, IReadOnlySet<string>? routeNodes)
-    {
-        return node.IsRoot || node.IsYouAreHere || node.Id == hoverId
-            || (routing && routeNodes!.Contains(node.Id));
-    }
-
-    // The zoom floors by cosmetic rank: minor-body (rank 3) names go first, then moon-level
-    // (rank 2) names, leaving the far-out overview to planets. A minor-body group is exempt
-    // (its "+N" count is the headline of a dense overview), as are moons in the root's
-    // immediate context.
-    private static bool RankShowsLabel(LayoutNode node, double zoom)
-    {
-        if (node.Rank >= 3)
-            return zoom >= MinorLabelMinZoom;
-        if (node.Rank == 2 && node.Kind != LayoutKind.MinorGroup && !IsNearRootContext(node))
-            return zoom >= MoonLabelMinZoom;
-        return true;
-    }
-
-    // Whether a node's body is immediate context of the root: its well hangs off the root
-    // itself or off the root's nearest hub (a spine node at depth <= 1). That covers the
-    // root's own moons (Luna on an Earth root) and, when rooted on a moon, its sibling
-    // moons; a distant planet's moons attach much deeper down the spine and fail the test.
-    private static bool IsNearRootContext(LayoutNode node)
-    {
-        string body = BodyKey(node);
-        for (LayoutNode? p = node.Parent; p != null; p = p.Parent)
-        {
-            if (BodyKey(p) != body)
-                return p.Depth <= 1;
-        }
-        return true;
-    }
-
-    private static string BodyKey(LayoutNode node)
-    {
-        return node.BodyId.Length > 0 ? node.BodyId : node.Id;
-    }
-
-    // Which rung carries a body's single short label at overview zoom. Low orbit is the
-    // canonical "go here" rung; the rest order by how strongly they read as the body itself.
-    private static int RungPreference(LayoutKind kind)
-    {
-        return kind switch
-        {
-            LayoutKind.LowOrbit => 0,
-            LayoutKind.Hub => 1,
-            LayoutKind.Surface => 2,
-            LayoutKind.Intercept => 3,
-            LayoutKind.Stationary => 4,
-            LayoutKind.SoiEdge => 5,
-            _ => 6
-        };
-    }
-
-    private static DrawItem BuildLabelItem(
-        LayoutNode node, string text, in CanvasTransform t, string? hoverId, bool routing, IReadOnlySet<string>? routeNodes)
+    private void TryAddLabelItem(
+        LayoutNode node, LabelChoice which, in CanvasTransform t, string? hoverId, bool routing, IReadOnlySet<string>? routeNodes)
     {
         float2 pos = t.ToScreen(node.LabelX, node.LabelY);
-        float2 size = ImGui.CalcTextSize(text);
-        bool onRoute = !routing || routeNodes!.Contains(node.Id);
+        float width = (float)(which == LabelChoice.Short ? node.ShortLabelTextW : node.LabelTextW);
         // The cull rect spans the plate, not just the text, so neighbouring plates never touch.
-        float2 bgMin = pos - new float2(LabelPadX, LabelPadY);
-        float2 bgMax = pos + size + new float2(LabelPadX, LabelPadY);
-
-        return new DrawItem
+        var bgMin = new float2(pos.X - LabelPadX, pos.Y - LabelPadY);
+        var bgMax = new float2(pos.X + width + LabelPadX, pos.Y + _lineHeight + LabelPadY);
+        var rect = new ScreenRect(bgMin.X, bgMin.Y, bgMax.X - bgMin.X, bgMax.Y - bgMin.Y);
+        if (!Visible(in rect))
+            return;
+        bool onRoute = !routing || routeNodes!.Contains(node.Id);
+        _items.Add(new DrawItem
         {
-            Priority = LabelPriority(node, hoverId, routing, routeNodes),
-            Rect = new ScreenRect(bgMin.X, bgMin.Y, bgMax.X - bgMin.X, bgMax.Y - bgMin.Y),
-            IsBadge = false,
-            Text = text,
+            Kind = ItemKind.Label,
+            Priority = LabelLod.Priority(node, hoverId, routing, routeNodes),
+            Rect = rect,
+            NodeIndex = node.Index,
+            ShortText = which == LabelChoice.Short,
             TextPos = pos,
             BgMin = bgMin,
             BgMax = bgMax,
             Alpha = onRoute ? 1.0 : OffRouteAlpha
-        };
+        });
     }
 
-    private static DrawItem BuildBadgeItem(
-        LayoutEdge edge, in CanvasTransform t, LayoutMode mode, bool routing, IReadOnlySet<string>? routeNodes,
-        double dvScale, bool showTransferTimes)
+    // A system title competes for room ahead of every other label. Its rect here is the first
+    // spot, for the sort; PlaceTitle picks the spot when the item's turn comes.
+    private void TryAddTitleItem(LayoutNode node, in CanvasTransform t, string? hoverId, bool routing, IReadOnlySet<string>? routeNodes)
+    {
+        float2 p = t.ToScreen(node.SnappedX, node.SnappedY);
+        float r = (float)SceneComposer.GlyphRadiusPx(node);
+        float w = (float)SceneComposer.TitleTextW(node) + 2f * LabelPadX;
+        float h = (SceneComposer.ShowsSummary(node) ? 2f : 1f) * _lineHeight + 2f * LabelPadY;
+        float reach = r + 12f + w + h;
+        if (p.X + reach < _clipMin.X || p.X - reach > _clipMax.X || p.Y + reach < _clipMin.Y || p.Y - reach > _clipMax.Y)
+            return;
+        bool onRoute = !routing || routeNodes!.Contains(node.Id);
+        _items.Add(new DrawItem
+        {
+            Kind = ItemKind.Title,
+            Priority = node.Id == hoverId ? 0 : 1,
+            Rect = new ScreenRect(p.X + r, p.Y - 0.5f * h, w, h),
+            NodeIndex = node.Index,
+            Anchor = p,
+            Size = new float2(w, h),
+            Alpha = onRoute ? 1.0 : TitleOffRouteAlpha
+        });
+    }
+
+    // Draw a system title in the first of its spots that lies on the canvas and covers no drawn
+    // text, no other dot and no connector line, or in the first spot when none is free: a system
+    // never loses its name. The title's own glyph is in both grids, and every spot keeps clear
+    // of it.
+    private void PlaceTitle(ImDrawListPtr dl, LayoutScene scene, in CanvasTransform t, ref DrawItem item, LayoutNode node, Span<(double X, double Y)> spots)
+    {
+        float w = item.Size.X;
+        float h = item.Size.Y;
+        SceneComposer.SystemTitleSpots(node, item.Anchor.X, item.Anchor.Y, w, h, _lineHeight, spots);
+        double originX = t.Origin.X + t.PanX - t.MinX * t.Zoom;
+        double originY = t.Origin.Y + t.PanY - t.MinY * t.Zoom;
+        var chosen = new ScreenRect((float)spots[0].X, (float)spots[0].Y, w, h);
+        for (int s = 0; s < spots.Length; s++)
+        {
+            var rect = new ScreenRect((float)spots[s].X, (float)spots[s].Y, w, h);
+            bool inside = rect.X >= _clipMin.X && rect.Right <= _clipMax.X && rect.Y >= _clipMin.Y && rect.Bottom <= _clipMax.Y;
+            if (inside && !_occupied.AnyOverlap(in rect) && !_dots.AnyOverlap(in rect)
+                && !SceneComposer.ConnectorsHitScreenRect(scene, t.Zoom, originX, originY, rect.X, rect.Y, rect.Right, rect.Bottom))
+            {
+                chosen = rect;
+                break;
+            }
+        }
+        _occupied.Insert(in chosen);
+        _titleRects[item.NodeIndex] = chosen;
+        _titleDrawn[item.NodeIndex] = true;
+
+        var bgMin = new float2(chosen.X, chosen.Y);
+        var bgMax = new float2(chosen.Right, chosen.Bottom);
+        dl.AddRectFilled(in bgMin, in bgMax, Fade(LabelPlateBg, item.Alpha), 3f);
+        var pos = new float2(chosen.X + LabelPadX, chosen.Y + LabelPadY);
+        string name = _titleNames[item.NodeIndex] ?? node.Label;
+        var shadow = pos + new float2(1f, 1f);
+        dl.AddText(in shadow, Fade(LabelShadow, item.Alpha), name);
+        dl.AddText(in pos, Fade(TitleName, item.Alpha), name);
+        var bold = pos + new float2(1f, 0f);
+        dl.AddText(in bold, Fade(TitleName, item.Alpha), name);
+        if (_titleDistances[item.NodeIndex] is string distance)
+        {
+            var distPos = new float2(pos.X + _titleDistanceX[item.NodeIndex], pos.Y);
+            dl.AddText(in distPos, Fade(ColorPalette.InterstellarLine, item.Alpha), distance);
+        }
+        if (SceneComposer.ShowsSummary(node))
+        {
+            var sumPos = new float2(pos.X, pos.Y + _lineHeight);
+            dl.AddText(in sumPos, Fade(TitleSummary, item.Alpha), node.Summary);
+        }
+    }
+
+    private void TryAddBadgeItem(LayoutEdge edge, BadgeText text, in CanvasTransform t, LayoutMode mode, bool routing, IReadOnlySet<string>? routeNodes)
     {
         float2 anchor = BadgeAnchorScreen(edge, in t, mode);
         bool onRoute = routing && OnRoute(edge, routeNodes!);
-        bool offRoute = routing && !onRoute;
-        var pad = new float2(BadgePadX, BadgePadY);
-        double alpha = offRoute ? OffRouteAlpha : 1.0;
+        double alpha = routing && !onRoute ? OffRouteAlpha : 1.0;
         int priority = BadgePriority(edge, routing, routeNodes);
-        bool paired = dvScale > 1.0001;
+        float2 bgMin;
+        float2 bgMax;
+        float2 textPos;
 
-        // An Ascent edge on an atmospheric body shows both directions: an up triangle with
-        // the ascent dV, then a down triangle with the cheaper descent dV. Drawn as filled
-        // triangles (DrawBadgeItem) rather than text arrows, so they read as real arrows
-        // while the source stays ASCII. The unit rides the descent (the last) of the pair.
-        // Unlike the stacked badges the dual badge cannot show base | margin side by side, so
-        // when a margin is set it is tinted amber instead, so the inflated value still reads
-        // as inflated (matching the legend) rather than passing for the canonical cost.
-        bool dual = edge.DescentDv > 1.0 && Math.Abs(edge.DescentDv - edge.RouteDv) > 1.0;
-        if (dual)
+        if (text.Dual)
         {
-            string asc = "~" + DvNumber(edge.RouteDv * dvScale);
-            string desc = "~" + DvNumber(edge.DescentDv * dvScale) + " m/s";
-            float2 sa = ImGui.CalcTextSize(asc);
-            float2 sd = ImGui.CalcTextSize(desc);
-            float dw = ArrowW + ArrowGap + sa.X + DualSegGap + ArrowW + ArrowGap + sd.X;
-            float dh = Math.Max(sa.Y, sd.Y);
-            float2 dMin = anchor + new float2(6f, (0f - dh) * 0.5f);
-            float2 dBgMin = dMin - pad;
-            float2 dBgMax = dMin + new float2(dw, dh) + pad;
-            return new DrawItem
-            {
-                Priority = priority,
-                Rect = new ScreenRect(dBgMin.X, dBgMin.Y, dBgMax.X - dBgMin.X, dBgMax.Y - dBgMin.Y),
-                IsBadge = true,
-                Dual = true,
-                Margined = paired,
-                AscText = asc,
-                DescText = desc,
-                TextPos = dMin,
-                BgMin = dBgMin,
-                BgMax = dBgMax,
-                Alpha = alpha
-            };
-        }
-
-        // Every other badge is a stack of rows. A transfer shows its injection (the departure
-        // / ejection burn, the pure escape onto the transfer) and its capture (the arrival
-        // burn) individually, then the coupled total - matching the panel breakdown. A ladder
-        // edge is just its single cost. The transfer-time toggle appends a dimmer coast-time
-        // line. Each dV row carries the canonical (no-margin) figure and, when a piloting
-        // margin is set, the inflated figure too: base grey on the left of the line, with-
-        // margin amber on the right, so both are visible at once. The unit rides the total.
-        var rows = new List<BadgeRow>(4);
-        if (edge.Class == EdgeClass.Transfer)
-        {
-            // Show the injection / capture split only when both legs are non-trivial;
-            // otherwise the total already equals the single leg and a detail row would just
-            // repeat it.
-            if (edge.InjectionDv >= 1.0 && edge.CaptureDv >= 1.0)
-            {
-                rows.Add(DvRow("inj ~", edge.InjectionDv, dvScale, paired, unit: false, main: false));
-                rows.Add(DvRow("cap ~", edge.CaptureDv, dvScale, paired, unit: false, main: false));
-            }
-            rows.Add(DvRow("~", edge.RouteDv, dvScale, paired, unit: true, main: true));
-            if (showTransferTimes && edge.TransferTimeSeconds > 0.0)
-                rows.Add(new BadgeRow(FormatTransferTime(edge.TransferTimeSeconds), null, false));
+            float dw = ArrowW + ArrowGap + text.AscW + DualSegGap + ArrowW + ArrowGap + text.DescW;
+            float dh = _lineHeight;
+            textPos = new float2(anchor.X + 6f, anchor.Y - dh * 0.5f);
+            bgMin = new float2(textPos.X - BadgePadX, textPos.Y - BadgePadY);
+            bgMax = new float2(textPos.X + dw + BadgePadX, textPos.Y + dh + BadgePadY);
         }
         else
         {
-            rows.Add(DvRow("~", edge.RouteDv, dvScale, paired, unit: true, main: true));
-        }
-
-        float lineH = ImGui.GetTextLineHeight();
-        float totalH = rows.Count * lineH;
-        float top = anchor.Y - totalH * 0.5f;
-        var lines = new List<BadgeLine>(rows.Count * 2);
-        float bgLeft;
-        float bgRight;
-
-        if (!paired)
-        {
-            // No margin: one left-aligned block sitting just right of the line, as before.
-            float left = anchor.X + 6f;
-            float maxW = 0f;
-            for (int i = 0; i < rows.Count; i++)
+            float totalH = text.RowCount * _lineHeight;
+            float top = anchor.Y - totalH * 0.5f;
+            float bgLeft;
+            float bgRight;
+            if (!text.Paired)
             {
-                BadgeRow r = rows[i];
-                lines.Add(new BadgeLine(r.BaseText, r.Main ? BadgeTextColor : BadgeSubText, new float2(left, top + i * lineH)));
-                maxW = Math.Max(maxW, ImGui.CalcTextSize(r.BaseText).X);
+                // No margin: one left-aligned block sitting just right of the line.
+                bgLeft = anchor.X + 6f;
+                bgRight = bgLeft + text.BaseMaxW;
             }
-            bgLeft = left;
-            bgRight = left + maxW;
-        }
-        else
-        {
-            // Margin set: base figures right-aligned to the left of the line, the with-margin
-            // figures left-aligned to the right of it, so the line splits the two readings.
-            const float gutter = 5f;
-            float baseRight = anchor.X - gutter;
-            float marginLeft = anchor.X + gutter;
-            float baseMaxW = 0f;
-            float marginMaxW = 0f;
-            for (int i = 0; i < rows.Count; i++)
+            else
             {
-                BadgeRow r = rows[i];
-                float y = top + i * lineH;
-                float bw = ImGui.CalcTextSize(r.BaseText).X;
-                baseMaxW = Math.Max(baseMaxW, bw);
-                lines.Add(new BadgeLine(r.BaseText, r.Main ? BadgeTextColor : BadgeSubText, new float2(baseRight - bw, y)));
-                if (r.MarginText != null)
-                {
-                    marginMaxW = Math.Max(marginMaxW, ImGui.CalcTextSize(r.MarginText).X);
-                    lines.Add(new BadgeLine(r.MarginText, r.Main ? BadgeMarginText : BadgeMarginSub, new float2(marginLeft, y)));
-                }
+                // Margin set: base figures right-aligned to the left of the line, the with-
+                // margin figures left-aligned to the right of it, so the line splits them.
+                bgLeft = anchor.X - BadgeGutter - text.BaseMaxW;
+                bgRight = anchor.X + BadgeGutter + text.MarginMaxW;
             }
-            bgLeft = baseRight - baseMaxW;
-            bgRight = marginLeft + marginMaxW;
+            textPos = new float2(anchor.X, top);
+            bgMin = new float2(bgLeft - BadgePadX, top - BadgePadY);
+            bgMax = new float2(bgRight + BadgePadX, top + totalH + BadgePadY);
         }
 
-        float2 bgMin = new float2(bgLeft - BadgePadX, top - BadgePadY);
-        float2 bgMax = new float2(bgRight + BadgePadX, top + totalH + BadgePadY);
-
-        return new DrawItem
+        var rect = new ScreenRect(bgMin.X, bgMin.Y, bgMax.X - bgMin.X, bgMax.Y - bgMin.Y);
+        if (!Visible(in rect))
+            return;
+        _items.Add(new DrawItem
         {
+            Kind = ItemKind.Badge,
             Priority = priority,
-            Rect = new ScreenRect(bgMin.X, bgMin.Y, bgMax.X - bgMin.X, bgMax.Y - bgMin.Y),
-            IsBadge = true,
-            Dual = false,
-            Lines = lines,
-            TextPos = new float2(bgLeft, top),
+            Rect = rect,
+            NodeIndex = edge.To.Index,
+            TextPos = textPos,
             BgMin = bgMin,
             BgMax = bgMax,
             Alpha = alpha
-        };
+        });
     }
 
-    // One dV row of a badge: the canonical figure ("inj ~3,617"), plus the with-margin figure
-    // ("~3,979") when a margin is set. unit appends " m/s" (used on the total / single value).
-    private static BadgeRow DvRow(string prefix, double baseDv, double dvScale, bool paired, bool unit, bool main)
+    private const float BadgeGutter = 5f;
+
+    // The badge of the interstellar connector on the selected route: the leg's delta-v and
+    // coast time, where the connector leaves the shared bus for the destination root. Only
+    // drawn while the connector is on the route, and ahead of every other badge. Its rect here
+    // is the first spot, for the sort; PlaceConnectorBadge picks the spot when its turn comes.
+    private void TryAddConnectorBadge(LayoutScene scene, ConnectorBadge badge, in CanvasTransform t, IReadOnlySet<string> routeNodes)
     {
-        string suffix = unit ? " m/s" : "";
-        string baseText = prefix + DvNumber(baseDv) + suffix;
-        string? marginText = paired ? "~" + DvNumber(baseDv * dvScale) + suffix : null;
-        return new BadgeRow(baseText, marginText, main);
+        IReadOnlyList<LayoutConnector> connectors = scene.Connectors;
+        for (int i = 0; i < connectors.Count; i++)
+        {
+            LayoutConnector connector = connectors[i];
+            if (connector.To.Id != badge.DestinationRootId || !OnRoute(connector, routeNodes))
+                continue;
+            float2 anchor = t.ToScreen(connector.BadgeAnchor.X, connector.BadgeAnchor.Y);
+            float w = Math.Max(badge.DvW, badge.TimeW) + 2f * BadgePadX;
+            float h = 2f * _lineHeight + 2f * BadgePadY;
+            (double x, double y) = SceneComposer.BadgeSpot(0, anchor.X, anchor.Y, w, h);
+            float reach = w + h;
+            if (anchor.X + reach < _clipMin.X || anchor.X - reach > _clipMax.X || anchor.Y + reach < _clipMin.Y || anchor.Y - reach > _clipMax.Y)
+                return;
+            _items.Add(new DrawItem
+            {
+                Kind = ItemKind.ConnectorBadge,
+                Priority = 3,
+                Rect = new ScreenRect((float)x, (float)y, w, h),
+                Anchor = anchor,
+                Size = new float2(w, h),
+                Alpha = 1.0
+            });
+            return;
+        }
     }
 
-    // A rounded dV magnitude with thousands separators (no unit, no "~"), matching the panel
-    // breakdown's number style so the map and the panel read alike.
-    private static string DvNumber(double dv)
+    // Draw the route badge in the first spot of SceneComposer.BadgeSpot that lies on the canvas
+    // and covers no drawn text and no dot. With none free it is skipped like any other badge.
+    private void PlaceConnectorBadge(ImDrawListPtr dl, in DrawItem item, ConnectorBadge badge)
     {
-        return Math.Round(dv).ToString("#,##0", CultureInfo.InvariantCulture);
+        float w = item.Size.X;
+        float h = item.Size.Y;
+        for (int s = 0; s < SceneComposer.BadgeSpotCount; s++)
+        {
+            (double x, double y) = SceneComposer.BadgeSpot(s, item.Anchor.X, item.Anchor.Y, w, h);
+            var rect = new ScreenRect((float)x, (float)y, w, h);
+            bool inside = rect.X >= _clipMin.X && rect.Right <= _clipMax.X && rect.Y >= _clipMin.Y && rect.Bottom <= _clipMax.Y;
+            if (!inside || _occupied.AnyOverlap(in rect) || _dots.AnyOverlap(in rect))
+                continue;
+            _occupied.Insert(in rect);
+            DrawConnectorBadge(dl, new float2(rect.X, rect.Y), new float2(rect.Right, rect.Bottom), badge);
+            return;
+        }
     }
 
-    // Compact coast-time string for the transfer-badge subline (minutes / hours / days /
-    // years), invariant so it stays ASCII regardless of locale.
-    private static string FormatTransferTime(double seconds)
+    private void DrawConnectorBadge(ImDrawListPtr dl, float2 bgMin, float2 bgMax, ConnectorBadge badge)
     {
-        if (seconds < 3600.0)
-            return string.Format(CultureInfo.InvariantCulture, "{0:0} min", seconds / 60.0);
-        if (seconds < 86400.0)
-            return string.Format(CultureInfo.InvariantCulture, "{0:0.0} h", seconds / 3600.0);
-        double days = seconds / 86400.0;
-        if (days < 365.25)
-            return string.Format(CultureInfo.InvariantCulture, "{0:0.0} d", days);
-        return string.Format(CultureInfo.InvariantCulture, "{0:0.0} yr", days / 365.25);
+        dl.AddRectFilled(in bgMin, in bgMax, BadgeBg, 3f);
+        var pos = new float2(bgMin.X + BadgePadX, bgMin.Y + BadgePadY);
+        dl.AddText(in pos, BadgeTextColor, badge.DvText);
+        var timePos = new float2(pos.X, pos.Y + _lineHeight);
+        dl.AddText(in timePos, BadgeSubText, badge.TimeText);
     }
 
     // The transfer-window markers: a small amber clock badge near each sibling that has a
-    // window, showing the countdown to its next departure window. Keyed by the sibling's
-    // representative node id (resolved in MapWindow). Gated by the same zoom floor as the dV
-    // badges, drawn soonest-first and skipped where it would overlap an already-placed marker
-    // (its own light cull pass), so a dense root does not smear. Sits up-left of the dot, clear
-    // of the dV / transfer-time badges on the right. Drawn at full strength even when a route
-    // dims the rest of the map: the timing layer is orthogonal to the chosen route.
-    private static void DrawWindowMarkers(
-        ImDrawListPtr dl, LayoutResult layout, in CanvasTransform t,
-        IReadOnlyDictionary<string, double> markers)
+    // window, showing the countdown to its next departure window. Gated by the same zoom floor
+    // as the dV badges, drawn soonest-first and skipped where it would overlap an already-
+    // placed marker (its own light cull pass), so a dense root does not smear. Sits up-left of
+    // the dot, clear of the dV / transfer-time badges on the right. Drawn at full strength even
+    // when a route dims the rest of the map: the timing layer is orthogonal to the route.
+    private void DrawWindowMarkers(ImDrawListPtr dl, in CanvasTransform t, in WindowMarkerSet markers)
     {
         if (t.Zoom < BadgeMinZoom)
             return;
 
-        // markers only ever holds finite countdowns (the builder filters non-finite), so the
-        // entries here need no further guard.
-        var ordered = new List<(LayoutNode Node, double Secs)>();
-        foreach (LayoutNode node in layout.Tree.Nodes)
+        if (_markerOrder.Length < markers.Count)
+            _markerOrder = new int[markers.Count];
+        int count = 0;
+        for (int i = 0; i < markers.Count; i++)
         {
-            if (markers.TryGetValue(node.Id, out double secs))
-                ordered.Add((node, secs));
+            if (markers.Nodes[i] != null && double.IsFinite(markers.Seconds[i]))
+                _markerOrder[count++] = i;
         }
-        ordered.Sort(static (a, b) => a.Secs.CompareTo(b.Secs));
-
-        var placed = new ScreenHash(48.0);
-        foreach ((LayoutNode node, double secs) in ordered)
+        // Soonest first; a handful of windows, so an insertion sort without a comparer.
+        for (int i = 1; i < count; i++)
         {
+            int value = _markerOrder[i];
+            int j = i - 1;
+            while (j >= 0 && markers.Seconds[_markerOrder[j]] > markers.Seconds[value])
+            {
+                _markerOrder[j + 1] = _markerOrder[j];
+                j--;
+            }
+            _markerOrder[j + 1] = value;
+        }
+
+        _markerGrid.Reset(_clipMin, _clipMax);
+        for (int k = 0; k < count; k++)
+        {
+            int i = _markerOrder[k];
+            LayoutNode node = markers.Nodes[i]!;
+            string text = markers.Texts[i];
             float2 p = t.ToScreen(node.SnappedX, node.SnappedY);
             float r = (float)node.DotRadius;
-            string text = "~" + FormatWindowTime(secs);
-            float2 ts = ImGui.CalcTextSize(text);
-            float clockR = MathF.Max(4f, ts.Y * 0.42f);
+            float textW = markers.Widths[i];
+            float textH = _lineHeight;
+            float clockR = MathF.Max(4f, textH * 0.42f);
             const float gap = 4f;
-            float w = clockR * 2f + gap + ts.X;
+            float w = clockR * 2f + gap + textW;
 
-            var pos = new float2(p.X - r - 6f - w, p.Y - r - 6f - ts.Y);
-            float2 bgMin = pos - new float2(BadgePadX, BadgePadY);
-            float2 bgMax = pos + new float2(w, ts.Y) + new float2(BadgePadX, BadgePadY);
+            var pos = new float2(p.X - r - 6f - w, p.Y - r - 6f - textH);
+            var bgMin = new float2(pos.X - BadgePadX, pos.Y - BadgePadY);
+            var bgMax = new float2(pos.X + w + BadgePadX, pos.Y + textH + BadgePadY);
             var rect = new ScreenRect(bgMin.X, bgMin.Y, bgMax.X - bgMin.X, bgMax.Y - bgMin.Y);
-            if (placed.AnyOverlap(rect))
+            if (!Visible(in rect) || _markerGrid.AnyOverlap(in rect))
                 continue;
-            placed.Insert(rect);
+            _markerGrid.Insert(in rect);
 
             dl.AddRectFilled(in bgMin, in bgMax, WindowBadgeBg, 3f);
 
             // A tiny clock glyph: a ring with an hour and a minute hand.
-            var c = new float2(pos.X + clockR, pos.Y + ts.Y * 0.5f);
+            var c = new float2(pos.X + clockR, pos.Y + textH * 0.5f);
             dl.AddCircle(in c, clockR, WindowBadgeText, 12, 1.4f);
             var hand1 = new float2(c.X, c.Y - clockR * 0.6f);
             var hand2 = new float2(c.X + clockR * 0.55f, c.Y + clockR * 0.1f);
@@ -855,26 +1176,10 @@ internal static class CanvasRenderer
             dl.AddLine(in c, in hand2, WindowBadgeText, 1.3f);
 
             var tp = new float2(pos.X + clockR * 2f + gap, pos.Y);
-            float2 sh = tp + new float2(1f, 1f);
+            var sh = new float2(tp.X + 1f, tp.Y + 1f);
             dl.AddText(in sh, LabelShadow, text);
             dl.AddText(in tp, WindowBadgeText, text);
         }
-    }
-
-    // Compact countdown for the window marker: minutes, hours, days, then years, so an imminent
-    // sub-day window does not collapse to "0d" (and stays consistent with the overlay, which
-    // shows the same countdown in min / h). No spaces, to keep the badge small; invariant so it
-    // stays ASCII regardless of locale.
-    private static string FormatWindowTime(double seconds)
-    {
-        if (seconds < 3600.0)
-            return string.Format(CultureInfo.InvariantCulture, "{0:0}m", seconds / 60.0);
-        if (seconds < 86400.0)
-            return string.Format(CultureInfo.InvariantCulture, "{0:0}h", seconds / 3600.0);
-        double days = seconds / 86400.0;
-        if (days < 365.25)
-            return string.Format(CultureInfo.InvariantCulture, "{0:0}d", days);
-        return string.Format(CultureInfo.InvariantCulture, "{0:0.0}yr", days / 365.25);
     }
 
     // Where the badge anchors on the edge. The badge sits on the segment that carries the
@@ -899,56 +1204,61 @@ internal static class CanvasRenderer
         return t.ToScreen((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0);
     }
 
-    private static void DrawLabelItem(ImDrawListPtr dl, in DrawItem item)
+    private static void DrawLabelItem(ImDrawListPtr dl, in DrawItem item, LayoutNode node)
     {
-        if (LabelPlateEnabled)
-        {
-            float2 bgMin = item.BgMin;
-            float2 bgMax = item.BgMax;
-            dl.AddRectFilled(in bgMin, in bgMax, Fade(LabelPlateBg, item.Alpha), 3f);
-        }
+        string text = item.ShortText ? node.ShortLabel : node.Label;
+        float2 bgMin = item.BgMin;
+        float2 bgMax = item.BgMax;
+        dl.AddRectFilled(in bgMin, in bgMax, Fade(LabelPlateBg, item.Alpha), 3f);
         float2 shadow = item.TextPos + new float2(1f, 1f);
-        dl.AddText(in shadow, Fade(LabelShadow, item.Alpha), item.Text);
-        dl.AddText(in item.TextPos, Fade(LabelText, item.Alpha), item.Text);
+        dl.AddText(in shadow, Fade(LabelShadow, item.Alpha), text);
+        dl.AddText(in item.TextPos, Fade(LabelText, item.Alpha), text);
     }
 
-    private static void DrawBadgeItem(ImDrawListPtr dl, in DrawItem item)
+    private void DrawBadgeItem(ImDrawListPtr dl, in DrawItem item, BadgeText text)
     {
         float2 bgMin = item.BgMin;
         float2 bgMax = item.BgMax;
-        // Used only by the dual (ascent/descent) badge: amber when a margin inflates it, so it
-        // reads as inflated like the with-margin figures on the stacked badges.
-        byte4 col = Fade(item.Margined ? BadgeMarginText : BadgeTextColor, item.Alpha);
         dl.AddRectFilled(in bgMin, in bgMax, Fade(BadgeBg, item.Alpha), 3f);
 
-        if (!item.Dual)
+        if (!text.Dual)
         {
-            // Each fragment is pre-positioned and pre-colored (base grey left, with-margin
-            // amber right); just blit them, applying the route-fade alpha.
-            foreach (BadgeLine ln in item.Lines!)
+            float anchorX = item.TextPos.X;
+            float top = item.TextPos.Y;
+            for (int i = 0; i < text.RowCount; i++)
             {
-                float2 pos = ln.Pos;
-                dl.AddText(in pos, Fade(ln.Color, item.Alpha), ln.Text);
+                float y = top + i * _lineHeight;
+                byte4 baseColor = text.Main[i] ? BadgeTextColor : BadgeSubText;
+                var basePos = text.Paired
+                    ? new float2(anchorX - BadgeGutter - text.BaseW[i], y)
+                    : new float2(anchorX + 6f, y);
+                dl.AddText(in basePos, Fade(baseColor, item.Alpha), text.Base[i]);
+                if (text.Paired && text.Margin[i] is string margin)
+                {
+                    var marginPos = new float2(anchorX + BadgeGutter, y);
+                    dl.AddText(in marginPos, Fade(text.Main[i] ? BadgeMarginText : BadgeMarginSub, item.Alpha), margin);
+                }
             }
             return;
         }
 
         // Lay the dual badge out left to right with the same element widths the box was
         // sized to: up triangle, ascent dV, down triangle, descent dV, vertically centered.
-        float contentH = item.BgMax.Y - item.BgMin.Y - 2f * BadgePadY;
-        float cy = item.TextPos.Y + contentH * 0.5f;
+        // Amber when a margin inflates it, so it reads as inflated like the stacked badges.
+        byte4 col = Fade(text.Paired ? BadgeMarginText : BadgeTextColor, item.Alpha);
+        float cy = item.TextPos.Y + _lineHeight * 0.5f;
         float x = item.TextPos.X;
 
         DrawTriangle(dl, x, cy, up: true, col);
         x += ArrowW + ArrowGap;
         var ascPos = new float2(x, item.TextPos.Y);
-        dl.AddText(in ascPos, col, item.AscText);
-        x += ImGui.CalcTextSize(item.AscText).X + DualSegGap;
+        dl.AddText(in ascPos, col, text.AscText);
+        x += text.AscW + DualSegGap;
 
         DrawTriangle(dl, x, cy, up: false, col);
         x += ArrowW + ArrowGap;
         var descPos = new float2(x, item.TextPos.Y);
-        dl.AddText(in descPos, col, item.DescText);
+        dl.AddText(in descPos, col, text.DescText);
     }
 
     // A small filled direction triangle inside a badge: apex up for ascent, apex down for
@@ -974,51 +1284,19 @@ internal static class CanvasRenderer
         }
     }
 
-    // Lower number = drawn first = wins the screen room. Names come before plain dV badges
-    // so the map reads as a labelled diagram first: hovered, root, you-are-here, on-route
-    // name; the selected route's dV; then every body name by rank; then dV badges by rank.
-    // Only the on-route dV outranks the names, since a chosen route wants both at once.
-    private static int LabelPriority(LayoutNode node, string? hoverId, bool routing, IReadOnlySet<string>? routeNodes)
-    {
-        if (node.Id == hoverId)
-            return 0;
-        if (node.IsRoot)
-            return 1;
-        if (node.IsYouAreHere)
-            return 2;
-        if (routing && routeNodes!.Contains(node.Id))
-            return 3;
-        // A minor-body group's "+N" count is the headline of a dense overview, so it ranks
-        // just under the route, ahead of every individual body name.
-        if (node.Kind == LayoutKind.MinorGroup)
-            return 4;
-        if (IsMajor(node))
-            return 5;
-        if (node.Rank == 2)
-            return 6;
-        return 7;
-    }
-
     private static int BadgePriority(LayoutEdge edge, bool routing, IReadOnlySet<string>? routeNodes)
     {
         if (routing && OnRoute(edge, routeNodes!))
             return 4;
-        bool major = IsMajor(edge.To);
+        bool major = LabelLod.IsMajor(edge.To);
         if (edge.Class == EdgeClass.Transfer)
             return major ? 8 : 9;
         return major ? 9 : 10;
     }
 
-    private static bool IsMajor(LayoutNode node)
+    private bool Visible(in ScreenRect rect)
     {
-        return node.IsRoot || node.IsYouAreHere || node.Kind == LayoutKind.Hub || node.Rank <= 1;
-    }
-
-    private static byte4 BodyColor(LayoutNode node, IReadOnlyDictionary<string, StateNode> lookup, ColorPalette palette)
-    {
-        if (lookup.TryGetValue(node.Id, out StateNode? state))
-            return palette.ColorFor(state.Body);
-        return palette.ColorFor(node.Id);
+        return rect.Right >= _clipMin.X && rect.X <= _clipMax.X && rect.Bottom >= _clipMin.Y && rect.Y <= _clipMax.Y;
     }
 
     private static byte4 Lighten(byte4 c, double f)
@@ -1039,60 +1317,76 @@ internal static class CanvasRenderer
         return new byte4(c.X, c.Y, c.Z, (byte)Math.Clamp((int)Math.Round(c.W * a), 0, 255));
     }
 
-    // One label or badge competing for screen room. Rect is the screen-space box used
-    // for overlap; the draw fields carry what each kind needs to render. A label uses Text;
-    // a dual (ascent/descent) badge uses AscText/DescText with drawn triangles; every other
-    // badge uses Lines (a stack: a transfer's injection / capture / total, a ladder's cost).
+    // The resolved look of one node: its system color, the lightened stroke and marker accent,
+    // and which body markers its body carries.
+    private readonly record struct NodeStyle(byte4 Fill, byte4 Stroke, byte4 Accent, bool Atmosphere, bool Rings);
+
+    private enum ItemKind
+    {
+        Label,
+        Badge,
+        ConnectorBadge,
+        Title
+    }
+
+    // One label or badge competing for screen room. Rect is the screen-space box used for
+    // overlap. NodeIndex is the node of a label, or the To node of a badge's edge, which keys
+    // the cached badge text.
     private struct DrawItem
     {
+        public ItemKind Kind;
         public int Priority;
         public ScreenRect Rect;
-        public bool IsBadge;
-        public bool Dual;
-        // A dual (ascent/descent) badge whose figures are inflated by a piloting margin; drawn
-        // amber so it reads as inflated. Non-dual badges show base | margin per row instead.
-        public bool Margined;
-        public string Text;
-        public string AscText;
-        public string DescText;
-        public List<BadgeLine>? Lines;
+        public int NodeIndex;
+        public bool ShortText;
         public float2 TextPos;
         public double Alpha;
         public float2 BgMin;
         public float2 BgMax;
+
+        // A system title's or a route badge's anchor point on screen and its plate size.
+        public float2 Anchor;
+        public float2 Size;
     }
 
-    // One positioned text fragment of a stacked (non-dual) badge: the resolved (pre-fade)
-    // color and the absolute screen position, so the draw pass just blits it. Layout (left/
-    // right alignment around the line, base vs margin coloring) is all decided in BuildBadgeItem.
-    private readonly struct BadgeLine
+    // The strings of one edge's badge with their measured widths, built when the scene or a
+    // display setting changes. A stacked badge holds at most four rows.
+    private sealed class BadgeText
     {
-        public readonly string Text;
-        public readonly byte4 Color;
-        public readonly float2 Pos;
+        public bool HasBadge;
+        public bool Paired;
+        public bool Dual;
+        public string AscText = "";
+        public string DescText = "";
+        public float AscW;
+        public float DescW;
+        public int RowCount;
+        public readonly string[] Base = new string[4];
+        public readonly string?[] Margin = new string?[4];
+        public readonly float[] BaseW = new float[4];
+        public readonly bool[] Main = new bool[4];
+        public float BaseMaxW;
+        public float MarginMaxW;
+        public string? PlaneText;
 
-        public BadgeLine(string text, byte4 color, float2 pos)
+        // One dV row: the canonical figure ("inj ~3,617"), plus the with-margin figure
+        // ("~3,979") when a margin is set. unit appends " m/s" (on the total / single value).
+        public void AddDvRow(string prefix, double baseDv, double dvScale, bool paired, bool unit, bool main)
         {
-            Text = text;
-            Color = color;
-            Pos = pos;
+            string suffix = unit ? " m/s" : "";
+            AddRow(prefix + Format.DvNumber(baseDv) + suffix, paired ? "~" + Format.DvNumber(baseDv * dvScale) + suffix : null, main);
         }
-    }
 
-    // One dV row of a badge before positioning: the canonical figure, the optional with-margin
-    // figure (null when no margin), and whether it is the bright headline (total / single cost)
-    // or a dim detail line (a transfer's injection / capture, or the coast time).
-    private readonly struct BadgeRow
-    {
-        public readonly string BaseText;
-        public readonly string? MarginText;
-        public readonly bool Main;
-
-        public BadgeRow(string baseText, string? marginText, bool main)
+        public void AddRow(string baseText, string? marginText, bool main)
         {
-            BaseText = baseText;
-            MarginText = marginText;
-            Main = main;
+            int i = RowCount++;
+            Base[i] = baseText;
+            Margin[i] = marginText;
+            Main[i] = main;
+            BaseW[i] = ImGui.CalcTextSize(baseText).X;
+            BaseMaxW = Math.Max(BaseMaxW, BaseW[i]);
+            if (marginText != null)
+                MarginMaxW = Math.Max(MarginMaxW, ImGui.CalcTextSize(marginText).X);
         }
     }
 
@@ -1120,54 +1414,78 @@ internal static class CanvasRenderer
         }
     }
 
-    // A coarse screen-space spatial hash so the per-frame culling stays linear in the
-    // number of labels and badges instead of comparing every pair.
-    private sealed class ScreenHash
+    // A flat screen-space grid over the canvas so the per-frame culling stays linear in the
+    // number of labels and badges. Each cell heads a linked list of entries in shared arrays,
+    // which grow when needed and are otherwise reused, so a frame allocates nothing. A rect
+    // reaching past the canvas lands in the border cells; the overlap test is exact anyway.
+    private sealed class ScreenGrid
     {
         private readonly float _bucket;
-        private readonly Dictionary<(int, int), List<ScreenRect>> _cells = new();
+        private float _originX;
+        private float _originY;
+        private int _cols;
+        private int _rows;
+        private int[] _head = Array.Empty<int>();
+        private int[] _next = new int[256];
+        private int[] _entryRect = new int[256];
+        private ScreenRect[] _rects = new ScreenRect[128];
+        private int _entryCount;
+        private int _rectCount;
 
-        public ScreenHash(double bucket)
+        public ScreenGrid(float bucket)
         {
-            _bucket = (float)bucket;
+            _bucket = bucket;
+        }
+
+        public void Reset(float2 min, float2 max)
+        {
+            _originX = min.X;
+            _originY = min.Y;
+            _cols = Math.Max(1, (int)MathF.Ceiling((max.X - min.X) / _bucket) + 1);
+            _rows = Math.Max(1, (int)MathF.Ceiling((max.Y - min.Y) / _bucket) + 1);
+            int cells = _cols * _rows;
+            if (_head.Length < cells)
+                _head = new int[cells];
+            Array.Fill(_head, -1, 0, cells);
+            _entryCount = 0;
+            _rectCount = 0;
         }
 
         public void Insert(in ScreenRect rect)
         {
-            int minCol = Col(rect.X);
-            int maxCol = Col(rect.Right);
-            int minRow = Col(rect.Y);
-            int maxRow = Col(rect.Bottom);
-            for (int c = minCol; c <= maxCol; c++)
+            if (_rectCount == _rects.Length)
+                Array.Resize(ref _rects, _rects.Length * 2);
+            int index = _rectCount++;
+            _rects[index] = rect;
+            CellRange(in rect, out int c0, out int c1, out int r0, out int r1);
+            for (int r = r0; r <= r1; r++)
             {
-                for (int r = minRow; r <= maxRow; r++)
+                for (int c = c0; c <= c1; c++)
                 {
-                    var key = (c, r);
-                    if (!_cells.TryGetValue(key, out List<ScreenRect>? list))
+                    if (_entryCount == _next.Length)
                     {
-                        list = new List<ScreenRect>();
-                        _cells[key] = list;
+                        Array.Resize(ref _next, _next.Length * 2);
+                        Array.Resize(ref _entryRect, _entryRect.Length * 2);
                     }
-                    list.Add(rect);
+                    int cell = r * _cols + c;
+                    int entry = _entryCount++;
+                    _entryRect[entry] = index;
+                    _next[entry] = _head[cell];
+                    _head[cell] = entry;
                 }
             }
         }
 
         public bool AnyOverlap(in ScreenRect rect)
         {
-            int minCol = Col(rect.X);
-            int maxCol = Col(rect.Right);
-            int minRow = Col(rect.Y);
-            int maxRow = Col(rect.Bottom);
-            for (int c = minCol; c <= maxCol; c++)
+            CellRange(in rect, out int c0, out int c1, out int r0, out int r1);
+            for (int r = r0; r <= r1; r++)
             {
-                for (int r = minRow; r <= maxRow; r++)
+                for (int c = c0; c <= c1; c++)
                 {
-                    if (!_cells.TryGetValue((c, r), out List<ScreenRect>? list))
-                        continue;
-                    foreach (ScreenRect existing in list)
+                    for (int entry = _head[r * _cols + c]; entry >= 0; entry = _next[entry])
                     {
-                        if (rect.Intersects(existing))
+                        if (rect.Intersects(in _rects[_entryRect[entry]]))
                             return true;
                     }
                 }
@@ -1175,6 +1493,17 @@ internal static class CanvasRenderer
             return false;
         }
 
-        private int Col(float v) => (int)MathF.Floor(v / _bucket);
+        private void CellRange(in ScreenRect rect, out int c0, out int c1, out int r0, out int r1)
+        {
+            c0 = Cell(rect.X - _originX, _cols);
+            c1 = Cell(rect.Right - _originX, _cols);
+            r0 = Cell(rect.Y - _originY, _rows);
+            r1 = Cell(rect.Bottom - _originY, _rows);
+        }
+
+        private int Cell(float v, int count)
+        {
+            return Math.Clamp((int)MathF.Floor(v / _bucket), 0, count - 1);
+        }
     }
 }

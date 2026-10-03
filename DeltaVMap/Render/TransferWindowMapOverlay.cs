@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
 using DeltaVMap.Core;
@@ -15,7 +14,8 @@ namespace DeltaVMap.Render;
 //
 // Projection mirrors the stock alignment marker in TransferPlanner.DrawPlanWindow: orbit
 // position in the parent's CCE frame, lifted to ECL via the parent, through Camera.EclToScreen.
-internal static class TransferWindowMapOverlay
+// An instance owned by the map window, so its labels are kept until the shown number changes.
+internal sealed class TransferWindowMapOverlay
 {
     // Amber, matching the clock-face required marker and the on-canvas window badges, so the
     // timing layer reads as one vocabulary across the panel, the metro map and the 3D map.
@@ -28,8 +28,6 @@ internal static class TransferWindowMapOverlay
     private static readonly byte4 PhaseLineColor = new byte4(176, 190, 210, 210);
     private static readonly byte4 LabelColor = new byte4(236, 224, 196, 255);
     private static readonly byte4 LabelShadow = new byte4(0, 0, 0, 205);
-
-    private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
     // Ejection gizmo geometry, in screen px so it stays a readable size at any map zoom.
     private const float RayPx = 72f;
@@ -49,8 +47,16 @@ internal static class TransferWindowMapOverlay
     // later check shows the arm on the wrong side.
     private const double EjectionSign = -1.0;
 
+    private string _markerLabel = "";
+    private string? _markerTarget;
+    private long _markerKey = long.MinValue;
+    private string _ejectLabel = "";
+    private long _ejectKey = long.MinValue;
+    private string _phaseLabel = "";
+    private long _phaseKey = long.MinValue;
+
     // A null emphasisHint falls back to the soonest window, matching the clock-face.
-    public static void Draw(IViewport viewport, IReadOnlyList<TransferWindowInfo> windows, string? emphasisHint)
+    public void Draw(IViewport viewport, IReadOnlyList<TransferWindowInfo> windows, string? emphasisHint)
     {
         if (windows.Count == 0)
             return;
@@ -75,8 +81,8 @@ internal static class TransferWindowMapOverlay
 
             // Where each sibling will be when its window opens. The emphasized one is drawn
             // prominently and labeled; the rest are faint rings so a dense root does not smear.
-            foreach (TransferWindowInfo w in windows)
-                DrawDestinationMarker(dl, camera, vpPos, w, now, w.TargetId == emphasis);
+            for (int i = 0; i < windows.Count; i++)
+                DrawDestinationMarker(dl, camera, vpPos, windows[i], now, windows[i].TargetId == emphasis);
 
             // The ejection-angle gizmo, only for the emphasized window, at the departure body.
             if (focus != null)
@@ -92,7 +98,7 @@ internal static class TransferWindowMapOverlay
     // Project the destination body's position at its next window time onto its real orbit and
     // mark it. Mirrors the stock alignment path; the window time is the already-computed countdown
     // added to now, not a re-derived alignment.
-    private static void DrawDestinationMarker(
+    private void DrawDestinationMarker(
         ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, UniverseTime now, bool emphasized)
     {
         if (!double.IsFinite(w.TimeToWindowSeconds) || w.Target is not IOrbiter orbiter)
@@ -107,7 +113,14 @@ internal static class TransferWindowMapOverlay
         {
             dl.AddCircleFilled(in s, 5f, MarkerColor);
             dl.AddCircle(in s, 9f, MarkerColor, 20, 2f);
-            string label = w.TargetId + " ~" + FormatWindowTime(w.TimeToWindowSeconds);
+            long key = Format.WindowTimeKey(w.TimeToWindowSeconds);
+            if (key != _markerKey || !ReferenceEquals(w.TargetId, _markerTarget))
+            {
+                _markerLabel = w.TargetId + " ~" + Format.WindowTime(w.TimeToWindowSeconds);
+                _markerKey = key;
+                _markerTarget = w.TargetId;
+            }
+            string label = _markerLabel;
             var lp = new float2(s.X + 12f, s.Y - 8f);
             var sh = new float2(lp.X + 1f, lp.Y + 1f);
             dl.AddText(in sh, LabelShadow, label);
@@ -125,7 +138,7 @@ internal static class TransferWindowMapOverlay
     // labeled. The arms' directions are the true projected orbit-plane directions in the (possibly
     // tilted) map view; the angle drawn between them is therefore the projected angle, so the
     // numeric label carries the exact value.
-    private static void DrawEjectionGizmo(
+    private void DrawEjectionGizmo(
         ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, UniverseTime now)
     {
         if (w.Source is not IOrbiter src)
@@ -170,8 +183,13 @@ internal static class TransferWindowMapOverlay
         var proTag = new float2(proEnd.X + 3f, proEnd.Y - 6f);
         dl.AddText(in proTag, ProgradeColor, "prograde");
 
-        string deg = Math.Round(w.EjectionAngle * 180.0 / Math.PI).ToString("0", Inv);
-        string label = "eject " + deg + " deg " + (w.EjectionAhead ? "ahead" : "behind");
+        long ejectKey = (long)Math.Round(w.EjectionAngle * 180.0 / Math.PI) * 2 + (w.EjectionAhead ? 1 : 0);
+        if (ejectKey != _ejectKey)
+        {
+            _ejectLabel = "eject " + Format.Degrees(w.EjectionAngle) + " deg " + (w.EjectionAhead ? "ahead" : "behind");
+            _ejectKey = ejectKey;
+        }
+        string label = _ejectLabel;
         float2 mid = Unit(new float2(uPro.X + uEj.X, uPro.Y + uEj.Y));
         if (IsZero(mid))
             mid = uEj;
@@ -187,7 +205,7 @@ internal static class TransferWindowMapOverlay
     // the destination line ends at the game's own body marker; the amber optimal-departure marker
     // drawn elsewhere shows where that body moves to by the window. As with the gizmo, the drawn
     // span is the projected angle in a tilted view, so the numeric label carries the exact value.
-    private static void DrawPhaseAngle(ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, UniverseTime now)
+    private void DrawPhaseAngle(ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, UniverseTime now)
     {
         if (w.Source is not IOrbiter src || w.Target is not IOrbiter tgt)
             return;
@@ -213,8 +231,14 @@ internal static class TransferWindowMapOverlay
             return;
         ScreenArc(dl, hub, ArcPx, uS, uT, PhaseLineColor, 1.4f);
 
-        double deg = Math.Abs(w.CurrentPhaseAngle) * 180.0 / Math.PI;
-        string label = "phase " + Math.Round(deg).ToString("0", Inv) + " deg";
+        double phase = Math.Abs(w.CurrentPhaseAngle);
+        long phaseKey = (long)Math.Round(phase * 180.0 / Math.PI);
+        if (phaseKey != _phaseKey)
+        {
+            _phaseLabel = "phase " + Format.Degrees(phase) + " deg";
+            _phaseKey = phaseKey;
+        }
+        string label = _phaseLabel;
         // Place the label along the angular bisector of the arc (robust even when the bodies are
         // nearly opposite, where summing the two unit directions would cancel).
         double a0 = Math.Atan2(uS.Y, uS.X);
@@ -280,9 +304,11 @@ internal static class TransferWindowMapOverlay
     {
         if (hint != null)
         {
-            foreach (TransferWindowInfo w in windows)
-                if (w.TargetId == hint)
+            for (int i = 0; i < windows.Count; i++)
+            {
+                if (windows[i].TargetId == hint)
                     return hint;
+            }
         }
 
         int best = -1;
@@ -303,9 +329,11 @@ internal static class TransferWindowMapOverlay
     {
         if (id == null)
             return null;
-        foreach (TransferWindowInfo w in windows)
-            if (w.TargetId == id)
-                return w;
+        for (int i = 0; i < windows.Count; i++)
+        {
+            if (windows[i].TargetId == id)
+                return windows[i];
+        }
         return null;
     }
 
@@ -325,19 +353,5 @@ internal static class TransferWindowMapOverlay
         if (len < 1e-4f)
             return new float2(0f, 0f);
         return new float2(v.X / len, v.Y / len);
-    }
-
-    // Compact countdown for the marker label, matching the on-canvas window badge: minutes,
-    // hours, days, then years, no spaces, invariant so it stays ASCII regardless of locale.
-    private static string FormatWindowTime(double seconds)
-    {
-        if (seconds < 3600.0)
-            return string.Format(Inv, "{0:0}m", seconds / 60.0);
-        if (seconds < 86400.0)
-            return string.Format(Inv, "{0:0}h", seconds / 3600.0);
-        double days = seconds / 86400.0;
-        if (days < 365.25)
-            return string.Format(Inv, "{0:0}d", days);
-        return string.Format(Inv, "{0:0.0}yr", days / 365.25);
     }
 }

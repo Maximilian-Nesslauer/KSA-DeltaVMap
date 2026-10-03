@@ -73,6 +73,152 @@ internal static class NodeGlyphs
         dl.AddCircle(in p, r, stroke, 20, 1.5f);
     }
 
+    // A star, drawn in a universe with several star systems: a filled disc with four long and
+    // four short rays, so a star reads apart from a planet and from a barycenter.
+    public static void Star(ImDrawListPtr dl, float2 p, float r, byte4 fill, byte4 stroke)
+    {
+        float core = r * 0.62f;
+        for (int i = 0; i < 8; i++)
+        {
+            float angle = i * (MathF.PI / 4f);
+            float outer = i % 2 == 0 ? r : r * 0.82f;
+            float dx = MathF.Cos(angle);
+            float dy = MathF.Sin(angle);
+            var a = new float2(p.X + dx * core * 0.9f, p.Y + dy * core * 0.9f);
+            var b = new float2(p.X + dx * outer, p.Y + dy * outer);
+            dl.AddLine(in a, in b, stroke, i % 2 == 0 ? 2f : 1.4f);
+        }
+        dl.AddCircleFilled(in p, core, fill);
+        dl.AddCircle(in p, core, stroke, 20, 1.5f);
+    }
+
+    // A barycenter, the empty center of mass of a multiple star system: a thin ring with a
+    // center cross and two small dots on opposite sides, its stars.
+    public static void Barycenter(ImDrawListPtr dl, float2 p, float r, byte4 fill, byte4 stroke)
+    {
+        dl.AddCircle(in p, r, stroke, 24, 1.4f);
+        float arm = r * 0.35f;
+        var h0 = new float2(p.X - arm, p.Y);
+        var h1 = new float2(p.X + arm, p.Y);
+        var v0 = new float2(p.X, p.Y - arm);
+        var v1 = new float2(p.X, p.Y + arm);
+        dl.AddLine(in h0, in h1, stroke, 1.5f);
+        dl.AddLine(in v0, in v1, stroke, 1.5f);
+        float dot = Math.Max(2f, r * 0.2f);
+        var left = new float2(p.X - r * 0.68f, p.Y + r * 0.2f);
+        var right = new float2(p.X + r * 0.68f, p.Y - r * 0.2f);
+        dl.AddCircleFilled(in left, dot, fill);
+        dl.AddCircleFilled(in right, dot, fill);
+    }
+
+    // A whole star system drawn as one node: a rounded square of half-size r, the square the
+    // stock map view marks another system's root with (IIndependentRoot.DrawSystemLabel), with
+    // the star or barycenter glyph inside.
+    public static void SystemStub(ImDrawListPtr dl, float2 p, float r, byte4 fill, byte4 stroke, bool barycenter)
+    {
+        var min = new float2(p.X - r, p.Y - r);
+        var max = new float2(p.X + r, p.Y + r);
+        dl.AddRectFilled(in min, in max, StubBackground, 4f);
+        dl.AddRect(in min, in max, stroke, 4f);
+        if (barycenter)
+            Barycenter(dl, p, r * 0.6f, fill, stroke);
+        else
+            Star(dl, p, r * 0.6f, fill, stroke);
+    }
+
+    private static readonly byte4 StubBackground = new byte4(24, 30, 40, 235);
+
+    // A faint fan of five short lines under a collapsed system's square of half-size r, a hint
+    // at the tree folded inside it.
+    public static void SystemFan(ImDrawListPtr dl, float2 p, float r, byte4 color)
+    {
+        var top = new float2(p.X, p.Y + r + 2f);
+        for (int i = -2; i <= 2; i++)
+        {
+            var end = new float2(p.X + i * 9f, p.Y + r + 14f);
+            dl.AddLine(in top, in end, color, 1.2f);
+        }
+    }
+
+    // A dashed line from a to b, 7 px on and 5 px off like the stock ConsoleWidgets dash, made
+    // of plain AddLine pieces. The segment is clipped to [clipMin, clipMax] first, so a long
+    // line at a high zoom draws only the dashes on screen, and the dashes keep their phase from
+    // a, so they do not crawl while the view pans.
+    public static void DashedSegment(ImDrawListPtr dl, float2 a, float2 b, byte4 color, float thickness, float2 clipMin, float2 clipMax)
+    {
+        const float on = 7f;
+        const float period = 12f;
+        float dx = b.X - a.X;
+        float dy = b.Y - a.Y;
+        float length = MathF.Sqrt(dx * dx + dy * dy);
+        if (!(length > 0f))
+            return;
+        if (!Clip(a, dx, dy, clipMin, clipMax, out float t0, out float t1))
+            return;
+        float ux = dx / length;
+        float uy = dy / length;
+        float from = t0 * length;
+        float to = t1 * length;
+        for (float s = MathF.Floor(from / period) * period; s < to; s += period)
+        {
+            float d0 = MathF.Max(s, from);
+            float d1 = MathF.Min(s + on, to);
+            if (d1 <= d0)
+                continue;
+            var p0 = new float2(a.X + ux * d0, a.Y + uy * d0);
+            var p1 = new float2(a.X + ux * d1, a.Y + uy * d1);
+            dl.AddLine(in p0, in p1, color, thickness);
+        }
+    }
+
+    // Liang-Barsky clipping of a + t (dx, dy), t in [0, 1], to a rectangle.
+    private static bool Clip(float2 a, float dx, float dy, float2 min, float2 max, out float t0, out float t1)
+    {
+        t0 = 0f;
+        t1 = 1f;
+        return ClipEdge(-dx, a.X - min.X, ref t0, ref t1)
+            && ClipEdge(dx, max.X - a.X, ref t0, ref t1)
+            && ClipEdge(-dy, a.Y - min.Y, ref t0, ref t1)
+            && ClipEdge(dy, max.Y - a.Y, ref t0, ref t1);
+    }
+
+    private static bool ClipEdge(float p, float q, ref float t0, ref float t1)
+    {
+        if (p == 0f)
+            return q >= 0f;
+        float t = q / p;
+        if (p < 0f)
+        {
+            if (t > t1)
+                return false;
+            if (t > t0)
+                t0 = t;
+        }
+        else
+        {
+            if (t < t0)
+                return false;
+            if (t < t1)
+                t1 = t;
+        }
+        return true;
+    }
+
+    // The scale-break mark on the interstellar trunk: two short parallel slashes across the
+    // line, so it reads as not to scale. vertical is the direction of the line it sits on.
+    public static void ScaleBreak(ImDrawListPtr dl, float2 p, byte4 color, byte4 background, bool vertical)
+    {
+        var bgMin = vertical ? new float2(p.X - 7f, p.Y - 6f) : new float2(p.X - 6f, p.Y - 7f);
+        var bgMax = vertical ? new float2(p.X + 7f, p.Y + 6f) : new float2(p.X + 6f, p.Y + 7f);
+        dl.AddRectFilled(in bgMin, in bgMax, background);
+        for (int i = -1; i <= 1; i += 2)
+        {
+            var a = vertical ? new float2(p.X - 7f, p.Y + i * 3f + 3f) : new float2(p.X + i * 3f - 3f, p.Y + 7f);
+            var b = vertical ? new float2(p.X + 7f, p.Y + i * 3f - 3f) : new float2(p.X + i * 3f + 3f, p.Y - 7f);
+            dl.AddLine(in a, in b, color, 2f);
+        }
+    }
+
     // A solid disc, used for the "you are here" anchor (CanvasRenderer rings it in yellow).
     public static void Solid(ImDrawListPtr dl, float2 p, float r, byte4 fill, byte4 stroke)
     {
