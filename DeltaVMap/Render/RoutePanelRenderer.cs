@@ -1,7 +1,8 @@
 using System;
-using System.Globalization;
+using System.Collections.Generic;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
+using DeltaVMap.Core;
 using DeltaVMap.Route;
 
 namespace DeltaVMap.Render;
@@ -24,15 +25,19 @@ internal readonly struct PanelResult
 
 // The right-hand route panel, top to bottom: the legend (controls + symbol key), the route
 // toggles, a view section (visibility + piloting margin), the per-segment breakdown, the
-// totals and transfer time, and the vehicle dV bar. Plain ImGui widgets carry the text; the
-// colored bar is drawn with DrawList primitives so its green/yellow/red is exact and
-// independent of the binding's styling helpers.
+// interstellar leg when the route has one, the totals and transfer time, the vehicle dV bar,
+// and for an interstellar route its fuel estimate and the stock planner button. Plain ImGui
+// widgets carry the text; the colored bar is drawn with DrawList primitives so its
+// green/yellow/red is exact and independent of the binding's styling helpers.
 //
 // Every dV figure is shown with a leading "~": the whole map is a closed-form patched-conic
 // estimate, so no number is exact and saying so up front is more honest than implying
 // precision. The piloting margin inflates every shown dV by (1 + percent/100); it is applied
 // here at display time, so the route and layout never change.
-internal static class RoutePanelRenderer
+//
+// The breakdown, totals and bar strings are built when the route, the margin, an option or the
+// interstellar figures change, and drawn from that cache in between.
+internal sealed class RoutePanelRenderer
 {
     private static readonly byte4 BarBg = new byte4(34, 40, 50, 255);
     private static readonly byte4 BarText = new byte4(245, 248, 252, 255);
@@ -43,50 +48,88 @@ internal static class RoutePanelRenderer
 
     private const float BarHeight = 22f;
 
-    private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+    private readonly List<(string Text, bool Disabled)> _breakdown = new();
+    private readonly List<(string Text, bool Disabled)> _totals = new();
+    private TextKey? _textKey;
+    private double _needed;
 
-    public static PanelResult Draw(RouteOptions options, ViewOptions view, RouteSummary? summary, double? availableDv)
+    private string _barLabel = "";
+    private float _barLabelW;
+    private long _barNeededKey = long.MinValue;
+    private long _barAvailableKey = long.MinValue;
+
+    private readonly record struct TextKey(
+        RouteSummary Summary,
+        double DvScale,
+        int MarginPercent,
+        bool PlaneChange,
+        bool ReturnTrip,
+        int SectionVersion,
+        bool SectionView);
+
+    public void Reset()
+    {
+        _breakdown.Clear();
+        _totals.Clear();
+        _textKey = null;
+        _barNeededKey = long.MinValue;
+    }
+
+    public PanelResult Draw(RouteOptions options, ViewOptions view, RouteSummary? summary, double? availableDv,
+        InterstellarSection? section, bool severalSystems)
     {
         bool changed = false;
         bool rebuild = false;
 
         // The legend (controls + symbol key) sits at the top, so the panel opens by
         // explaining the map before the route controls.
-        LegendRenderer.Draw();
+        LegendRenderer.Draw(severalSystems);
+
+        bool interstellar = summary?.Interstellar != null;
 
         ImGui.SeparatorText("Route options"u8);
         changed |= ConsoleUi.CheckboxRow("FROM SURFACE".AsSpan(), "DvmFromSurface".AsSpan(), ref options.FromSurface);
         changed |= ConsoleUi.CheckboxRow("LAND AT DESTINATION".AsSpan(), "DvmLand".AsSpan(), ref options.LandAtDestination);
 
-        // Aerobraking only makes sense when the route captures into a body with a usable
-        // atmosphere; show a disabled hint otherwise so the toggle does not look broken.
-        if (summary != null && !summary.HasAerobrakeOption)
-            ImGui.TextDisabled("Aerobraking (no atmosphere on route)");
-        else
-            changed |= ConsoleUi.CheckboxRow("AEROBRAKING AT ARRIVAL".AsSpan(), "DvmAero".AsSpan(), ref options.Aerobraking);
-
-        changed |= ConsoleUi.CheckboxRow("INCLUDE PLANE CHANGE".AsSpan(), "DvmPlaneChange".AsSpan(), ref options.IncludePlaneChange);
-        changed |= ConsoleUi.CheckboxRow("SHOW RETURN TRIP".AsSpan(), "DvmReturn".AsSpan(), ref options.ShowReturnTrip);
-
-        // The return aerobrakes at the origin body, a separate burn from the outbound
-        // capture, so it gets its own toggle, shown only once a return trip is on.
-        if (options.ShowReturnTrip)
+        // An interstellar route has no aerobrake (arrival speeds that high are not modelled),
+        // no separate plane change (the leg already aims through every plane) and no return
+        // leg, so those toggles show as hints and keep their values for the next route.
+        if (interstellar)
         {
-            if (summary != null && !summary.HasReturnAerobrakeOption)
-                ImGui.TextDisabled("Aerobraking on return (airless origin)");
+            ImGui.TextDisabled("Aerobraking (not on an interstellar arrival)");
+            ImGui.TextDisabled("Plane change (in the interstellar estimate)");
+            ImGui.TextDisabled("Return trip (not for interstellar routes)");
+        }
+        else
+        {
+            // Aerobraking only makes sense when the route captures into a body with a usable
+            // atmosphere; show a disabled hint otherwise so the toggle does not look broken.
+            if (summary != null && !summary.HasAerobrakeOption)
+                ImGui.TextDisabled("Aerobraking (no atmosphere on route)");
             else
-                changed |= ConsoleUi.CheckboxRow("AEROBRAKING ON RETURN".AsSpan(), "DvmAeroReturn".AsSpan(), ref options.AerobrakingReturn);
+                changed |= ConsoleUi.CheckboxRow("AEROBRAKING AT ARRIVAL".AsSpan(), "DvmAero".AsSpan(), ref options.Aerobraking);
+
+            changed |= ConsoleUi.CheckboxRow("INCLUDE PLANE CHANGE".AsSpan(), "DvmPlaneChange".AsSpan(), ref options.IncludePlaneChange);
+            changed |= ConsoleUi.CheckboxRow("SHOW RETURN TRIP".AsSpan(), "DvmReturn".AsSpan(), ref options.ShowReturnTrip);
+
+            // The return aerobrakes at the origin body, a separate burn from the outbound
+            // capture, so it gets its own toggle, shown only once a return trip is on.
+            if (options.ShowReturnTrip)
+            {
+                if (summary != null && !summary.HasReturnAerobrakeOption)
+                    ImGui.TextDisabled("Aerobraking on return (airless origin)");
+                else
+                    changed |= ConsoleUi.CheckboxRow("AEROBRAKING ON RETURN".AsSpan(), "DvmAeroReturn".AsSpan(), ref options.AerobrakingReturn);
+            }
         }
 
         rebuild = DrawViewOptions(view);
 
         ImGui.Separator();
 
-        double scale = view.DvScale;
-
         if (summary == null)
         {
-            ImGui.TextDisabled("Click a body to plan a route.");
+            ImGui.TextDisabled(severalSystems ? "Click a body or a star system to plan a route." : "Click a body to plan a route.");
             return new PanelResult(changed, rebuild);
         }
         if (summary.IsEmpty)
@@ -95,18 +138,33 @@ internal static class RoutePanelRenderer
             return new PanelResult(changed, rebuild);
         }
 
-        // Plane change is additive: it is incurred per interplanetary leg, so a round trip
-        // pays it on both the outbound and the return. Every figure is scaled by the piloting
-        // margin so the panel and the on-map badges agree.
-        double planeChange = (options.IncludePlaneChange ? summary.PlaneChangeDv : 0.0) * scale;
-        double outboundTotal = summary.OutboundDv * scale + planeChange;
-        double returnTotal = summary.ReturnDv * scale + planeChange;
-        double roundTrip = outboundTotal + returnTotal;
-        double needed = options.ShowReturnTrip ? roundTrip : outboundTotal;
+        InterstellarSection? leg = interstellar ? section : null;
+        EnsureText(options, view, summary, leg);
 
-        DrawBreakdown(summary, scale);
-        DrawTotals(options, summary, planeChange, outboundTotal, returnTotal, roundTrip, view.PilotingMarginPercent);
-        DrawVehicleBar(needed, availableDv);
+        ImGui.SeparatorText("Breakdown"u8);
+        DrawLineList(_breakdown);
+        if (leg != null)
+        {
+            leg.DrawControls();
+            leg.DrawReadouts();
+            // A control change re-evaluates the leg, so the totals below follow at once.
+            EnsureText(options, view, summary, leg);
+        }
+
+        if (leg == null || leg.HasView)
+        {
+            ImGui.Separator();
+            DrawLineList(_totals);
+            DrawVehicleBar(_needed, availableDv);
+        }
+
+        if (leg != null)
+        {
+            if (leg.HasView && leg.Feasibility != null)
+                ConsoleUi.StatusText(leg.Feasibility, leg.FeasibilityTone);
+            leg.DrawFuel();
+            leg.DrawStockPlannerButton();
+        }
 
         return new PanelResult(changed, rebuild);
     }
@@ -146,76 +204,95 @@ internal static class RoutePanelRenderer
         return rebuild;
     }
 
-    private static void DrawBreakdown(RouteSummary summary, double scale)
+    private void EnsureText(RouteOptions options, ViewOptions view, RouteSummary summary, InterstellarSection? leg)
     {
-        ImGui.SeparatorText("Breakdown"u8);
-        foreach (RouteSegment seg in summary.Segments)
+        var key = new TextKey(summary, view.DvScale, view.PilotingMarginPercent, options.IncludePlaneChange,
+            options.ShowReturnTrip, leg?.ViewVersion ?? 0, leg?.HasView ?? false);
+        if (_textKey == key)
+            return;
+        _textKey = key;
+        _breakdown.Clear();
+        _totals.Clear();
+
+        double scale = view.DvScale;
+        InterstellarRoute? route = summary.Interstellar;
+        for (int i = 0; i <= summary.Segments.Count; i++)
         {
-            // Build each line into a string local first: the binding picks ImGui's string
-            // overload, whereas an interpolated literal would bind a String8 overload from
-            // an assembly the mod does not reference.
-            if (seg.Aerobraked)
+            if (route != null && i == route.BreakdownIndex && leg != null && leg.HasView)
             {
-                string aero = seg.Label + ": aerobrake (0)";
-                ImGui.TextDisabled(aero);
-                continue;
+                _breakdown.Add((leg.DepartLine, false));
+                _breakdown.Add((leg.CoastLine, true));
+                _breakdown.Add((leg.CaptureLine, false));
             }
-            string line = seg.Label + ": " + DvText(seg.Dv * scale);
-            ImGui.Text(line);
-        }
-    }
-
-    private static void DrawTotals(
-        RouteOptions options, RouteSummary summary,
-        double planeChange, double outboundTotal, double returnTotal, double roundTrip, int marginPercent)
-    {
-        ImGui.Separator();
-
-        // Plane change sits above the total and is rolled into it (the user opted in).
-        if (planeChange > 0.0)
-        {
-            string plane = "+ plane change: " + DvText(planeChange);
-            ImGui.TextDisabled(plane);
+            if (i == summary.Segments.Count)
+                break;
+            RouteSegment seg = summary.Segments[i];
+            _breakdown.Add(seg.Aerobraked
+                ? (seg.Label + ": aerobrake (0)", true)
+                : (seg.Label + ": " + Format.Dv(seg.Dv * scale), false));
         }
 
         // A non-zero piloting margin silently inflates every figure, which reads as "the
         // numbers are wrong" if you forget it is on, so call it out on the total line.
-        string marginNote = marginPercent > 0
-            ? string.Format(Inv, " (incl. +{0}% margin)", marginPercent)
-            : "";
-        string total = "Total: " + DvText(outboundTotal) + marginNote;
-        ImGui.Text(total);
+        int marginPercent = view.PilotingMarginPercent;
+        string marginNote = marginPercent > 0 ? " (incl. +" + Format.Percent(marginPercent) + "% margin)" : "";
 
-        if (options.ShowReturnTrip)
+        if (route != null)
         {
-            string ret = "Return: " + DvText(returnTotal);
-            string round = "Round trip: " + DvText(roundTrip);
-            ImGui.TextDisabled(ret);
-            ImGui.Text(round);
+            _needed = leg is { HasView: true } ? leg.RouteTotal : summary.OutboundDv * scale;
+            _totals.Add(("Total: " + Format.Dv(_needed) + marginNote, false));
+            if (leg is { HasView: true })
+                _totals.Add((leg.CoastTimeLine, true));
+            return;
         }
 
+        // Plane change is additive: it is incurred per interplanetary leg, so a round trip
+        // pays it on both the outbound and the return. Every figure is scaled by the piloting
+        // margin so the panel and the on-map badges agree.
+        double planeChange = (options.IncludePlaneChange ? summary.PlaneChangeDv : 0.0) * scale;
+        double outboundTotal = summary.OutboundDv * scale + planeChange;
+        double returnTotal = summary.ReturnDv * scale + planeChange;
+        double roundTrip = outboundTotal + returnTotal;
+        _needed = options.ShowReturnTrip ? roundTrip : outboundTotal;
+
+        // Plane change sits above the total and is rolled into it (the user opted in).
+        if (planeChange > 0.0)
+            _totals.Add(("+ plane change: " + Format.Dv(planeChange), true));
+        _totals.Add(("Total: " + Format.Dv(outboundTotal) + marginNote, false));
+        if (options.ShowReturnTrip)
+        {
+            _totals.Add(("Return: " + Format.Dv(returnTotal), true));
+            _totals.Add(("Round trip: " + Format.Dv(roundTrip), false));
+        }
         if (summary.TransferTimeSeconds > 0.0)
         {
             // The summed transfer time is the outbound coast; a round trip is roughly
             // twice it, so label it one-way when the return is shown.
             string suffix = options.ShowReturnTrip ? " (one way)" : "";
-            string transit = "Transfer time: " + FormatTime(summary.TransferTimeSeconds) + suffix;
-            ImGui.TextDisabled(transit);
+            _totals.Add(("Transfer time: " + Format.Duration(summary.TransferTimeSeconds) + suffix, true));
         }
-
         if (summary.AerobrakeApplied && summary.AerobrakeBodyId != null)
-        {
-            string aero = "Aerobrake at " + summary.AerobrakeBodyId;
-            ImGui.TextDisabled(aero);
-        }
+            _totals.Add(("Aerobrake at " + summary.AerobrakeBodyId, true));
         if (summary.ReturnAerobrakeApplied && summary.ReturnAerobrakeBodyId != null)
-        {
-            string aero = "Aerobrake on return at " + summary.ReturnAerobrakeBodyId;
-            ImGui.TextDisabled(aero);
-        }
+            _totals.Add(("Aerobrake on return at " + summary.ReturnAerobrakeBodyId, true));
     }
 
-    private static void DrawVehicleBar(double needed, double? availableDv)
+    // The lines wrap at the panel edge, so a long label never pushes its figure out of view.
+    private static void DrawLineList(List<(string Text, bool Disabled)> lines)
+    {
+        ImGui.PushTextWrapPos(0f);
+        for (int i = 0; i < lines.Count; i++)
+        {
+            (string text, bool disabled) = lines[i];
+            if (disabled)
+                ImGui.TextDisabled(text);
+            else
+                ImGui.Text(text);
+        }
+        ImGui.PopTextWrapPos();
+    }
+
+    private void DrawVehicleBar(double needed, double? availableDv)
     {
         ImGui.Separator();
         if (availableDv is not double available)
@@ -249,9 +326,18 @@ internal static class RoutePanelRenderer
 
         // "needed out of available": the needed figure is our estimate (~), the available
         // is the vehicle's total staged dV.
-        string label = "~" + Fmt(needed) + " / " + Fmt(available) + " m/s";
-        float2 ts = ImGui.CalcTextSize(label);
-        float2 textPos = pos + new float2((width - ts.X) * 0.5f, (BarHeight - ts.Y) * 0.5f);
+        long neededKey = (long)Math.Round(Math.Clamp(needed, -1e15, 1e15));
+        long availableKey = (long)Math.Round(Math.Clamp(available, -1e15, 1e15));
+        if (neededKey != _barNeededKey || availableKey != _barAvailableKey)
+        {
+            _barNeededKey = neededKey;
+            _barAvailableKey = availableKey;
+            _barLabel = "~" + Format.DvNumber(needed) + " / " + Format.DvNumber(available) + " m/s";
+            _barLabelW = ImGui.CalcTextSize(_barLabel).X;
+        }
+        string label = _barLabel;
+        float textH = ImGui.GetTextLineHeight();
+        float2 textPos = pos + new float2((width - _barLabelW) * 0.5f, (BarHeight - textH) * 0.5f);
         // A drop shadow keeps the label legible over green, yellow or red fill alike.
         float2 shadowPos = textPos + new float2(1f, 1f);
         dl.AddText(in shadowPos, BarTextShadow, label);
@@ -259,34 +345,5 @@ internal static class RoutePanelRenderer
 
         // Reserve the row so widgets after the bar do not draw over it.
         ImGui.Dummy(new float2(width, BarHeight));
-    }
-
-    // A dV figure for display: leading "~" (everything on the map is an estimate).
-    private static string DvText(double dv)
-    {
-        return "~" + Fmt(dv) + " m/s";
-    }
-
-    private static string Fmt(double dv)
-    {
-        return Math.Round(dv).ToString("#,##0", Inv);
-    }
-
-    // Auto-scaled transfer time: minutes, hours, days, then years. Shared with the transfer-
-    // window section so both format durations identically. Formats with the invariant culture
-    // (a decimal point, never a locale comma) to match the rest of the map's numbers, and
-    // returns "-" for a non-finite duration (a degenerate window with no recurrence).
-    internal static string FormatTime(double seconds)
-    {
-        if (!double.IsFinite(seconds))
-            return "-";
-        if (seconds < 3600.0)
-            return (seconds / 60.0).ToString("0", Inv) + " min";
-        if (seconds < 86400.0)
-            return (seconds / 3600.0).ToString("0.0", Inv) + " h";
-        double days = seconds / 86400.0;
-        if (days < 365.25)
-            return days.ToString("0.0", Inv) + " d";
-        return (days / 365.25).ToString("0.00", Inv) + " yr";
     }
 }
