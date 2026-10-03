@@ -14,16 +14,16 @@ namespace DeltaVMap.Render;
 // The Delta-V map window. Extends the stock ImGuiWindow base for Begin/End, the menu
 // bar and pin/focus handling, and renders an interactive metro map on a pannable,
 // zoomable canvas. It owns the build pipeline: physical graph and dV cache per loaded
-// system, a re-rooted visual tree and a laid-out result per root. The graph and cache
-// survive while the same system is loaded; the visual tree and layout are rebuilt on
-// re-root or on a detail change, and the layout is measured with real ImGui text
-// metrics (only available here, inside the draw loop).
+// system, a re-rooted visual tree and a laid-out scene per root. The graph and cache
+// survive while the same system is loaded; the visual tree and the ego layout are rebuilt
+// on re-root or on a detail change, and the layout is measured with real ImGui text
+// metrics (only available here, inside the draw loop). The other star systems are laid out
+// as separate parts beside the ego map, collapsed to one node unless they hold the selected
+// route target or the searched body, so opening one lays out only that part.
 internal sealed class MapWindow : ImGuiWindow
 {
-    // The design quotes a 25%-400% manual range, but the default Earth root is a
-    // ~132-node tree that does not fit at 25%; allow zooming out further so auto-fit
-    // can show the whole map on open. Revisit once detail collapsing (minor-body
-    // grouping) lands and dense roots no longer need such a low floor.
+    // The default Earth root is a ~132-node tree that does not fit at 25%, so the zoom
+    // floor sits lower and auto-fit can show the whole map on open.
     private const double MinZoom = 0.1;
     private const double MaxZoom = 4.0;
     private const double HoverRadiusPx = 14.0;
@@ -49,11 +49,13 @@ internal sealed class MapWindow : ImGuiWindow
     // Smaller than the node radius so a node always wins a hover near a junction.
     private const double EdgeHoverPx = 7.0;
 
+    // How far inside the canvas edge (screen px) the anchor of a scene change must stay for the
+    // view to hold still when a star system opens or closes.
+    private const double AnchorMarginPx = 40.0;
+
     // Thickness (screen px) of the invisible drag strips on the transfer-window panel edges.
     // Sits just outside the bordered child so the child window cannot occlude the grab.
     private const float ResizeGrip = 8f;
-
-    private static readonly byte4 BackgroundColor = new byte4(17, 21, 28, 255);
 
     // The Transfer-windows overlay fill: a touch lighter than the canvas, near-opaque so the
     // map does not bleed through the text.
@@ -72,20 +74,54 @@ internal sealed class MapWindow : ImGuiWindow
 
     // Per-root state (rebuilt on re-root or detail change). _visualTree backs routing:
     // RouteFinder walks its StateNode tree from the origin to the clicked target, and
-    // _lookup resolves a clicked node Id to its StateNode.
+    // _lookup resolves a clicked node Id to its StateNode. _egoLayout is the ego system as
+    // LayoutEngine laid it out; _scene adds the other star systems beside it.
     private VisualTree? _visualTree;
-    private LayoutResult? _layout;
+    private LayoutResult? _egoLayout;
+    private LayoutNode? _egoHub;
+    private LayoutScene? _scene;
     private Dictionary<string, StateNode>? _lookup;
     private string? _currentRootId;
+    private string? _rootLabel;
+
+    // The destination parts, laid out once per root build and kept until the next one, so
+    // opening or closing a system relays out only that part. _sceneById resolves a node Id to
+    // its node in the composed scene. The two expanded systems are the one holding the
+    // selected node and the one holding the searched body.
+    private readonly Dictionary<(string RootId, bool Expanded), LayoutPart> _parts = new();
+    private readonly List<LayoutPart> _shownParts = new();
+    private readonly Dictionary<string, LayoutNode> _sceneById = new();
+    private string? _expandedA;
+    private string? _expandedB;
+
+    // The star system the map shows, by its root Id, or null to follow the controlled vessel
+    // (its system, else the home system). Set from the System menu; Reset Root returns to
+    // following.
+    private string? _mapSystemId;
+
+    // The interstellar leg of the selected route, and the reusable drawing and panel parts.
+    private readonly InterstellarSection _interstellar = new();
+    private readonly CanvasRenderer _canvas = new();
+    private readonly TooltipRenderer _tooltips = new();
+    private readonly RoutePanelRenderer _routePanel = new();
+    private readonly TransferWindowRenderer _windowRenderer = new();
+    private readonly TransferWindowMapOverlay _mapOverlay = new();
 
     // Root whose last build threw, so EnsureBuilt does not re-attempt it every frame.
     private string? _buildFailedRootId;
     private bool _built;
 
-    // On the next build, re-evaluate the ego root (set when the window is opened so a
-    // SOI or system change since last time is picked up; a mid-flight SOI change is
-    // deliberately not applied until reopen, per the design).
+    // On the next build, re-evaluate the ego root. Set when the window is opened, on Reset
+    // Root, on a System pick, and when the controlled vehicle changes. While the map follows
+    // the vessel it also re-roots when the vessel crosses into another star system (the
+    // reference compares in FollowVessel); an SOI change inside one system waits for the next
+    // of these.
     private bool _reevaluateRoot;
+
+    // The controlled vehicle and its parent body as last seen, so FollowVessel acts only on a
+    // change and never overrides a manual re-root or a System pick on its own.
+    private Vehicle? _egoVehicle;
+    private IParentBody? _egoParent;
 
     // Detail toggle: full ladder on every body instead of core rungs on distant ones.
     private bool _fullLadder;
@@ -118,6 +154,7 @@ internal sealed class MapWindow : ImGuiWindow
     private readonly ImInputString _searchBuffer = new ImInputString(SearchBufferCapacity);
     private string _lastSearchQuery = "";
     private readonly List<PhysicalNode> _searchResults = new();
+    private readonly List<string> _searchLabels = new();
     private int _searchMatchTotal;
     private readonly HashSet<string> _revealedBodyIds = new();
     private string? _focusBodyId;
@@ -127,6 +164,12 @@ internal sealed class MapWindow : ImGuiWindow
     // Set (to the node count) when a build was refused for exceeding MaxLayoutNodes; drives the
     // "too large" note in place of the canvas. Zero when the current build laid out normally.
     private int _oversizedCount;
+    private string _oversizedNote = "";
+
+    // Texts kept until the number they show changes.
+    private readonly CachedText _zoomText = new();
+    private readonly CachedText _moreText = new();
+    private bool _queryBlank = true;
 
     // The clicked route target Id (null = no route). Plain click sets it; the route is
     // accumulated from it into _routeSummary, and _routeNodeIds is the set of node Ids
@@ -142,6 +185,15 @@ internal sealed class MapWindow : ImGuiWindow
     // the canvas; its collapsed / expanded state is its own.
     private readonly List<TransferWindowInfo> _windows = new();
     private bool _windowsOverlayExpanded;
+
+    // The on-map window markers, parallel to _windows: the marker node of each window (resolved
+    // once per build), its countdown, and the countdown text with its width, rewritten only when
+    // the shown value moves.
+    private LayoutNode?[] _markerNodes = Array.Empty<LayoutNode?>();
+    private double[] _markerSeconds = Array.Empty<double>();
+    private string[] _markerTexts = Array.Empty<string>();
+    private float[] _markerWidths = Array.Empty<float>();
+    private long[] _markerKeys = Array.Empty<long>();
     // The sibling whose clock dot or list row the overlay is hovering, or null. Drives the map
     // highlight, and is fed back in next frame so the hovered body also lights its clock dot.
     private string? _windowsHoverBodyId;
@@ -251,7 +303,10 @@ internal sealed class MapWindow : ImGuiWindow
             if (ImGui.SmallButton("-"u8))
                 ZoomAboutCenter(1.0 / 1.25);
             ImGui.SameLine(0f, 6f);
-            ImGui.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0}%", _zoom * 100.0));
+            long percent = (long)Math.Round(_zoom * 100.0);
+            ImGui.Text(_zoomText.IsStale(null, percent)
+                ? _zoomText.Set(null, percent, percent.ToString(System.Globalization.CultureInfo.InvariantCulture) + "%")
+                : _zoomText.Text);
             ImGui.SameLine(0f, 6f);
             if (ImGui.SmallButton("+"u8))
                 ZoomAboutCenter(1.25);
@@ -265,7 +320,24 @@ internal sealed class MapWindow : ImGuiWindow
             _needsFit = true;
 
         if (ImGui.MenuItem("Reset Root"u8, default(ImString)))
+        {
+            _mapSystemId = null;
             _reevaluateRoot = true;
+        }
+
+        if (_graph != null && _graph.HasSeveralSystems && ImGui.BeginMenu("System"u8))
+        {
+            if (ImGui.MenuItem("Follow vessel"u8, default(ImString), _mapSystemId == null))
+                SelectSystem(null);
+            ImGui.Separator();
+            string? shown = CurrentSystemRoot()?.Id;
+            foreach (PhysicalNode root in _graph.Roots)
+            {
+                if (ImGui.MenuItem(root.Id, default(ImString), root.Id == shown))
+                    SelectSystem(root.Id);
+            }
+            ImGui.EndMenu();
+        }
 
         if (ImGui.BeginMenu("Options"u8))
         {
@@ -296,8 +368,25 @@ internal sealed class MapWindow : ImGuiWindow
             ImGui.EndMenu();
         }
 
-        if (_currentRootId != null)
-            ImGui.TextDisabled(string.Concat("Root: ", _currentRootId));
+        if (_rootLabel != null)
+            ImGui.TextDisabled(_rootLabel);
+    }
+
+    // Show another star system (or follow the vessel again with null). The search and focus
+    // belong to the old view, so they are cleared without a rebuild of their own; the next
+    // EnsureBuilt picks the root through DesiredEgoRootId and rebuilds once.
+    private void SelectSystem(string? rootId)
+    {
+        _mapSystemId = rootId;
+        ClearSearch(rebuild: false);
+        _reevaluateRoot = true;
+    }
+
+    // The system root of the current map root, or null before the first build.
+    private PhysicalNode? CurrentSystemRoot()
+    {
+        PhysicalNode? node = _currentRootId != null ? _graph?.Find(_currentRootId) : null;
+        return node != null ? SystemGraph.SystemRootOf(node) : null;
     }
 
     // Switch the layout strategy and relayout the current root through the cached path.
@@ -364,19 +453,35 @@ internal sealed class MapWindow : ImGuiWindow
         }
     }
 
-    // The route + options panel. A toggle here changes the options and recomputes the
-    // route, so its effect lands from the next frame. The vehicle dV bar shows whenever a
+    // The find section and the route panel. A toggle here changes the options and recomputes
+    // the route, so its effect lands from the next frame. The vehicle dV bar shows whenever a
     // vehicle is controlled: it is the vehicle's own total dV, useful context even when the
-    // map is re-rooted away from where the vehicle currently is.
+    // map is re-rooted away from where the vehicle currently is. A route with an interstellar
+    // leg first brings the leg up to date for this frame, so its breakdown lines, the totals
+    // and the bar include it; the cruise speed and the vessel's burn change only the leg.
     private void DrawPanel()
     {
+#if DEBUG
+        using var perf = new PerfTracker.Scope("DvMap.Draw.Panel");
+#endif
+        double? availableDv = TryGetAvailableDv();
         DrawSearchPanel();
-        PanelResult result = RoutePanelRenderer.Draw(_options, _view, _routeSummary, TryGetAvailableDv());
+
+        InterstellarSection? section = null;
+        bool routeStale = false;
+        if (_routeSummary?.Interstellar is InterstellarRoute leg && _graph != null)
+        {
+            routeStale = _interstellar.Update(_graph, leg, availableDv, _view.DvScale, _options.FromSurface);
+            section = _interstellar;
+        }
+
+        PanelResult result = _routePanel.Draw(_options, _view, _routeSummary, availableDv, section, _graph?.HasSeveralSystems == true);
         // A visibility change rebuilds the tree (and re-resolves the selected route against
-        // the new node set); a plain route-toggle change only re-accumulates the path.
+        // the new node set); a plain route-toggle change only re-accumulates the path, as does
+        // a vessel that parked at or left the departure body of an interstellar route.
         if (result.RebuildNeeded && _currentRootId != null)
             RebuildPreservingSelection(_currentRootId);
-        else if (result.RouteChanged)
+        else if (result.RouteChanged || routeStale)
             RecomputeRoute();
     }
 
@@ -477,7 +582,7 @@ internal sealed class MapWindow : ImGuiWindow
             ImGui.BeginChild("##dvtwlistpanel"u8, new float2?(new float2(width, height)), ImGuiChildFlags.Borders);
             try
             {
-                OverlayResult result = TransferWindowRenderer.DrawOverlay(
+                OverlayResult result = _windowRenderer.DrawOverlay(
                     _windows, ref _showWindowMarkers, ref _showMapMarkers, _windowsOverlayExpanded, emphasisHint, clockHidden);
                 hover = result.HoverBodyId;
                 if (result.Toggled)
@@ -531,7 +636,7 @@ internal sealed class MapWindow : ImGuiWindow
                 ImGui.BeginChild("##dvtwclockpanel"u8, new float2?(new float2(clockSide, clockSide)), ImGuiChildFlags.Borders);
                 try
                 {
-                    string? ch = TransferWindowRenderer.DrawClockPanel(_windows, _palette, emphasisHint);
+                    string? ch = _windowRenderer.DrawClockPanel(_windows, _palette, emphasisHint);
                     if (ch != null)
                         hover = ch;
                 }
@@ -653,23 +758,42 @@ internal sealed class MapWindow : ImGuiWindow
         }
     }
 
-    // The on-map window markers, keyed by each sibling's representative node id (resolved via
-    // FindFocusNode) -> its countdown. Null when the toggle is off or there is nothing to mark,
-    // so the canvas skips the marker pass entirely.
-    private Dictionary<string, double>? BuildWindowMarkers()
+    // The on-map window markers for this frame: the countdowns refreshed, and a text rebuilt
+    // only for a window whose shown countdown moved. Empty when the toggle is off, so the canvas
+    // skips the marker pass entirely.
+    private WindowMarkerSet BuildWindowMarkers()
     {
-        if (!_showWindowMarkers || _windows.Count == 0)
-            return null;
-        var markers = new Dictionary<string, double>(_windows.Count);
-        foreach (TransferWindowInfo w in _windows)
+        if (!_showWindowMarkers || _windows.Count == 0 || _markerNodes.Length < _windows.Count)
+            return default;
+        for (int i = 0; i < _windows.Count; i++)
         {
-            if (!double.IsFinite(w.TimeToWindowSeconds))
-                continue;
-            LayoutNode? node = FindFocusNode(w.TargetId);
-            if (node != null)
-                markers[node.Id] = w.TimeToWindowSeconds;
+            double seconds = _windows[i].TimeToWindowSeconds;
+            _markerSeconds[i] = seconds;
+            long key = Format.WindowTimeKey(seconds);
+            if (key != _markerKeys[i] || _markerTexts[i] == null)
+            {
+                _markerKeys[i] = key;
+                _markerTexts[i] = "~" + Format.WindowTime(seconds);
+                _markerWidths[i] = ImGui.CalcTextSize(_markerTexts[i]).X;
+            }
         }
-        return markers.Count > 0 ? markers : null;
+        return new WindowMarkerSet(_windows.Count, _markerNodes, _markerSeconds, _markerTexts, _markerWidths);
+    }
+
+    // Resolve each window's marker node once per build, the body's most central rung on the map.
+    private void ResolveWindowMarkers()
+    {
+        int count = _windows.Count;
+        _markerNodes = new LayoutNode?[count];
+        _markerSeconds = new double[count];
+        _markerTexts = new string[count];
+        _markerWidths = new float[count];
+        _markerKeys = new long[count];
+        for (int i = 0; i < count; i++)
+        {
+            _markerNodes[i] = FindFocusNode(_windows[i].TargetId);
+            _markerKeys[i] = long.MinValue;
+        }
     }
 
     // Rebuild the transfer-window list for a root. Called from RebuildAt after a successful
@@ -680,7 +804,10 @@ internal sealed class MapWindow : ImGuiWindow
     {
         _windows.Clear();
         if (_cache == null || _visualTree == null)
+        {
+            ResolveWindowMarkers();
             return;
+        }
         try
         {
             HashSet<string> shown = CollectShownBodyIds();
@@ -691,6 +818,7 @@ internal sealed class MapWindow : ImGuiWindow
         {
             LogHelper.ErrorOnce("twindow-build-" + root.Id, $"[DvMap] Transfer window build failed for '{root.Id}': {ex}");
         }
+        ResolveWindowMarkers();
     }
 
     // The body Ids the map currently shows as their own lane (every rung node), excluding the
@@ -719,15 +847,20 @@ internal sealed class MapWindow : ImGuiWindow
         ImGui.SeparatorText("Find"u8);
 
         ImGui.PushItemWidth(-1f);
-        ImGui.InputTextWithHint("##dvsearch"u8, "Search bodies..."u8, _searchBuffer);
+        // The binding returns true when the text was edited this frame, so the buffer is read
+        // into a string and searched only then.
+        bool edited = ImGui.InputTextWithHint("##dvsearch"u8, "Search bodies..."u8, _searchBuffer);
         ImGui.PopItemWidth();
 
-        // Recompute matches only when the text actually changed, not every frame.
-        string query = _searchBuffer.ToString();
-        if (query != _lastSearchQuery)
+        if (edited)
         {
-            _lastSearchQuery = query;
-            UpdateSearchResults(query);
+            string query = _searchBuffer.ToString();
+            if (query != _lastSearchQuery)
+            {
+                _lastSearchQuery = query;
+                _queryBlank = query.Trim().Length == 0;
+                UpdateSearchResults(query);
+            }
         }
 
         PhysicalNode? pick = null;
@@ -738,10 +871,11 @@ internal sealed class MapWindow : ImGuiWindow
             ImGui.BeginChild("##dvsearchresults"u8, new float2?(new float2(0f, listH)), ImGuiChildFlags.Borders);
             try
             {
-                foreach (PhysicalNode body in _searchResults)
+                for (int i = 0; i < _searchResults.Count; i++)
                 {
+                    PhysicalNode body = _searchResults[i];
                     bool isFocus = body.Id == _focusBodyId;
-                    if (ImGui.Selectable(body.Id, isFocus, ImGuiSelectableFlags.None, (float2?)null))
+                    if (ImGui.Selectable(_searchLabels[i], isFocus, ImGuiSelectableFlags.None, (float2?)null))
                         pick = body;
                 }
             }
@@ -752,14 +886,15 @@ internal sealed class MapWindow : ImGuiWindow
                 ImGui.EndChild();
             }
 
-            if (_searchMatchTotal > _searchResults.Count)
+            int more = _searchMatchTotal - _searchResults.Count;
+            if (more > 0)
             {
-                string more = string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                    "+{0} more, refine search", _searchMatchTotal - _searchResults.Count);
-                ImGui.TextDisabled(more);
+                ImGui.TextDisabled(_moreText.IsStale(null, more)
+                    ? _moreText.Set(null, more, "+" + more.ToString(System.Globalization.CultureInfo.InvariantCulture) + " more, refine search")
+                    : _moreText.Text);
             }
         }
-        else if (query.Trim().Length > 0)
+        else if (!_queryBlank)
         {
             ImGui.TextDisabled("No bodies match.");
         }
@@ -776,7 +911,7 @@ internal sealed class MapWindow : ImGuiWindow
         if (_isolate && _revealedBodyIds.Count == 0)
             ImGui.TextDisabled("Search a body to isolate it");
 
-        if ((_revealedBodyIds.Count > 0 || _focusBodyId != null || query.Length > 0)
+        if ((_revealedBodyIds.Count > 0 || _focusBodyId != null || _lastSearchQuery.Length > 0)
             && ImGui.SmallButton("Clear find"u8))
             ClearSearch();
 
@@ -786,13 +921,16 @@ internal sealed class MapWindow : ImGuiWindow
             RevealAndFocus(pick);
     }
 
-    // Refresh the match list from the full graph. Matching is a case-insensitive substring of
-    // the body Id (the same string the map labels use). The star is skipped (it is the hub bus,
-    // not a destination). Results rank exact, then prefix, then substring, alphabetical within,
-    // and are capped so a broad query does not build thousands of rows (the surplus is noted).
+    // Refresh the match list from the full graph, every star system included. Matching is a
+    // case-insensitive substring of the body Id (the same string the map labels use). The root
+    // of the shown system is skipped (it is the hub bus, not a destination); a body of another
+    // system is listed with its system and opens that system on the map when picked. Results
+    // rank exact, then prefix, then substring, alphabetical within, and are capped so a broad
+    // query does not build thousands of rows (the surplus is noted).
     private void UpdateSearchResults(string query)
     {
         _searchResults.Clear();
+        _searchLabels.Clear();
         _searchMatchTotal = 0;
         if (_graph == null)
             return;
@@ -800,9 +938,10 @@ internal sealed class MapWindow : ImGuiWindow
         if (q.Length == 0)
             return;
 
+        PhysicalNode? shownSystem = CurrentSystemRoot();
         foreach (PhysicalNode n in _graph.AllNodes)
         {
-            if (n.IsStar)
+            if (ReferenceEquals(n, shownSystem))
                 continue;
             if (n.Astro.Id.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0)
                 continue;
@@ -813,6 +952,14 @@ internal sealed class MapWindow : ImGuiWindow
         _searchResults.Sort((a, b) => CompareMatch(a.Astro.Id, b.Astro.Id, q));
         if (_searchResults.Count > MaxSearchResults)
             _searchResults.RemoveRange(MaxSearchResults, _searchResults.Count - MaxSearchResults);
+
+        foreach (PhysicalNode n in _searchResults)
+        {
+            PhysicalNode system = SystemGraph.SystemRootOf(n);
+            _searchLabels.Add(ReferenceEquals(system, shownSystem) || ReferenceEquals(system, n)
+                ? n.Id
+                : n.Id + " (" + system.Id + ")");
+        }
     }
 
     private static int CompareMatch(string a, string b, string query)
@@ -830,22 +977,26 @@ internal sealed class MapWindow : ImGuiWindow
         return 2;
     }
 
-    // Reveal a searched body (so it leaves its "+N" group / survives isolate), then center and
-    // highlight it. A body already on the map needs no rebuild, only the focus.
+    // Reveal a searched body (so it leaves its "+N" group / survives isolate), open its star
+    // system when it lies in another one, then center and highlight it. A body already in the
+    // visual tree needs no rebuild, only the focus; opening a system lays out that part alone.
     private void RevealAndFocus(PhysicalNode body)
     {
         _focusBodyId = body.Id;
-        bool alreadyVisible = FindFocusNode(body.Id) != null;
+        bool inTree = BestBodyNode(body.Id) != null;
         bool wasEmpty = _revealedBodyIds.Count == 0;
         bool added = _revealedBodyIds.Add(body.Id);
-        // Rebuild when the body must be materialized (it was collapsed or hidden), or when this
-        // first reveal arms isolate (which is inert until something has been revealed).
+        // Rebuild when the body must be materialized (it was collapsed, hidden or in a system
+        // past the shown cap), or when this first reveal arms isolate (which is inert until
+        // something has been revealed).
         bool isolateActivates = _isolate && wasEmpty && added;
-        if ((!alreadyVisible || isolateActivates) && _currentRootId != null)
+        if ((!inTree || isolateActivates) && _currentRootId != null)
             RebuildPreservingSelection(_currentRootId);
-        // Center on the body. When the line above rebuilt, this overrides the root-anchoring
-        // pan that rebuild set; that anchor only stands as a fallback when the focus node
-        // cannot be resolved (FocusOnBody leaves the pan alone then).
+        else
+            UpdateScene(anchorBodyId: body.Id);
+        // Center on the body. When the lines above rebuilt or recomposed, this overrides the
+        // pan they anchored; that anchor only stands as a fallback when the focus node cannot
+        // be resolved (FocusOnBody leaves the pan alone then).
         FocusOnBody(body.Id);
     }
 
@@ -854,7 +1005,7 @@ internal sealed class MapWindow : ImGuiWindow
     private void FocusOnBody(string bodyId)
     {
         LayoutNode? node = FindFocusNode(bodyId);
-        if (node == null || _layout == null)
+        if (node == null || _scene == null)
         {
             _focusNodeId = null;
             return;
@@ -864,8 +1015,8 @@ internal sealed class MapWindow : ImGuiWindow
         _zoom = Math.Clamp(Math.Max(_zoom, FocusZoom), MinZoom, MaxZoom);
         if (_lastSize.X > 8f && _lastSize.Y > 8f)
         {
-            _panX = _lastSize.X / 2.0 - (node.SnappedX - _layout.MinX) * _zoom;
-            _panY = _lastSize.Y / 2.0 - (node.SnappedY - _layout.MinY) * _zoom;
+            _panX = _lastSize.X / 2.0 - (node.SnappedX - _scene.MinX) * _zoom;
+            _panY = _lastSize.Y / 2.0 - (node.SnappedY - _scene.MinY) * _zoom;
         }
         // Clear any pending auto-fit (RebuildAt sets one) so it does not run on the next draw
         // and discard this centering.
@@ -873,59 +1024,54 @@ internal sealed class MapWindow : ImGuiWindow
     }
 
     // The layout node to center / highlight for a body: its most central rung (low orbit, then
-    // intercept, then surface, ...). Returns null when the body is not currently materialized
-    // (still inside a group), in which case the caller rebuilds first.
+    // intercept, then surface, ...). Returns null when the body is not currently on the map
+    // (still inside a group, or in a collapsed star system), in which case the caller rebuilds
+    // or opens that system first.
     private LayoutNode? FindFocusNode(string bodyId)
     {
-        if (_layout == null || _lookup == null)
-            return null;
-
-        string? bestId = null;
-        int bestRank = int.MaxValue;
-        foreach (StateNode s in _lookup.Values)
+        for (int i = 0; i < FocusKinds.Length; i++)
         {
-            if (s.Body.Id != bodyId)
-                continue;
-            int rank = FocusKindRank(s.Kind);
-            if (rank < bestRank)
-            {
-                bestRank = rank;
-                bestId = s.Id;
-            }
-        }
-        if (bestId == null)
-            return null;
-
-        foreach (LayoutNode n in _layout.Tree.Nodes)
-        {
-            if (n.Id == bestId)
-                return n;
+            StateNode? state = _visualTree?.FindBodyNode(bodyId, FocusKinds[i]);
+            if (state != null && _sceneById.TryGetValue(state.Id, out LayoutNode? node))
+                return node;
         }
         return null;
     }
 
-    private static int FocusKindRank(StateKind kind)
+    // The body's most central node in the visual tree, whether or not its system is open.
+    private StateNode? BestBodyNode(string bodyId)
     {
-        return kind switch
+        for (int i = 0; i < FocusKinds.Length; i++)
         {
-            StateKind.LowOrbit => 0,
-            StateKind.Intercept => 1,
-            StateKind.Surface => 2,
-            StateKind.Stationary => 3,
-            StateKind.SoiEdge => 4,
-            StateKind.YouAreHere => 5,
-            _ => 6
-        };
+            StateNode? state = _visualTree?.FindBodyNode(bodyId, FocusKinds[i]);
+            if (state != null)
+                return state;
+        }
+        return null;
     }
 
+    private static readonly StateKind[] FocusKinds =
+    {
+        StateKind.LowOrbit,
+        StateKind.Intercept,
+        StateKind.Surface,
+        StateKind.Stationary,
+        StateKind.SoiEdge,
+        StateKind.YouAreHere,
+        StateKind.Hub
+    };
+
     // Reset the find state: clear the query, the focus highlight and the revealed set, so the
-    // map returns to its adaptive aggregated view. Rebuilds only when bodies were revealed.
-    private void ClearSearch()
+    // map returns to its adaptive aggregated view. Rebuilds only when bodies were revealed and
+    // the caller does not rebuild anyway.
+    private void ClearSearch(bool rebuild = true)
     {
         _searchBuffer.Clear();
         _lastSearchQuery = "";
         _searchResults.Clear();
+        _searchLabels.Clear();
         _searchMatchTotal = 0;
+        _queryBlank = true;
         _focusBodyId = null;
         _focusNodeId = null;
         bool hadRevealed = _revealedBodyIds.Count > 0;
@@ -933,28 +1079,28 @@ internal sealed class MapWindow : ImGuiWindow
         // Clearing the find resets isolate too: with nothing revealed it would be inert anyway,
         // and unticking it keeps the checkbox honest.
         _isolate = false;
-        if (hadRevealed && _currentRootId != null)
+        if (rebuild && hadRevealed && _currentRootId != null)
             RebuildPreservingSelection(_currentRootId);
+        else if (rebuild)
+            UpdateScene(anchorBodyId: null);
     }
 
     private void DrawCanvas(IViewport viewport)
     {
-        LayoutResult? built = _layout;
+        LayoutScene? built = _scene;
         if (built == null)
         {
             // A refused (too-large) build leaves no layout; explain why instead of a blank
             // canvas. The panel still draws, so the visibility / isolate controls remain usable.
             if (_oversizedCount > 0)
-            {
-                string note = string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                    "This system has {0:#,##0} bodies to lay out - too many to render without "
-                    + "risking a freeze, so the map is disabled for it.", _oversizedCount);
-                ImGui.TextWrapped(note);
-            }
+                ImGui.TextWrapped(_oversizedNote);
             return;
         }
 
-        LayoutResult layout = built;
+#if DEBUG
+        using var perf = new PerfTracker.Scope("DvMap.Draw.Canvas");
+#endif
+        LayoutScene scene = built;
         ImDrawListPtr dl = ImGui.GetWindowDrawList();
         float2 origin = ImGui.GetCursorScreenPos();
         float2 size = ImGui.GetContentRegionAvail();
@@ -963,7 +1109,7 @@ internal sealed class MapWindow : ImGuiWindow
             return;
 
         float2 canvasMax = origin + size;
-        dl.AddRectFilled(in origin, in canvasMax, BackgroundColor);
+        dl.AddRectFilled(in origin, in canvasMax, CanvasRenderer.CanvasBackground);
 
         if (_needsFit)
         {
@@ -971,18 +1117,19 @@ internal sealed class MapWindow : ImGuiWindow
             _needsFit = false;
         }
 
-        var transform = new CanvasTransform(origin, _zoom, _panX, _panY, layout.MinX, layout.MinY);
+        var transform = new CanvasTransform(origin, _zoom, _panX, _panY, scene.MinX, scene.MinY);
 
         // Refresh the live transfer-window fields once per frame here, so both the on-map markers
         // (below) and the overlay read the same fresh countdowns.
         RefreshTransferWindows();
-        IReadOnlyDictionary<string, double>? windowMarkers = BuildWindowMarkers();
+        WindowMarkerSet windowMarkers = BuildWindowMarkers();
+        ConnectorBadge? connectorBadge = _routeSummary?.Interstellar != null && _interstellar.HasView ? _interstellar.Badge : null;
 
         dl.PushClipRect(in origin, in canvasMax, intersectWithCurrentClipRect: true);
         try
         {
-            CanvasRenderer.Draw(dl, layout, _lookup!, _palette!, in transform, _hoverId, _focusNodeId, _routeNodeIds,
-                _options.IncludePlaneChange, _view.DvScale, _view.ShowTransferTimes, _view.ShowBodyMarkers, windowMarkers);
+            _canvas.Draw(dl, scene, _lookup!, _palette!, in transform, origin, canvasMax, _hoverId, _focusNodeId, _routeNodeIds,
+                _options.IncludePlaneChange, _view.DvScale, _view.ShowTransferTimes, _view.ShowBodyMarkers, in windowMarkers, connectorBadge);
         }
         finally
         {
@@ -1023,7 +1170,7 @@ internal sealed class MapWindow : ImGuiWindow
 
         // Draws on the viewport overlay list, so it escapes this window's clip rect.
         if (_showMapMarkers)
-            TransferWindowMapOverlay.Draw(viewport, _windows, _windowsHoverBodyId ?? _routeSiblingId);
+            _mapOverlay.Draw(viewport, _windows, _windowsHoverBodyId ?? _routeSiblingId);
     }
 
     // Draw the on-canvas layout toggle: a small icon button in the top-left corner whose
@@ -1049,7 +1196,7 @@ internal sealed class MapWindow : ImGuiWindow
         if (hovered)
         {
             ImGui.BeginTooltip();
-            ImGui.Text(string.Concat("Layout: ", LayoutModeLabel(_layoutMode), " (click to switch)"));
+            ImGui.Text(LayoutModeTooltip(_layoutMode));
             ImGui.EndTooltip();
         }
 
@@ -1139,13 +1286,13 @@ internal sealed class MapWindow : ImGuiWindow
         };
     }
 
-    private static string LayoutModeLabel(LayoutMode mode)
+    private static string LayoutModeTooltip(LayoutMode mode)
     {
         return mode switch
         {
-            LayoutMode.GravityWell => "Gravity-well",
-            LayoutMode.Spring => "Spring",
-            _ => "Cumulative-down"
+            LayoutMode.GravityWell => "Layout: Gravity-well (click to switch)",
+            LayoutMode.Spring => "Layout: Spring (click to switch)",
+            _ => "Layout: Cumulative-down (click to switch)"
         };
     }
 
@@ -1184,22 +1331,26 @@ internal sealed class MapWindow : ImGuiWindow
         // Hover highlight and tooltip, suppressed while panning.
         bool panning = leftPan || middlePan;
         LayoutNode? near = null;
-        double distPx = double.MaxValue;
         if (hovered && !panning)
-            near = NearestNode(mouse, in transform, out distPx);
-        bool onNode = near != null && distPx <= HoverRadiusPx;
-        _hoverId = onNode ? near!.Id : null;
+            near = NearestNode(mouse, in transform);
+        _hoverId = near?.Id;
 
-        if (onNode)
+        if (near != null)
         {
-            ShowNodeTooltip(near!);
+            ShowNodeTooltip(near);
         }
         else if (hovered && !panning)
         {
-            // Not over a node: a hover near an edge shows that segment's tooltip instead.
-            LayoutEdge? edge = NearestEdge(mouse, in transform, out double edgeDist);
-            if (edge != null && edgeDist <= EdgeHoverPx)
-                ShowEdgeTooltip(edge);
+            // Not over a node: a hover near an edge or an interstellar connector shows its
+            // tooltip instead.
+            LayoutEdge? edge = NearestEdge(mouse, in transform, out LayoutConnector? connector, out double edgeDist);
+            if (edgeDist <= EdgeHoverPx)
+            {
+                if (connector != null)
+                    ShowConnectorTooltip(connector);
+                else if (edge != null)
+                    ShowEdgeTooltip(edge);
+            }
         }
 
         // A click without a drag selects a route (or shift-clicks to re-root). A plain
@@ -1208,8 +1359,8 @@ internal sealed class MapWindow : ImGuiWindow
         // or a click meant to refocus the window does not throw away the selected route.
         if (clicked)
         {
-            LayoutNode? hit = NearestNode(mouse, in transform, out double hitDist);
-            if (hit != null && hitDist <= HoverRadiusPx)
+            LayoutNode? hit = NearestNode(mouse, in transform);
+            if (hit != null)
             {
                 if (io.KeyShift)
                 {
@@ -1217,9 +1368,9 @@ internal sealed class MapWindow : ImGuiWindow
                 }
                 else if (hit.Kind == LayoutKind.MinorGroup)
                 {
-                    // A group is not routable. A plain click is a no-op for now (search /
-                    // isolate will expand it to a specific body), so it never throws away a
-                    // selected route by clearing the selection.
+                    // A group is not routable. A plain click is a no-op (search / isolate
+                    // pulls out a specific body), so it never throws away a selected route by
+                    // clearing the selection.
                 }
                 else
                 {
@@ -1230,6 +1381,9 @@ internal sealed class MapWindow : ImGuiWindow
                     if (selecting && hit.Kind == LayoutKind.Surface)
                         _options.LandAtDestination = true;
                     RecomputeRoute();
+                    // Selecting a node of another star system opens that system, and clearing
+                    // it closes it again; the clicked node stays where it is on screen.
+                    UpdateScene(anchorNodeId: hit.Id);
                 }
             }
         }
@@ -1240,6 +1394,9 @@ internal sealed class MapWindow : ImGuiWindow
     // selected (empty space, the star hub, or a build that has not produced a tree yet).
     private void RecomputeRoute()
     {
+#if DEBUG
+        using var perf = new PerfTracker.Scope("DvMap.Route.Recompute");
+#endif
         _routeSummary = null;
         _routeNodeIds = null;
         _routeSiblingId = null;
@@ -1260,7 +1417,8 @@ internal sealed class MapWindow : ImGuiWindow
 
         try
         {
-            RouteSummary summary = RouteAccumulator.Accumulate(path, _graph, _options);
+            RouteContext context = BuildRouteContext(path);
+            RouteSummary summary = RouteAccumulator.Accumulate(path, _graph, _options, in context);
             _routeSummary = summary;
 
             // A zero-step path means the target is the origin; keep the summary (the panel
@@ -1299,6 +1457,27 @@ internal sealed class MapWindow : ImGuiWindow
         }
     }
 
+    // What the accumulator needs from the controlled vessel: whether an interstellar departure
+    // burns from the vessel's own orbit at the origin body. The live transit state (excess and
+    // direction on an open orbit) is read by the interstellar section on every vessel refresh.
+    private RouteContext BuildRouteContext(RoutePath path)
+    {
+        Vehicle? vehicle = TryGetControlledVehicle();
+        PhysicalNode? originBody = _graph?.Find(path.Origin.Body.Id);
+        if (vehicle == null || originBody == null)
+            return RouteContext.None;
+        try
+        {
+            bool fromVessel = !_options.FromSurface && InterstellarLegs.VesselParksAt(originBody, vehicle);
+            return new RouteContext(fromVessel);
+        }
+        catch (Exception ex)
+        {
+            LogHelper.WarnOnce("route-context", $"[DvMap] Could not read the vessel's orbit for the route: {ex.Message}");
+            return RouteContext.None;
+        }
+    }
+
     // The route origin: the root body's surface when "from surface" is on, otherwise the
     // "you are here" state, falling back to low orbit (or the tree root) when there is no
     // vehicle (e.g. in the editor), so the map still routes from a sensible default rather
@@ -1307,8 +1486,10 @@ internal sealed class MapWindow : ImGuiWindow
     {
         VisualTree tree = _visualTree!;
         StateNode? you = tree.YouAreHere;
-        StateNode? surface = FindBodyNode(tree.RootBodyId, StateKind.Surface);
-        StateNode? lowOrbit = FindBodyNode(tree.RootBodyId, StateKind.LowOrbit);
+        StateNode? surface = tree.FindBodyNode(tree.RootBodyId, StateKind.Surface);
+        // A star or barycenter root has no low orbit to start from; the parking orbit an open
+        // cruise root carries is a destination, never the origin.
+        StateNode? lowOrbit = SystemGraph.IsHubOnlyBody(tree.Root.Body) ? null : tree.FindBodyNode(tree.RootBodyId, StateKind.LowOrbit);
 
         if (_options.FromSurface)
             return surface ?? lowOrbit ?? you ?? tree.Root;
@@ -1316,20 +1497,23 @@ internal sealed class MapWindow : ImGuiWindow
     }
 
     // Resolve the clicked node into the node the route should actually reach. A hub bus
-    // routes to that hub body's low orbit (the star hub has none, so there is nothing to
-    // route to). "Land at destination" extends an orbit click down to the body's surface.
+    // routes to that hub body's low orbit. The ego system's root star or barycenter has none,
+    // so there is nothing to route to; an orbiting star, and every star and root of another
+    // star system (its stub included), routes to its parking orbit. "Land at destination"
+    // extends an orbit click down to the body's surface.
     private StateNode? ResolveTarget(StateNode clicked)
     {
-        // A minor-body group is a synthetic aggregate, not a real destination, so it plans
-        // no route. Search / isolate (a later part) expands it to a specific body instead.
+        // A group is a synthetic aggregate, not a real destination, so it plans no route.
+        // Search / isolate pulls out a specific body instead.
         if (clicked.Kind == StateKind.MinorGroup)
             return null;
 
+        VisualTree tree = _visualTree!;
         StateNode target = clicked;
 
         if (target.Kind == StateKind.Hub)
         {
-            StateNode? lo = FindBodyNode(target.Body.Id, StateKind.LowOrbit);
+            StateNode? lo = tree.FindBodyNode(target.Body.Id, StateKind.LowOrbit);
             if (lo == null)
                 return null;
             target = lo;
@@ -1338,24 +1522,12 @@ internal sealed class MapWindow : ImGuiWindow
         if (_options.LandAtDestination
             && (target.Kind == StateKind.LowOrbit || target.Kind == StateKind.Intercept))
         {
-            StateNode? surface = FindBodyNode(target.Body.Id, StateKind.Surface);
+            StateNode? surface = tree.FindBodyNode(target.Body.Id, StateKind.Surface);
             if (surface != null)
                 return surface;
         }
 
         return target;
-    }
-
-    private StateNode? FindBodyNode(string bodyId, StateKind kind)
-    {
-        if (_visualTree == null)
-            return null;
-        foreach (StateNode n in _visualTree.Nodes)
-        {
-            if (n.Kind == kind && n.Body.Id == bodyId)
-                return n;
-        }
-        return null;
     }
 
     // The vehicle's total staged dV for the comparison bar: the controlled vehicle in flight, else
@@ -1367,54 +1539,131 @@ internal sealed class MapWindow : ImGuiWindow
         return dv is double value && double.IsFinite(value) ? value : null;
     }
 
-    private LayoutNode? NearestNode(float2 mouse, in CanvasTransform transform, out double distPx)
+    // The node under the cursor: the nearest one whose dot, plus a small margin, or the fixed
+    // hover radius, whichever is larger, holds the cursor. A large dot (the root, a star-system
+    // stub) is therefore clickable all the way to its rim.
+    private LayoutNode? NearestNode(float2 mouse, in CanvasTransform transform)
     {
         LayoutNode? best = null;
         double bestSq = double.MaxValue;
-        foreach (LayoutNode node in _layout!.Tree.Nodes)
+        IReadOnlyList<LayoutNode> nodes = _scene!.Nodes;
+        for (int i = 0; i < nodes.Count; i++)
         {
+            LayoutNode node = nodes[i];
             float2 p = transform.ToScreen(node.SnappedX, node.SnappedY);
             double dx = p.X - mouse.X;
             double dy = p.Y - mouse.Y;
             double sq = dx * dx + dy * dy;
-            if (sq < bestSq)
+            double reach = Math.Max(HoverRadiusPx, SceneComposer.GlyphRadiusPx(node) + 3.0);
+            if (sq < bestSq && sq <= reach * reach)
             {
                 bestSq = sq;
                 best = node;
+            }
+        }
+        // A system title stands for its root, so hovering or clicking it acts on the system.
+        if (best == null)
+        {
+            int title = _canvas.TitleAt(mouse);
+            if (title >= 0 && title < nodes.Count)
+                best = nodes[title];
+        }
+        return best;
+    }
+
+    // The edge or interstellar connector whose polyline runs nearest the cursor (hub links
+    // excluded, they carry no dV). Used for the hover tooltip when the cursor is not over a node.
+    private LayoutEdge? NearestEdge(float2 mouse, in CanvasTransform transform, out LayoutConnector? connector, out double distPx)
+    {
+        LayoutEdge? best = null;
+        connector = null;
+        double bestSq = double.MaxValue;
+        IReadOnlyList<LayoutNode> nodes = _scene!.Nodes;
+        for (int n = 0; n < nodes.Count; n++)
+        {
+            LayoutNode node = nodes[n];
+            for (int e = 0; e < node.Out.Count; e++)
+            {
+                LayoutEdge edge = node.Out[e];
+                // Skip hub links (no dV) and the group connector (its target is a synthetic
+                // aggregate, so an edge tooltip there would be meaningless).
+                if (edge.IsHubLink || edge.To.Kind == LayoutKind.MinorGroup || edge.Polyline.Count < 2)
+                    continue;
+                double sq = DistanceSqToPolyline(mouse, edge.Polyline, in transform);
+                if (sq < bestSq)
+                {
+                    bestSq = sq;
+                    best = edge;
+                }
+            }
+        }
+
+        // Each connector's own branch, then the shared trunk and buses once. The shared lines
+        // stand for the one connector there is, or for the one on the selected route.
+        IReadOnlyList<LayoutConnector> connectors = _scene.Connectors;
+        for (int i = 0; i < connectors.Count; i++)
+        {
+            LayoutConnector c = connectors[i];
+            double sq = DistanceSqToPoint(mouse, c.BadgeAnchor, in transform);
+            LayoutPoint from = c.BadgeAnchor;
+            for (int p = c.BranchStart; p < c.Polyline.Count; p++)
+            {
+                sq = Math.Min(sq, DistanceSqToSegment(mouse, transform.ToScreen(from.X, from.Y), transform.ToScreen(c.Polyline[p].X, c.Polyline[p].Y)));
+                from = c.Polyline[p];
+            }
+            if (sq < bestSq)
+            {
+                bestSq = sq;
+                best = null;
+                connector = c;
+            }
+        }
+        IReadOnlyList<IReadOnlyList<LayoutPoint>> network = _scene.Network;
+        for (int i = 0; i < network.Count; i++)
+        {
+            double sq = DistanceSqToPolyline(mouse, network[i], in transform);
+            if (sq < bestSq)
+            {
+                bestSq = sq;
+                best = null;
+                connector = SharedConnector(connectors);
             }
         }
         distPx = Math.Sqrt(bestSq);
         return best;
     }
 
-    // The edge whose routed polyline runs nearest the cursor (hub links excluded, they carry
-    // no dV). Used for the edge hover tooltip when the cursor is not over a node.
-    private LayoutEdge? NearestEdge(float2 mouse, in CanvasTransform transform, out double distPx)
+    private LayoutConnector? SharedConnector(IReadOnlyList<LayoutConnector> connectors)
     {
-        LayoutEdge? best = null;
-        double bestSq = double.MaxValue;
-        foreach (LayoutNode node in _layout!.Tree.Nodes)
+        if (connectors.Count == 1)
+            return connectors[0];
+        if (_routeNodeIds == null)
+            return null;
+        for (int i = 0; i < connectors.Count; i++)
         {
-            foreach (LayoutEdge edge in node.Out)
-            {
-                // Skip hub links (no dV) and the group connector (its target is a synthetic
-                // aggregate, so an edge tooltip there would be meaningless).
-                if (edge.IsHubLink || edge.To.Kind == LayoutKind.MinorGroup || edge.Polyline.Count < 2)
-                    continue;
-                for (int i = 1; i < edge.Polyline.Count; i++)
-                {
-                    float2 a = transform.ToScreen(edge.Polyline[i - 1].X, edge.Polyline[i - 1].Y);
-                    float2 b = transform.ToScreen(edge.Polyline[i].X, edge.Polyline[i].Y);
-                    double sq = DistanceSqToSegment(mouse, a, b);
-                    if (sq < bestSq)
-                    {
-                        bestSq = sq;
-                        best = edge;
-                    }
-                }
-            }
+            if (CanvasRenderer.OnRoute(connectors[i], _routeNodeIds))
+                return connectors[i];
         }
-        distPx = Math.Sqrt(bestSq);
+        return null;
+    }
+
+    private static double DistanceSqToPoint(float2 mouse, LayoutPoint p, in CanvasTransform transform)
+    {
+        float2 s = transform.ToScreen(p.X, p.Y);
+        double dx = s.X - mouse.X;
+        double dy = s.Y - mouse.Y;
+        return dx * dx + dy * dy;
+    }
+
+    private static double DistanceSqToPolyline(float2 mouse, IReadOnlyList<LayoutPoint> line, in CanvasTransform transform)
+    {
+        double best = double.MaxValue;
+        for (int i = 1; i < line.Count; i++)
+        {
+            float2 a = transform.ToScreen(line[i - 1].X, line[i - 1].Y);
+            float2 b = transform.ToScreen(line[i].X, line[i].Y);
+            best = Math.Min(best, DistanceSqToSegment(mouse, a, b));
+        }
         return best;
     }
 
@@ -1440,29 +1689,36 @@ internal sealed class MapWindow : ImGuiWindow
         if (_lookup == null || !_lookup.TryGetValue(node.Id, out StateNode? state))
             return;
         if (state.Kind == StateKind.MinorGroup)
-            TooltipRenderer.MinorGroup(state);
+            _tooltips.MinorGroup(state);
         else
-            TooltipRenderer.Node(state, _graph?.LadderFor(state.Body.Id));
+            _tooltips.Node(state, _graph?.LadderFor(state.Body.Id), _graph?.HasSeveralSystems == true);
     }
 
     // Rich edge tooltip: resolve the layout edge back to its game edge for the fine segment
     // kind and formula; the layout edge supplies the displayed dV figures.
     private void ShowEdgeTooltip(LayoutEdge edge)
     {
-        Edge? game = ResolveGameEdge(edge);
+        Edge? game = ResolveGameEdge(edge.From.Id, edge.To.Id);
         if (game != null)
-            TooltipRenderer.Edge(game, edge, _view.DvScale, _view.ShowTransferTimes);
+            _tooltips.Edge(game, edge, _view.DvScale, _view.ShowTransferTimes);
     }
 
-    // Find the game edge backing a layout edge by matching its endpoints in the visual tree.
-    private Edge? ResolveGameEdge(LayoutEdge layoutEdge)
+    private void ShowConnectorTooltip(LayoutConnector connector)
     {
-        if (_lookup == null || !_lookup.TryGetValue(layoutEdge.From.Id, out StateNode? from))
+        Edge? game = ResolveGameEdge(connector.From.Id, connector.To.Id);
+        if (game != null)
+            _tooltips.Connector(game);
+    }
+
+    // Find the game edge between two node Ids in the visual tree.
+    private Edge? ResolveGameEdge(string fromId, string toId)
+    {
+        if (_lookup == null || !_lookup.TryGetValue(fromId, out StateNode? from))
             return null;
-        foreach (Edge e in from.Out)
+        for (int i = 0; i < from.Out.Count; i++)
         {
-            if (e.To.Id == layoutEdge.To.Id)
-                return e;
+            if (from.Out[i].To.Id == toId)
+                return from.Out[i];
         }
         return null;
     }
@@ -1489,7 +1745,9 @@ internal sealed class MapWindow : ImGuiWindow
         if (system == null)
             return false;
 
-        if (_graph == null || _graph.SystemId != system.Id)
+        // Latched on the system instance, not its Id: loading the same system again builds new
+        // bodies, and nodes holding the old ones would read orbits that no longer update.
+        if (_graph == null || !ReferenceEquals(_graph.System, system))
         {
             SystemGraph? graph = SystemGraph.Build(system);
             if (graph == null)
@@ -1498,6 +1756,14 @@ internal sealed class MapWindow : ImGuiWindow
             _cache = new DvCache();
             _palette = ColorPalette.Build(graph);
             _currentRootId = null;
+            _rootLabel = null;
+            _mapSystemId = null;
+            _interstellar.Reset();
+            _canvas.Reset();
+            _tooltips.Reset();
+            _routePanel.Reset();
+            _egoVehicle = null;
+            _egoParent = null;
             _buildFailedRootId = null;
             _selectedId = null;
             _routeSummary = null;
@@ -1508,14 +1774,18 @@ internal sealed class MapWindow : ImGuiWindow
             // A new system invalidates the search state (the bodies are different).
             _revealedBodyIds.Clear();
             _searchResults.Clear();
+            _searchLabels.Clear();
             _searchMatchTotal = 0;
             _searchBuffer.Clear();
             _lastSearchQuery = "";
             _focusBodyId = null;
             _focusNodeId = null;
             _isolate = false;
+            _queryBlank = true;
             _oversizedCount = 0;
         }
+
+        FollowVessel(system);
 
         if (!_built || _reevaluateRoot)
         {
@@ -1533,16 +1803,106 @@ internal sealed class MapWindow : ImGuiWindow
         return _built;
     }
 
-    // The ego root: the controlled vehicle's current SOI body, or the system home body
-    // when there is no vehicle. Falls back to the star if neither resolves in the graph.
+    // The ego root. Following the vessel, it is the controlled vehicle's current SOI body in
+    // whatever star system that is, or the home body when there is no vehicle. With a system
+    // chosen in the System menu, it is the vessel's SOI body when the vessel is in that system,
+    // else the home body when that system holds it, else the system's own root hub, never a body
+    // of another system.
     private string? DesiredEgoRootId(CelestialSystem system)
     {
+        SystemGraph graph = _graph!;
         string? parentId = TryGetEgoParentId();
-        if (parentId != null && _graph!.Find(parentId) != null)
-            return parentId;
-        if (system.HomeBody?.Id is string homeId && _graph!.Find(homeId) != null)
-            return homeId;
-        return _graph!.Root.Id;
+        PhysicalNode? parent = parentId != null ? graph.Find(parentId) : null;
+        PhysicalNode? home = system.HomeBody?.Id is string homeId ? graph.Find(homeId) : null;
+
+        PhysicalNode? chosen = _mapSystemId != null ? graph.Find(_mapSystemId) : null;
+        if (chosen == null)
+        {
+            _mapSystemId = null;
+            return (parent ?? home ?? graph.HomeRoot).Id;
+        }
+
+        if (parent != null && ReferenceEquals(SystemGraph.SystemRootOf(parent), chosen))
+            return parent.Id;
+        if (home != null && ReferenceEquals(SystemGraph.SystemRootOf(home), chosen))
+            return home.Id;
+        return chosen.Id;
+    }
+
+    // Follow the controlled vessel while the map follows it (no System pick). A vehicle switch
+    // re-evaluates the root on the next build. A parent change that crosses into another star
+    // system (PhysicsStates.CheckSoiTransitions hands the vessel to IIndependentRoot.FindOwner,
+    // the root Universe.NearestRoot names) re-roots the map there and keeps the selected route
+    // when its target still exists. Only a change of either reference acts, so a manual
+    // Shift+click re-root stays until the vessel moves on.
+    private void FollowVessel(CelestialSystem system)
+    {
+#if DEBUG
+        using var perf = new PerfTracker.Scope("DvMap.Follow");
+#endif
+        Vehicle? vehicle;
+        IParentBody? parent;
+        try
+        {
+            vehicle = Program.ControlledVehicle;
+            parent = vehicle?.Parent;
+        }
+        catch (Exception ex)
+        {
+            LogHelper.WarnOnce("follow-vessel", $"[DvMap] Could not read the controlled vehicle: {ex.Message}");
+            return;
+        }
+
+        bool vehicleChanged = !ReferenceEquals(vehicle, _egoVehicle);
+        bool parentChanged = !ReferenceEquals(parent, _egoParent);
+        _egoVehicle = vehicle;
+        _egoParent = parent;
+        if (_mapSystemId != null || !_built)
+            return;
+        if (vehicleChanged)
+        {
+            _reevaluateRoot = true;
+            return;
+        }
+        if (!parentChanged || parent == null || _graph == null || !_graph.HasSeveralSystems)
+            return;
+
+        PhysicalNode? node = _graph.Find(parent.Id);
+        PhysicalNode? shown = CurrentSystemRoot();
+        if (node == null || shown == null || ReferenceEquals(SystemGraph.SystemRootOf(node), shown))
+            return;
+        string? root = DesiredEgoRootId(system);
+        if (root != null && root != _buildFailedRootId)
+            FollowTo(root);
+    }
+
+    // Re-root at the vessel's new star system, then put the selected route back when its
+    // target is still on the map: body Ids are unique across every star system, so a target in
+    // the system the vessel just entered becomes an in-system route there.
+    private void FollowTo(string rootId)
+    {
+        string? selected = _selectedId;
+        RebuildAt(rootId);
+        if (selected != null && _lookup != null && _lookup.ContainsKey(selected))
+        {
+            _selectedId = selected;
+            RecomputeRoute();
+            UpdateScene(anchorNodeId: null);
+        }
+    }
+
+    private static Vehicle? TryGetControlledVehicle()
+    {
+        try
+        {
+            Vehicle? vehicle = Program.ControlledVehicle;
+            return vehicle?.Parent != null ? vehicle : null;
+        }
+        catch (Exception ex)
+        {
+            LogHelper.WarnOnce("controlled-vehicle", $"[DvMap] Could not read the controlled vehicle: {ex.Message}");
+            return null;
+        }
     }
 
     // Reading the controlled vehicle's parent body walks its orbit / flight-plan chain,
@@ -1576,32 +1936,33 @@ internal sealed class MapWindow : ImGuiWindow
 
         double anchorX = 0.0;
         double anchorY = 0.0;
-        bool haveAnchor = _layout != null;
+        bool haveAnchor = _scene != null;
         if (haveAnchor)
         {
-            LayoutNode oldRoot = _layout!.Tree.Root;
-            anchorX = (oldRoot.SnappedX - _layout.MinX) * zoom + _panX;
-            anchorY = (oldRoot.SnappedY - _layout.MinY) * zoom + _panY;
+            LayoutNode oldRoot = _scene!.Root;
+            anchorX = (oldRoot.SnappedX - _scene.MinX) * zoom + _panX;
+            anchorY = (oldRoot.SnappedY - _scene.MinY) * zoom + _panY;
         }
 
         RebuildAt(rootId);
-
-        _zoom = zoom;
-        if (haveAnchor && _layout != null)
-        {
-            LayoutNode newRoot = _layout.Tree.Root;
-            _panX = anchorX - (newRoot.SnappedX - _layout.MinX) * zoom;
-            _panY = anchorY - (newRoot.SnappedY - _layout.MinY) * zoom;
-            // We re-anchored the view ourselves, so cancel the auto-fit RebuildAt requested.
-            // Without a prior layout to anchor to (e.g. recovering from a refused build), leave
-            // the auto-fit on so the fresh map is framed instead of shown at a stale pan/zoom.
-            _needsFit = false;
-        }
 
         if (selected != null && _lookup != null && _lookup.ContainsKey(selected))
         {
             _selectedId = selected;
             RecomputeRoute();
+            UpdateScene(anchorNodeId: null);
+        }
+
+        _zoom = zoom;
+        if (haveAnchor && _scene != null)
+        {
+            LayoutNode newRoot = _scene.Root;
+            _panX = anchorX - (newRoot.SnappedX - _scene.MinX) * zoom;
+            _panY = anchorY - (newRoot.SnappedY - _scene.MinY) * zoom;
+            // We re-anchored the view ourselves, so cancel the auto-fit RebuildAt requested.
+            // Without a prior layout to anchor to (e.g. recovering from a refused build), leave
+            // the auto-fit on so the fresh map is framed instead of shown at a stale pan/zoom.
+            _needsFit = false;
         }
     }
 
@@ -1610,7 +1971,7 @@ internal sealed class MapWindow : ImGuiWindow
         if (_graph == null || _cache == null)
             return;
 
-        PhysicalNode node = _graph.Find(rootId) ?? _graph.Root;
+        PhysicalNode node = _graph.Find(rootId) ?? _graph.HomeRoot;
 
         // A genuine root change (a re-root, or a system change, which first nulls _currentRootId)
         // resets the manual overlay panel sizes back to auto. A same-root rebuild (a visibility,
@@ -1628,7 +1989,9 @@ internal sealed class MapWindow : ImGuiWindow
         {
             try
             {
-                egoState = StateClassifier.Classify(vehicle, node.Ladder);
+                egoState = node.IsHubOnly
+                    ? StateClassifier.ClassifyCruise(vehicle)
+                    : StateClassifier.Classify(vehicle, node.Ladder);
             }
             catch (Exception ex)
             {
@@ -1653,7 +2016,13 @@ internal sealed class MapWindow : ImGuiWindow
             bool effectiveIsolate = _isolate && _revealedBodyIds.Count > 0;
             var buildOptions = new BuildOptions(_fullLadder, _view.ShowMinorBodies, _view.ShowComets,
                 effectiveIsolate, _revealedBodyIds);
-            VisualTree visual = VisualTree.Build(_graph, _cache, node, egoState, buildOptions);
+            VisualTree visual;
+            {
+#if DEBUG
+                using var perf = new PerfTracker.Scope("DvMap.Build.VisualTree");
+#endif
+                visual = VisualTree.Build(_graph, _cache, node, egoState, buildOptions);
+            }
 
             // Universal never-hang guard: above the ceiling, refuse to lay out (any mode) and
             // show a note instead of risking a multi-second build or unresponsive frames. The
@@ -1665,10 +2034,18 @@ internal sealed class MapWindow : ImGuiWindow
             if (visual.Nodes.Count > MaxLayoutNodes)
             {
                 _visualTree = null;
-                _layout = null;
+                _egoLayout = null;
+                _egoHub = null;
+                _scene = null;
+                _parts.Clear();
+                _sceneById.Clear();
                 _lookup = null;
                 _oversizedCount = visual.Nodes.Count;
+                _oversizedNote = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "This system has {0:#,##0} bodies to lay out - too many to render without "
+                    + "risking a freeze, so the map is disabled for it.", _oversizedCount);
                 _currentRootId = node.Id;
+                _rootLabel = RootLabel(node);
                 _buildFailedRootId = null;
                 _selectedId = null;
                 _routeSummary = null;
@@ -1683,16 +2060,29 @@ internal sealed class MapWindow : ImGuiWindow
 
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual, _graph);
             var cfg = new LayoutConfig { Mode = _layoutMode };
-            LayoutResult result = LayoutEngine.Run(tree, cfg, MeasureText);
+            LayoutResult result;
+            {
+#if DEBUG
+                using var perf = new PerfTracker.Scope("DvMap.Layout.Ego");
+#endif
+                result = LayoutEngine.Run(tree, cfg, MeasureText);
+            }
 
             var lookup = new Dictionary<string, StateNode>(visual.Nodes.Count);
             foreach (StateNode n in visual.Nodes)
                 lookup[n.Id] = n;
 
             _visualTree = visual;
-            _layout = result;
+            _egoLayout = result;
+            _egoHub = FindLayoutNode(result.Tree, visual.SystemHub.Id);
             _lookup = lookup;
+            _parts.Clear();
+            _expandedA = null;
+            _expandedB = null;
+            ComposeScene();
+            PhysicalNode? previousSystem = CurrentSystemRoot();
             _currentRootId = node.Id;
+            _rootLabel = RootLabel(node);
             _buildFailedRootId = null;
             _selectedId = null;
             _routeSummary = null;
@@ -1701,20 +2091,177 @@ internal sealed class MapWindow : ImGuiWindow
             _needsFit = true;
             _built = true;
 
-            // Keep the focus highlight on the searched body across rebuilds; the chosen node Id
-            // can shift with detail, so re-resolve it from the body (no re-center here).
+            // Open the searched body's star system again and keep the focus highlight on the
+            // body across rebuilds; the chosen node Id can shift with detail, so re-resolve it
+            // from the body (no re-center here).
+            UpdateScene();
             if (_focusBodyId != null)
                 _focusNodeId = FindFocusNode(_focusBodyId)?.Id;
 
             // Rebuild the transfer-window list for the new root. It mirrors the bodies the map
             // shows as their own lane, so it runs here, after the visual tree is built.
             RebuildTransferWindows(node);
+
+            // The search results name the other systems and skip the shown root, so a move to
+            // another star system relabels them.
+            if (!_queryBlank && !ReferenceEquals(previousSystem, CurrentSystemRoot()))
+                UpdateSearchResults(_lastSearchQuery);
         }
         catch (Exception ex)
         {
             _buildFailedRootId = node.Id;
             LogHelper.ErrorOnce("map-build-" + rootId, $"[DvMap] Map build failed for root '{rootId}': {ex}");
         }
+    }
+
+    // The other star systems to open: the one holding the selected node and the one holding the
+    // searched body. When the set changes, only the changed parts are laid out (each part once
+    // per root build) and the scene is composed again; the visual tree, the ego layout and the
+    // route stay. The home map keeps its place on screen, because the composer never moves it.
+    // The anchor (anchorNodeId or the body's node, else its system's root when the node closed
+    // away) only moves the view when it would otherwise leave the canvas: then it goes back to
+    // the screen spot it had.
+    private void UpdateScene(string? anchorNodeId = null, string? anchorBodyId = null)
+    {
+        if (_visualTree == null || _egoLayout == null)
+            return;
+        string? a = DestinationRootHubOf(_selectedId != null && _lookup != null && _lookup.TryGetValue(_selectedId, out StateNode? selected) ? selected : null);
+        string? b = _focusBodyId != null ? DestinationRootHubOf(BestBodyNode(_focusBodyId)) : null;
+        if (b == a)
+            b = null;
+        if (a == _expandedA && b == _expandedB)
+            return;
+
+        if (anchorNodeId == null && anchorBodyId != null)
+            anchorNodeId = BestBodyNode(anchorBodyId)?.Id;
+        string? fallback = anchorNodeId != null && _lookup != null && _lookup.TryGetValue(anchorNodeId, out StateNode? anchorState)
+            ? DestinationRootHubOf(anchorState)
+            : null;
+
+        bool haveNode = TryScreenOf(anchorNodeId, out double nodeX, out double nodeY);
+        bool haveRoot = TryScreenOf(fallback, out double rootX, out double rootY);
+        LayoutScene? before = _scene;
+        _expandedA = a;
+        _expandedB = b;
+        ComposeScene();
+
+        if (before != null && _scene != null)
+        {
+            _panX += (_scene.MinX - before.MinX) * _zoom;
+            _panY += (_scene.MinY - before.MinY) * _zoom;
+            LayoutNode? node = null;
+            double sx = 0.0;
+            double sy = 0.0;
+            if (haveNode && anchorNodeId != null && _sceneById.TryGetValue(anchorNodeId, out LayoutNode? n))
+            {
+                node = n;
+                sx = nodeX;
+                sy = nodeY;
+            }
+            else if (haveRoot && fallback != null && _sceneById.TryGetValue(fallback, out LayoutNode? f))
+            {
+                node = f;
+                sx = rootX;
+                sy = rootY;
+            }
+            if (node != null)
+            {
+                double x = (node.SnappedX - _scene.MinX) * _zoom + _panX;
+                double y = (node.SnappedY - _scene.MinY) * _zoom + _panY;
+                bool onCanvas = _lastSize.X <= 0f
+                    || (x >= AnchorMarginPx && x <= _lastSize.X - AnchorMarginPx && y >= AnchorMarginPx && y <= _lastSize.Y - AnchorMarginPx);
+                if (!onCanvas)
+                {
+                    _panX = sx - (node.SnappedX - _scene.MinX) * _zoom;
+                    _panY = sy - (node.SnappedY - _scene.MinY) * _zoom;
+                }
+            }
+        }
+        if (_focusBodyId != null)
+            _focusNodeId = FindFocusNode(_focusBodyId)?.Id;
+    }
+
+    // The canvas-relative position a scene node sits at now, before the scene changes.
+    private bool TryScreenOf(string? nodeId, out double x, out double y)
+    {
+        x = 0.0;
+        y = 0.0;
+        if (nodeId == null || _scene == null || !_sceneById.TryGetValue(nodeId, out LayoutNode? node))
+            return false;
+        x = (node.SnappedX - _scene.MinX) * _zoom + _panX;
+        y = (node.SnappedY - _scene.MinY) * _zoom + _panY;
+        return true;
+    }
+
+    // The root hub Id of the other star system a node belongs to, or null for a node of the
+    // ego system.
+    private string? DestinationRootHubOf(StateNode? state)
+    {
+        if (state == null || _graph == null || _visualTree == null)
+            return null;
+        PhysicalNode? body = _graph.Find(state.Body.Id);
+        PhysicalNode? ego = CurrentSystemRoot();
+        if (body == null || ego == null)
+            return null;
+        PhysicalNode system = SystemGraph.SystemRootOf(body);
+        return ReferenceEquals(system, ego) ? null : system.Id + "." + StateKind.Hub;
+    }
+
+    // Lay out each shown destination system as its own part (cached per root build) and place
+    // them beside the ego map.
+    private void ComposeScene()
+    {
+        if (_visualTree == null || _egoLayout == null || _graph == null)
+            return;
+#if DEBUG
+        using var perf = new PerfTracker.Scope("DvMap.Compose");
+#endif
+        _shownParts.Clear();
+        IReadOnlyList<Edge> interstellar = _visualTree.InterstellarEdges;
+        for (int i = 0; i < interstellar.Count; i++)
+        {
+            Edge edge = interstellar[i];
+            string rootId = edge.To.Id;
+            bool expanded = rootId == _expandedA || rootId == _expandedB;
+            if (!_parts.TryGetValue((rootId, expanded), out LayoutPart? part))
+            {
+#if DEBUG
+                using var partPerf = new PerfTracker.Scope("DvMap.Layout.Part");
+#endif
+                SystemGraph graph = _graph;
+                LayoutResult laid = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(edge, graph, expanded), _egoLayout, MeasureText);
+                part = new LayoutPart { RootId = rootId, Result = laid, Expanded = expanded };
+                _parts[(rootId, expanded)] = part;
+            }
+            _shownParts.Add(part);
+        }
+
+        LayoutScene scene = SceneComposer.Compose(_egoLayout, _egoHub, _shownParts, _egoLayout.Config);
+        _scene = scene;
+        _sceneById.Clear();
+        IReadOnlyList<LayoutNode> nodes = scene.Nodes;
+        for (int i = 0; i < nodes.Count; i++)
+            _sceneById[nodes[i].Id] = nodes[i];
+    }
+
+    private static LayoutNode? FindLayoutNode(LayoutTree tree, string id)
+    {
+        IReadOnlyList<LayoutNode> nodes = tree.Nodes;
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (nodes[i].Id == id)
+                return nodes[i];
+        }
+        return null;
+    }
+
+    // The menu-bar note naming the root, plus its star system when the map holds several.
+    private string RootLabel(PhysicalNode node)
+    {
+        if (_graph == null || !_graph.HasSeveralSystems)
+            return "Root: " + node.Id;
+        PhysicalNode system = SystemGraph.SystemRootOf(node);
+        return ReferenceEquals(system, node) ? "Root: " + node.Id : "Root: " + node.Id + " (" + system.Id + ")";
     }
 
     // Real label width from the active ImGui font. Valid because every RebuildAt call
@@ -1724,15 +2271,12 @@ internal sealed class MapWindow : ImGuiWindow
         return ImGui.CalcTextSize(label).X;
     }
 
+    // With other star systems shown the fit also keeps the screen-fixed titles and labels at the
+    // right edge on the canvas (SceneFit); with the ego map alone it is the plain bounds fit.
     private void FitToView(float2 size)
     {
-        LayoutResult layout = _layout!;
-        const double pad = 32.0;
-        double contentW = Math.Max(1.0, layout.Width);
-        double contentH = Math.Max(1.0, layout.Height);
-        double zx = (size.X - 2.0 * pad) / contentW;
-        double zy = (size.Y - 2.0 * pad) / contentH;
-        _zoom = Math.Clamp(Math.Min(zx, zy), MinZoom, MaxZoom);
+        LayoutScene layout = _scene!;
+        _zoom = SceneFit.Fit(layout, size.X, size.Y, MinZoom, MaxZoom, out double panX, out double panY);
 
         if (_centerOnRoot)
         {
@@ -1740,14 +2284,14 @@ internal sealed class MapWindow : ImGuiWindow
             // box. The transform maps (lx - MinX) * zoom + pan to screen-relative pixels,
             // so solve pan to land the root on the center. In GravityWell the root sits on
             // the spine, so this also vertically centers the whole spine.
-            LayoutNode root = layout.Tree.Root;
+            LayoutNode root = layout.Root;
             _panX = size.X / 2.0 - (root.SnappedX - layout.MinX) * _zoom;
             _panY = size.Y / 2.0 - (root.SnappedY - layout.MinY) * _zoom;
         }
         else
         {
-            _panX = (size.X - contentW * _zoom) / 2.0;
-            _panY = (size.Y - contentH * _zoom) / 2.0;
+            _panX = panX;
+            _panY = panY;
         }
     }
 
