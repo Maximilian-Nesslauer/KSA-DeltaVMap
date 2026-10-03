@@ -16,6 +16,12 @@
     <InternalsVisibleTo Include="DeltaVMap.HarnessTests" />
   </ItemGroup>
 
+  <!-- The scene layout rules are test code: the offline tests and the harness tests compile
+       them, the mod does not ship them. -->
+  <ItemGroup>
+    <Compile Remove="Layout\SceneChecks.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <Reference Include="KSA">
       <HintPath>..\..\..\refs\game\KSA.dll</HintPath>

@@ -22,6 +22,9 @@
     <!-- Shared debug config (pure, no game deps) so the harness defaults to the same
          dump directory as the in-game LayoutDump. -->
     <Compile Include="..\DeltaVMap\Core\DebugConfig.cs" />
+    <!-- The shared number formats are pure, so the harness locks the strings every panel,
+         badge and tooltip shows. -->
+    <Compile Include="..\DeltaVMap\Core\Format.cs" />
     <!-- The closed-form delta-v kernel is pure (no game types), so the harness can lock its
          formulas down directly: the comet velocity-match, the Hohmann reduction it
          generalizes, the intercept split, and the atmospheric landing fraction. -->
@@ -30,6 +33,17 @@
          Hohmann lead angle, the synodic rate/period, the time-to-window wrap, and the
          ejection geometry against known stock values and the AlignmentTime formula. -->
     <Compile Include="..\DeltaVMap\Dv\TransferWindow.cs" />
+    <!-- The interstellar leg and the rocket-equation propellant estimate are pure too, so the
+         harness locks the departure chain, the capture, the coast time and the fastest cruise
+         for a budget against independently evaluated stock-content values. -->
+    <Compile Include="..\DeltaVMap\Dv\InterstellarMath.cs" />
+    <Compile Include="..\DeltaVMap\Dv\RocketPropellant.cs" />
+    <!-- The cruise-speed selection (presets, a custom speed, and MAX that follows the budget) is
+         a pure state machine. -->
+    <Compile Include="..\DeltaVMap\Dv\CruiseSpeed.cs" />
+    <!-- The forest's structural rules (body roles, which minor bodies count as planets, the
+         order of the system roots) are pure, so the harness locks them for multi-star shapes. -->
+    <Compile Include="..\DeltaVMap\Model\ForestRules.cs" />
   </ItemGroup>
 
 </Project>

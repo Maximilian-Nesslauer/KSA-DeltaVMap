@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 
@@ -151,6 +152,71 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-cruise-arrival", starHub);
     }
 
+    // The root of a multiple star system: a barycenter hub with no rungs of its own, its stars
+    // linked to it like the planets of a cruise root (onto their capture anchor, then down to a
+    // wide parking orbit), and the planets of one star reached by transfers from that star's
+    // parking orbit. This is what the map builds when a vessel orbits the barycenter itself.
+    public static LayoutTree BuildBarycenterRoot()
+    {
+        LayoutNode bary = Node("Bary.Hub", "Bary", LayoutKind.Hub, rank: 0);
+        bary.IsRoot = true;
+
+        LayoutNode here = Node("Bary.YOU", "You Are Here", LayoutKind.YouAreHere, rank: 0);
+        here.IsYouAreHere = true;
+        HubLink(bary, here);
+
+        for (int i = 0; i < 3; i++)
+        {
+            string id = "Star" + i.ToString(Inv);
+            LayoutNode capture = Node(id + ".Capture", id + " Intercept", LayoutKind.Intercept, rank: 0);
+            HubLink(bary, capture);
+            LayoutNode lo = Node(id + ".LO", id + " Low Orbit", LayoutKind.LowOrbit, rank: 0);
+            LadderEdge(capture, lo, 9000 + i * 1500);
+            if (i == 2)
+            {
+                Arrive(lo, id + ".b", id + " b", rank: 1, depart: 21000, arrive: 64000, circularizeDv: 900, surfaceDv: 4000, stationaryDv: null);
+                Arrive(lo, id + ".d", id + " d", rank: 1, depart: 23000, arrive: 70000, circularizeDv: 700, surfaceDv: 2500, stationaryDv: null);
+            }
+        }
+
+        return LayoutTree.FromRoot("synthetic-barycenter-root", bary);
+    }
+
+    // A vessel orbiting one star of a multiple system directly: that star's hub is the root with
+    // its planets linked to it, and the spine climbs to the barycenter hub, from which the
+    // sibling stars branch off by transfers.
+    public static LayoutTree BuildOrbitingStarRoot()
+    {
+        LayoutNode star = Node("Star.Hub", "Star", LayoutKind.Hub, rank: 0);
+        star.IsRoot = true;
+
+        LayoutNode here = Node("Star.YOU", "You Are Here", LayoutKind.YouAreHere, rank: 0);
+        here.IsYouAreHere = true;
+        HubLink(star, here);
+
+        for (int i = 0; i < 2; i++)
+        {
+            string id = "Exo" + i.ToString(Inv);
+            LayoutNode capture = Node(id + ".Capture", id + " Intercept", LayoutKind.Intercept, rank: 1);
+            HubLink(star, capture);
+            LayoutNode lo = Node(id + ".LO", id + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+            LadderEdge(capture, lo, 1200 + i * 300);
+            LadderEdge(lo, Node(id + ".Surface", id + " Surface", LayoutKind.Surface, rank: 1), 5000 + i * 900);
+        }
+
+        LayoutNode bary = Node("Bary.Hub", "Bary", LayoutKind.Hub, rank: 0);
+        HubLink(star, bary);
+        for (int i = 0; i < 2; i++)
+        {
+            string id = "Sibling" + i.ToString(Inv);
+            LayoutNode capture = Node(id + ".Capture", id + " Intercept", LayoutKind.Intercept, rank: 0);
+            Transfer(bary, capture, depart: 4000 + i * 900, arrive: 9000 + i * 700, approximate: true);
+            LadderEdge(capture, Node(id + ".LO", id + " Low Orbit", LayoutKind.LowOrbit, rank: 0), 12000 + i * 1000);
+        }
+
+        return LayoutTree.FromRoot("synthetic-orbiting-star-root", star);
+    }
+
     // A dense-system root after minor-body aggregation: a planet root with a star hub
     // carrying the other planets plus a single huge "+N asteroids" group standing in for the
     // collapsed belt, and one moon that has collapsed minor bodies of its own. The in-game
@@ -178,6 +244,156 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-dense-aggregated", root);
     }
 
+    // A planet root at the size of the stock Sol map: thirteen planets and dwarf planets, the
+    // gas giants with their many moons, and the asteroid belt as one group. Its bounds come
+    // close to the real map's, so a scene check on it judges the look at a realistic fit zoom.
+    public static LayoutTree BuildRealLikeSolRoot()
+    {
+        LayoutNode root = Node("Earth.LO", "Earth Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        Ladder(root, "Earth", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3210);
+        LayoutNode luna = Node("Luna.LO", "Luna Low Orbit", LayoutKind.LowOrbit, rank: 2);
+        Transfer(root, luna, depart: 3100, arrive: 850);
+        Ladder(luna, "Luna", surfaceDv: 1870, stationaryDv: null, soiDv: 410);
+
+        LayoutNode sol = Node("Sol.Hub", "Sol", LayoutKind.Hub, rank: 0);
+        HubLink(root, sol);
+        (string Name, bool Gas, string[] Moons, bool Stationary)[] planets =
+        {
+            ("Mercury", false, new string[0], false),
+            ("Venus", false, new string[0], true),
+            ("Mars", false, new[] { "Phobos", "Deimos" }, true),
+            ("Ceres", false, new string[0], false),
+            ("Vesta", false, new string[0], false),
+            ("Jupiter", true, new[] { "Io", "Europa", "Ganymede", "Callisto", "Amalthea", "Himalia" }, true),
+            ("Saturn", true, new[] { "Mimas", "Enceladus", "Tethys", "Dione", "Rhea", "Titan", "Iapetus" }, true),
+            ("Uranus", true, new[] { "Miranda", "Ariel", "Umbriel", "Titania", "Oberon" }, true),
+            ("Neptune", true, new[] { "Triton", "Proteus" }, true),
+            ("Pluto", false, new[] { "Charon" }, false),
+            ("Eris", false, new[] { "Dysnomia" }, false),
+            ("Haumea", false, new string[0], false),
+            ("Makemake", false, new string[0], false)
+        };
+        for (int i = 0; i < planets.Length; i++)
+        {
+            (string name, bool gas, string[] moons, bool stationary) = planets[i];
+            LayoutNode lo = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+            Transfer(sol, lo, depart: 3000 + i * 500, arrive: 2000 + i * 400);
+            if (gas)
+            {
+                LadderEdge(lo, Node(name + ".Stationary", name + " Stationary", LayoutKind.Stationary, rank: 1), 9000);
+                LadderEdge(lo, Node(name + ".SoiEdge", name + " SOI Edge", LayoutKind.SoiEdge, rank: 1), 4000 + i * 100);
+            }
+            else
+            {
+                Ladder(lo, name, surfaceDv: 2000 + i * 500, stationaryDv: stationary ? 900 + i * 50 : (double?)null, soiDv: 600 + i * 80);
+            }
+            for (int m = 0; m < moons.Length; m++)
+            {
+                LayoutNode moon = Node(moons[m] + ".LO", moons[m] + " Low Orbit", LayoutKind.LowOrbit, rank: 2);
+                Transfer(lo, moon, depart: 500 + m * 180, arrive: 200 + m * 80);
+                Ladder(moon, moons[m], surfaceDv: 300 + m * 180, stationaryDv: null, soiDv: null);
+            }
+        }
+        MinorGroup(sol, "Sol", "+2892 asteroids");
+
+        return LayoutTree.FromRoot("synthetic-real-like-sol", root);
+    }
+
+    // Another star system collapsed to one node, the way the map shows it until it is opened:
+    // its root hub as a star-system stub, labelled with its distance, with the summary of what
+    // it holds.
+    public static LayoutTree BuildSystemStub(string id, bool barycenter, string distance = "4.344 ly", string summary = "")
+    {
+        LayoutNode root = new LayoutNode
+        {
+            Id = id + ".Hub",
+            Label = id + "  " + distance,
+            ShortLabel = id + "  " + distance,
+            BodyId = id,
+            Kind = LayoutKind.Hub,
+            Rank = 0,
+            HubRole = barycenter ? HubRole.Barycenter : HubRole.Star,
+            IsSystemStub = true,
+            Summary = summary
+        };
+        return Part(root, "system-" + id);
+    }
+
+    // An opened multiple star system: a barycenter hub with its parking orbit, three stars each
+    // with a parking orbit, and two planets under the last star, every hop a dV-free Approach
+    // (a transfer-class edge of zero dV, as VisualTreeAdapter maps it). The root carries its
+    // distance and summary like the collapsed stub of the same system.
+    public static LayoutTree BuildBarycenterSystem(string id, string distance = "4.344 ly", string summary = "")
+    {
+        LayoutNode bary = HubNode(id, id + "  " + distance, HubRole.Barycenter, summary);
+        Approach(bary, Node(id + ".Parking", id + " Parking Orbit", LayoutKind.LowOrbit, rank: 0));
+        for (int i = 0; i < 3; i++)
+        {
+            string star = id + "Star" + i.ToString(Inv);
+            LayoutNode hub = HubNode(star, star + " Hub", HubRole.Star);
+            Approach(bary, hub);
+            Approach(hub, Node(star + ".Parking", star + " Parking Orbit", LayoutKind.LowOrbit, rank: 0));
+            if (i == 2)
+            {
+                for (int p = 0; p < 2; p++)
+                {
+                    string planet = star + (p == 0 ? "b" : "d");
+                    LayoutNode lo = Node(planet + ".LO", planet + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+                    Approach(hub, lo);
+                    LadderEdge(lo, Node(planet + ".Surface", planet + " Surface", LayoutKind.Surface, rank: 1), 4000 + p * 900);
+                }
+            }
+        }
+        return Part(bary, "system-" + id);
+    }
+
+    // An opened single-star system: the star hub with its parking orbit and four planets.
+    public static LayoutTree BuildStarSystem(string id, string distance = "5.963 ly", string summary = "")
+    {
+        LayoutNode star = HubNode(id, id + "  " + distance, HubRole.Star, summary);
+        Approach(star, Node(id + ".Parking", id + " Parking Orbit", LayoutKind.LowOrbit, rank: 0));
+        for (int p = 0; p < 4; p++)
+        {
+            string planet = id + (char)('b' + p);
+            LayoutNode lo = Node(planet + ".LO", planet + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+            Approach(star, lo);
+            LadderEdge(lo, Node(planet + ".Surface", planet + " Surface", LayoutKind.Surface, rank: 1), 3000 + p * 700);
+        }
+        return Part(star, "system-" + id);
+    }
+
+    // A hub keyed by its body like the adapter keys it. A system root keeps its whole title as
+    // the short label, any other hub its body name.
+    private static LayoutNode HubNode(string id, string label, HubRole role, string summary = "")
+    {
+        return new LayoutNode
+        {
+            Id = id + ".Hub",
+            Label = label,
+            ShortLabel = label.Contains("  ", StringComparison.Ordinal) ? label : id,
+            BodyId = id,
+            Kind = LayoutKind.Hub,
+            Rank = 0,
+            HubRole = role,
+            Summary = summary
+        };
+    }
+
+    // A part is laid out as its own tree, but only the ego root is the map's root.
+    private static LayoutTree Part(LayoutNode root, string name)
+    {
+        LayoutTree tree = LayoutTree.FromRoot(name, root);
+        root.IsRoot = false;
+        root.IsSystemRoot = true;
+        return tree;
+    }
+
+    private static void Approach(LayoutNode from, LayoutNode to)
+    {
+        from.AddChild(new LayoutEdge { From = from, To = to, Class = EdgeClass.Transfer, Dv = 0.0, IsApproach = true });
+    }
+
     // A collapsed minor-body group hanging off a hub: a MinorGroup node reached by a dV-free
     // transfer-class edge (what VisualTreeAdapter maps a GroupLink to), with no children. The
     // zero dV lands it one band below the hub (cumulative) or in its own well on the spine
@@ -189,10 +405,9 @@ internal static class SyntheticTree
     }
 
     // A deliberately large tree (~1800 nodes) to stress the Barnes-Hut spring repulsion and the
-    // iteration cap offline. The all-pairs repulsion this replaced would be ~1800^2 per
-    // iteration over the draw thread (the freeze); Barnes-Hut keeps it near O(n log n). Only the
-    // dot-overlap and label checks run for Spring, and the grid snap must still leave no two
-    // dots sharing a cell at this scale.
+    // iteration cap offline. An all-pairs repulsion would be ~1800^2 per iteration on the draw
+    // thread; Barnes-Hut keeps it near O(n log n). Only the dot-overlap and label checks run for
+    // Spring, and the grid snap must still leave no two dots sharing a cell at this scale.
     public static LayoutTree BuildSpringStress()
     {
         LayoutNode root = Node("Hub.LO", "Hub Low Orbit", LayoutKind.LowOrbit, rank: 1);
@@ -339,9 +554,24 @@ internal static class SyntheticTree
         return baseName + " " + rung;
     }
 
+    // The overview label and body key are the label without its rung, as the adapter gives
+    // them in game, so a check at fit zoom sees the labels the map really shows.
     private static LayoutNode Node(string id, string label, LayoutKind kind, int rank)
     {
-        return new LayoutNode { Id = id, Label = label, Kind = kind, Rank = rank };
+        string body = BodyName(label);
+        return new LayoutNode { Id = id, Label = label, ShortLabel = body, BodyId = body, Kind = kind, Rank = rank };
+    }
+
+    private static readonly string[] Rungs = { " Low Orbit", " Parking Orbit", " Orbit", " Surface", " Stationary", " SOI Edge", " Intercept" };
+
+    private static string BodyName(string label)
+    {
+        foreach (string rung in Rungs)
+        {
+            if (label.EndsWith(rung, System.StringComparison.Ordinal))
+                return label.Substring(0, label.Length - rung.Length);
+        }
+        return label;
     }
 
     private static void Transfer(LayoutNode from, LayoutNode to, double depart, double arrive, bool approximate = false)
