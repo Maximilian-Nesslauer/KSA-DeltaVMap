@@ -149,6 +149,18 @@ internal static class DeltaVCalculator
         dvB = Math.Abs(vBodyB - VisVivaSpeed(muHub, rB, aTransfer));
     }
 
+    // Two-impulse transfer around a hub between two bodies that move at their own speeds v1 and
+    // v2 at the rendezvous radii, while the transfer ellipse feels the hub's full mu. Stars of a
+    // multiple system orbit their barycenter under a central mass that differs from the
+    // barycenter mass the vessel feels, so their speed is not the hub's circular speed. With
+    // v1 and v2 equal to the hub's circular speeds this is exactly Hohmann.
+    public static void TransferBetweenSpeeds(double muHub, double r1, double v1, double r2, double v2, out double dv1, out double dv2)
+    {
+        double aTransfer = (r1 + r2) / 2.0;
+        dv1 = Math.Abs(v1 - VisVivaSpeed(muHub, r1, aTransfer));
+        dv2 = Math.Abs(v2 - VisVivaSpeed(muHub, r2, aTransfer));
+    }
+
     // Speed at periapsis on any conic of eccentricity e: v = sqrt(mu * (1 + e) / r_peri). It
     // reduces to the circular speed at e = 0, the escape speed at e = 1, and exceeds escape
     // for a hyperbola, so it gives the true (fast) speed of a comet at its closest approach.

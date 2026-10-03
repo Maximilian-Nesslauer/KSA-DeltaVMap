@@ -6,9 +6,10 @@ namespace DeltaVMap.Route;
 // One edge on a route, plus the direction it is traversed. Forward means From -> To
 // (away from the tree root, the natural edge direction); a backward step climbs from
 // To up to From toward the root. Ladder dV is symmetric so direction does not change
-// its cost, and transfers are only ever traversed forward on a real route (the origin
-// always sits on the root body's ladder), but the flag keeps the labels right and lets
-// the return trip reuse the same steps reversed.
+// its cost, and transfers, Interstellar and Approach edges are only ever traversed
+// forward on a real route (the origin sits on the root body's ladder, or on its cruise
+// "you are here" node), but the flag keeps the labels right and lets the return trip
+// reuse the same steps reversed.
 internal readonly struct RouteStep
 {
     public readonly Edge Edge;
@@ -34,7 +35,8 @@ internal sealed class RoutePath
 // Finds the unique path between two nodes of the re-rooted tree. Because it is a tree,
 // the path is origin -> lowest common ancestor -> target: walk up from each to the LCA
 // and stitch the two halves. The origin is the route origin ("you are here", or the
-// root surface when from-surface is on); the target is the clicked destination.
+// root surface when from-surface is on); the target is the clicked destination, which
+// may sit in another star system below an Interstellar edge of the same tree.
 internal static class RouteFinder
 {
     public static RoutePath? FindPath(StateNode origin, StateNode target)
@@ -67,7 +69,7 @@ internal static class RouteFinder
         }
 
         // No shared ancestor means the two nodes are in different trees, which cannot
-        // happen for one re-rooted system; guard rather than crash.
+        // happen because every star system hangs in one tree; guard rather than crash.
         if (cursor == null)
             return null;
 

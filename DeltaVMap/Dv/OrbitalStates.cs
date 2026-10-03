@@ -7,10 +7,11 @@ namespace DeltaVMap.Dv;
 // The kind of state a node represents on a body's ladder, or its role in the
 // re-rooted graph. Surface through YouAreHere are physical ladder rungs (built by
 // BuildLadder, classified by StateClassifier). Hub is an ancestor body rendered as
-// a horizontal bus (the star is the topmost one); Intercept is the arrival node for
-// a body too small to hold an orbit (a flyby/landing-only destination). MinorGroup is
-// a synthetic aggregate: when a hub carries more minor bodies than the map can show as
-// lanes, all of them collapse into one "+N" group node hanging off that hub.
+// a horizontal bus (the system root, a star or a barycenter, is the topmost one).
+// Intercept is the arrival node for a body too small to hold an orbit (a flyby or
+// landing-only destination). MinorGroup is a synthetic aggregate: when a hub carries
+// more minor bodies than the map can show as lanes, all of them collapse into one "+N"
+// group node hanging off that hub.
 internal enum StateKind
 {
     Surface,
@@ -54,6 +55,9 @@ internal sealed class BodyLadder
     // (tiny moons like Deimos). Such bodies are surface-only / flyby destinations
     // and carry no LowOrbit, Stationary or SoiEdge rungs.
     public bool CanHoldOrbit { get; init; }
+    // True for a star or barycenter ladder (OrbitalStates.BuildHubLadder), whose low orbit is a
+    // wide parking orbit rather than a rung above a surface.
+    public bool IsHubOnly { get; init; }
     public required IReadOnlyList<LadderRung> Rungs { get; init; }
 }
 
@@ -153,12 +157,10 @@ internal static class OrbitalStates
     // The rendezvous radius to use for a transfer. For closed orbits this matches the
     // EffectiveRadius the game itself uses. Open orbits (comets, e >= 1) have no apoapsis,
     // so (Apoapsis + Periapsis) / 2 would be garbage (a hyperbolic apoapsis is negative);
-    // their natural rendezvous point is the perihelion (closest approach to the hub). The
-    // periapsis radius alone used to badly understate the cost because the downstream
-    // Hohmann then treated the comet as a slow circular body there; DeltaVCalculator.
-    // ConicTransfer now matches the comet's real (fast) perihelion speed instead, so the
-    // perihelion is the correct rendezvous radius rather than a coarse stand-in. The caller
-    // still flags such transfers as approximate.
+    // their natural rendezvous point is the perihelion (closest approach to the hub).
+    // DeltaVCalculator.ConicTransfer matches the comet's real (fast) perihelion speed there,
+    // so the perihelion is the rendezvous radius, not a circular stand-in. The caller flags
+    // such transfers as approximate.
     public static double TransferRadius(Orbit orbit)
     {
         if (orbit.Eccentricity >= 1.0)
@@ -217,6 +219,61 @@ internal static class OrbitalStates
             SoiRadius = rSoi,
             HasSurface = hasSurface,
             CanHoldOrbit = canHoldOrbit,
+            Rungs = rungs
+        };
+    }
+
+    // Parking radius around a star or barycenter: 1 AU, the periapsis the game's interstellar
+    // planner aims at around a destination root.
+    public const double HubParkingRadius = InterstellarMath.AstronomicalUnit;
+
+    // The parking radius actually used around a star or barycenter for a requested one: kept
+    // inside half a finite SOI (an orbiting star's) and clear of the photosphere. The map's hub
+    // ladder and the interstellar capture both go through here, so they agree for one star.
+    public static double HubParkingRadiusFor(double requested, double meanRadius, double? soiRadius)
+    {
+        double r = requested;
+        if (soiRadius.HasValue)
+            r = Math.Min(r, 0.5 * soiRadius.Value);
+        return Math.Max(r, 2.0 * meanRadius);
+    }
+
+    // Relative difference above which an orbit's own central mass counts as different from its
+    // parent's mass (an orbit authored as barycentric or two-body).
+    private const double CentralMassTolerance = 1e-9;
+
+    // True when a body moves under its own central mass (Orbit.Mu) rather than the hub mass
+    // muHub, as the stars of a multiple system do. Such a body's speed comes from Orbit.Mu, and
+    // a transfer to it is only a rough estimate.
+    public static bool HasOwnCentralMass(Orbit orbit, double muHub)
+    {
+        return Math.Abs(orbit.Mu - muHub) > CentralMassTolerance * muHub;
+    }
+
+    // The ladder of a hub-only body (a star or a barycenter). It has no surface rung, because
+    // nothing lands on a star and a barycenter is an empty point with no radius at all. Its one
+    // parking rung is a wide orbit at HubParkingRadius.
+    public static BodyLadder BuildHubLadder(IParentBody body)
+    {
+        double meanRadius = body.MeanRadius;
+        double? rSoi = FiniteSoiRadius(body);
+        double rPark = HubParkingRadiusFor(HubParkingRadius, meanRadius, rSoi);
+
+        var rungs = new List<LadderRung>(2) { new LadderRung(StateKind.LowOrbit, rPark) };
+        if (rSoi.HasValue && rSoi.Value > rPark)
+            rungs.Add(new LadderRung(StateKind.SoiEdge, rSoi.Value));
+
+        return new BodyLadder
+        {
+            Body = body,
+            MeanRadius = meanRadius,
+            Mu = body.Mu,
+            LowOrbitRadius = rPark,
+            StationaryRadius = null,
+            SoiRadius = rSoi,
+            HasSurface = false,
+            CanHoldOrbit = true,
+            IsHubOnly = true,
             Rungs = rungs
         };
     }

@@ -13,8 +13,8 @@ internal readonly struct BuildOptions
     // collapse into a single "+N" group node instead of one lane each (so a dense belt does
     // not blow the map up to hundreds of thousands of pixels), and the "+N" is the full
     // count. It sits comfortably above the busiest stock hub (Sol, with 9 minor children) so
-    // the stock map collapses nothing and looks exactly as before, while a dense system's
-    // hundreds-to-thousands collapse. Tunable.
+    // the stock map collapses nothing and keeps one lane per minor body, while a dense
+    // system's hundreds-to-thousands collapse. Tunable.
     public const int DefaultMinorGroupThreshold = 24;
 
     public readonly bool FullLadder;

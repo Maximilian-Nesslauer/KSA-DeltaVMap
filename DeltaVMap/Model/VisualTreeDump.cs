@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Brutal.Logging;
+using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using KSA;
 
@@ -12,7 +13,9 @@ namespace DeltaVMap.Model;
 // graph model end to end without any layout or rendering: ancestors should show
 // as hub buses, siblings should branch off them, ladders should be inserted, edge
 // dV should be present, distant bodies should collapse to core rungs, and
-// re-rooting at a moon should climb moon -> planet hub -> star hub.
+// re-rooting at a moon should climb moon -> planet hub -> star hub. Each further
+// star system is dumped from its root and from its first planet; with several star
+// systems every tree also carries the others below its Interstellar edges.
 internal static class VisualTreeDump
 {
     private const string Tag = "[DvMap]";
@@ -45,7 +48,30 @@ internal static class VisualTreeDump
         DumpGasGiant(graph, cache);
         DumpEgoRoot(graph, cache);
 
+        // Every other star system: its root hub (a barycenter climbs to its stars) and its first
+        // planet, which climbs the spine through its star.
+        for (int i = 1; i < graph.Roots.Count; i++)
+        {
+            PhysicalNode root = graph.Roots[i];
+            DumpRootByName(graph, cache, root.Id, "other system root");
+            if (FirstPlanet(root) is PhysicalNode planet)
+                DumpRootByName(graph, cache, planet.Id, "other system planet");
+        }
+
         DefaultCategory.Log.Info($"{Tag} === End visual tree dump ===");
+    }
+
+    // The first non-hub body under a root, depth first in the graph's order.
+    internal static PhysicalNode? FirstPlanet(PhysicalNode node)
+    {
+        foreach (PhysicalNode child in node.Children)
+        {
+            if (!child.IsHubOnly)
+                return child;
+            if (FirstPlanet(child) is PhysicalNode deeper)
+                return deeper;
+        }
+        return null;
     }
 
     private static void DumpRootByName(SystemGraph graph, DvCache cache, string id, string role)
@@ -70,7 +96,7 @@ internal static class VisualTreeDump
             chosen = null;
             foreach (PhysicalNode node in SortedById(graph))
             {
-                if (node.IsStar || node.Ladder.HasSurface)
+                if (node.IsHubOnly || node.Ladder.HasSurface)
                     continue;
                 if (chosen == null || node.Ladder.MeanRadius > chosen.Ladder.MeanRadius)
                     chosen = node;
@@ -101,7 +127,7 @@ internal static class VisualTreeDump
             return;
         }
 
-        ClassifiedState state = StateClassifier.Classify(vehicle, node.Ladder);
+        ClassifiedState state = node.IsHubOnly ? StateClassifier.ClassifyCruise(vehicle) : StateClassifier.Classify(vehicle, node.Ladder);
         DefaultCategory.Log.Info(FormattableString.Invariant(
             $"{Tag} Ego: '{vehicle.Id}' around '{node.Id}' classified as {state.Kind} at r={state.Radius / 1000.0:F1}km."));
         DumpTree(graph, cache, node, state, "ego root");
@@ -162,6 +188,12 @@ internal static class VisualTreeDump
                     $"-[Transfer {approx}dep {dv.DepartDv:F0}/arr {dv.ArriveDv:F0} m/s, t {FormatTime(edge.TransferTimeSeconds)}]->");
             case SegmentKind.HubLink:
                 return "-[HubLink]->";
+            case SegmentKind.GroupLink:
+                return "-[GroupLink]->";
+            case SegmentKind.Interstellar:
+                return "-[Interstellar " + Format.Distance(edge.InterstellarDistance) + "]->";
+            case SegmentKind.Approach:
+                return "-[Approach]->";
             default:
                 return FormattableString.Invariant($"-[{edge.Kind} {edge.LadderDv:F0} m/s]->");
         }
@@ -196,16 +228,6 @@ internal static class VisualTreeDump
 
     private static string FormatTime(double seconds)
     {
-        if (seconds <= 0.0)
-            return "-";
-        double hours = seconds / 3600.0;
-        if (hours < 1.0)
-            return FormattableString.Invariant($"{seconds / 60.0:F0} min");
-        if (hours < 48.0)
-            return FormattableString.Invariant($"{hours:F1} h");
-        double days = hours / 24.0;
-        if (days < 365.0)
-            return FormattableString.Invariant($"{days:F1} d");
-        return FormattableString.Invariant($"{days / 365.0:F1} yr");
+        return seconds > 0.0 ? Format.Duration(seconds) : "-";
     }
 }

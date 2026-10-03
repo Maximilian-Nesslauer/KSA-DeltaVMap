@@ -2,7 +2,7 @@ using System.Collections.Generic;
 
 namespace DeltaVMap.Model;
 
-// One ancestor hub on the spine from the ego root up to the star. The hub body is
+// One ancestor hub on the spine from the ego root up to the system root. The hub body is
 // drawn as a horizontal bus, never a point node, which is what eliminates the
 // starburst. SpineChild is the body we ascended through (it is reached from below,
 // so it is not branched again); OtherChildren are its siblings, each of which
@@ -16,7 +16,8 @@ internal sealed class HubLevel
 }
 
 // The structural result of re-rooting at a body: the ego root plus the ordered
-// chain of ancestor hubs leading up to the star (nearest hub first, star last).
+// chain of ancestor hubs leading up to the system root, a star or a barycenter
+// (nearest hub first, system root last).
 internal sealed class ReRootResult
 {
     public required PhysicalNode Root { get; init; }
@@ -25,7 +26,8 @@ internal sealed class ReRootResult
 
 // Re-roots the physical tree at any body by walking its parent chain. Each ancestor
 // becomes a hub bus with the siblings of the body we came up through hanging off
-// it. Re-rooting at a moon therefore climbs moon -> planet hub -> star hub, exactly
+// it. Re-rooting at a moon therefore climbs moon -> planet hub -> star hub, and a
+// planet of a star in a multiple system climbs further to the barycenter hub, exactly
 // the spine the visual tree then materializes. Surface-only bodies (no orbit
 // ladder) re-root the same way; they simply contribute no rungs of their own.
 internal static class ReRooter

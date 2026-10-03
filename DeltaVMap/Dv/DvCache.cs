@@ -35,7 +35,8 @@ internal readonly struct EdgeDv
 // Transfer dV cached by unordered body pair. Keplerian orbits are fixed, so values
 // are computed once and never invalidated. The dictionary key is the
 // lexicographically ordered pair of body Ids; lookups for the reverse direction
-// reuse the stored value with the two burn legs swapped.
+// reuse the stored value with the two burn legs swapped. Body Ids are unique across
+// every star system of one loaded CelestialSystem, so one cache serves all of them.
 internal sealed class DvCache
 {
     private readonly Dictionary<(string, string), EdgeDv> _cache = new();
@@ -79,6 +80,9 @@ internal sealed class DvCache
             throw new ArgumentException(
                 $"Transfer requires two bodies sharing one hub, got '{from.Id}' (parent '{fromOrbit.Parent?.Id}') and '{to.Id}' (parent '{toOrbit.Parent?.Id}').");
 
+        // The vessel's transfer ellipse feels the hub's point mass, but a body on an orbit with
+        // its own central mass (Orbit.Mu differs from Parent.Mu, as for the stars of a multiple
+        // system) moves at the speed that central mass gives it.
         double muHub = fromOrbit.Parent.Mu;
         double r1 = OrbitalStates.TransferRadius(fromOrbit);
         double r2 = OrbitalStates.TransferRadius(toOrbit);
@@ -87,15 +91,28 @@ internal sealed class DvCache
         // keeps the exact circular Hohmann, so stock planet-to-planet numbers are unchanged.
         bool fromOpen = fromOrbit.Eccentricity >= 1.0;
         bool toOpen = toOrbit.Eccentricity >= 1.0;
+        bool ownCentralMass = OrbitalStates.HasOwnCentralMass(fromOrbit, muHub) || OrbitalStates.HasOwnCentralMass(toOrbit, muHub);
         double departDv;
         double arriveDv;
         if (fromOpen || toOpen)
+        {
             DeltaVCalculator.ConicTransfer(muHub, r1, fromOpen, fromOrbit.Eccentricity, r2, toOpen, toOrbit.Eccentricity, out departDv, out arriveDv);
+        }
+        else if (ownCentralMass)
+        {
+            double v1 = DeltaVCalculator.CircularSpeed(fromOrbit.Mu, r1);
+            double v2 = DeltaVCalculator.CircularSpeed(toOrbit.Mu, r2);
+            DeltaVCalculator.TransferBetweenSpeeds(muHub, r1, v1, r2, v2, out departDv, out arriveDv);
+        }
         else
+        {
             DeltaVCalculator.Hohmann(muHub, r1, r2, out departDv, out arriveDv);
+        }
 
         double transferTime = DeltaVCalculator.TransferTimeSeconds(muHub, r1, r2);
-        bool isApproximate = fromOpen || toOpen;
+        // A pair with its own central mass is a multiple-star pair: eccentric, mutually bound
+        // orbits that a two-impulse estimate only roughly covers.
+        bool isApproximate = fromOpen || toOpen || ownCentralMass;
 
         return new EdgeDv(departDv, arriveDv, transferTime, isApproximate);
     }

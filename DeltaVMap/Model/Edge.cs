@@ -15,6 +15,14 @@ namespace DeltaVMap.Model;
 // spokes instead. GroupLink likewise carries no dV: it hangs a synthetic "+N" minor-body
 // group off its hub. It is a spoke, not part of the spine bus, so it is kept distinct
 // from HubLink (which the layout treats as the horizontal hub row).
+//
+// Interstellar joins the ego system's root hub to another star system's root hub. It
+// carries only the distance between the two roots: its cost depends on the cruise speed
+// the player picks, so the route accumulator folds it into one interstellar leg and the
+// route panel prices that leg at display time. Approach edges build the destination
+// system under it and carry no dV either: the arrival is one patched-conic chain into the
+// body the route ends at (InterstellarLegs), so the edges in between only say where the
+// route goes, never what a hop costs.
 internal enum SegmentKind
 {
     Ascent,
@@ -23,7 +31,9 @@ internal enum SegmentKind
     Capture,
     Transfer,
     HubLink,
-    GroupLink
+    GroupLink,
+    Interstellar,
+    Approach
 }
 
 // Display-only feasibility markers, filled in by the routing code. Kept here so the
@@ -40,7 +50,7 @@ internal enum EdgeFlags
 // One edge in the visual tree. From is the node closer to the root, To the node
 // further out. The cost lives in exactly one of two places depending on Kind: a
 // ladder edge uses LadderDv, a Transfer edge uses Transfer (the two v_inf legs).
-// HubLink edges carry neither. PlaneChangeDv is additive and optional, excluded
+// HubLink, GroupLink, Interstellar and Approach edges carry neither. PlaneChangeDv is additive and optional, excluded
 // from the baseline total and only shown when the plane-change toggle is on.
 internal sealed class Edge
 {
@@ -74,6 +84,10 @@ internal sealed class Edge
     public double PlaneChangeDv { get; init; }
 
     public EdgeFlags Flags { get; init; }
+
+    // Straight-line distance in meters between the two system roots of an Interstellar edge,
+    // as SystemGraph.Distance measures it. Zero on every other edge.
+    public double InterstellarDistance { get; init; }
 
     public bool IsTransfer => Kind == SegmentKind.Transfer;
     public bool IsStructural => Kind == SegmentKind.HubLink;

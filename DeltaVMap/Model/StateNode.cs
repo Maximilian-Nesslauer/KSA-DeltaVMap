@@ -6,8 +6,9 @@ namespace DeltaVMap.Model;
 
 // One node in the re-rooted visual tree: a state you can be in (a ladder rung, a
 // dynamic "you are here", a flyby intercept) or a pure hub bus (an ancestor body
-// in transfer). Nodes form a tree rooted at the ego body: Parent points toward the
-// root, Out lists the edges leading away from it. The Id is stable across rebuilds
+// in transfer). Nodes form a tree rooted at the ego body, which also holds the other
+// star systems below their Interstellar edges: Parent points toward the root, Out
+// lists the edges leading away from it. The Id is stable across rebuilds
 // ("<body>.<state>", e.g. "Luna.LowOrbit", "Sol.Hub") so selection and layout
 // caches can key off it.
 internal sealed class StateNode
@@ -34,6 +35,10 @@ internal sealed class StateNode
     // True when the controlled vehicle's classified state lands on (or snaps to)
     // this node. At most one node per tree carries it.
     public bool IsYouAreHere { get; set; }
+
+    // Set on a cruise "you are here" node whose vehicle is on an open orbit around its star or
+    // barycenter (ClassifiedState.IsOpenCruise). The router then prices no cruise legs from it.
+    public bool IsOpenCruise { get; init; }
 
     // Set only on a MinorGroup node: the minor bodies aggregated into this "+N" group,
     // in the graph's deterministic order. It lets search / isolate later surface a chosen

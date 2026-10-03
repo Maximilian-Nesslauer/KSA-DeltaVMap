@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Brutal.Logging;
+using DeltaVMap.Model;
 using KSA;
 
 namespace DeltaVMap.Dv;
@@ -30,8 +31,8 @@ internal static class DvValidationDump
         ReadOnlySpan<Astronomical> all = system.All.AsSpan();
         for (int i = 0; i < all.Length; i++)
         {
-            // Planets and moons carry ladders; the star is hub-only and vehicles
-            // are not destinations.
+            // Planets and moons carry ladders; stars and barycenters are hub-only and
+            // vehicles are not destinations.
             if (all[i] is Celestial body)
                 LogBodyLadder(body);
         }
@@ -102,8 +103,11 @@ internal static class DvValidationDump
             return;
         }
 
-        BodyLadder ladder = OrbitalStates.BuildLadder(vehicle.Parent);
-        ClassifiedState state = StateClassifier.Classify(vehicle, ladder);
+        // A star or barycenter parent is hub-only: its ladder is a parking orbit, and the vessel
+        // is classified at its own radius around it.
+        bool hubParent = vehicle.Parent is Astronomical parent && SystemGraph.IsHubOnlyBody(parent);
+        BodyLadder ladder = hubParent ? OrbitalStates.BuildHubLadder(vehicle.Parent) : OrbitalStates.BuildLadder(vehicle.Parent);
+        ClassifiedState state = hubParent ? StateClassifier.ClassifyCruise(vehicle) : StateClassifier.Classify(vehicle, ladder);
 
         // The mod's own reading, not NavBallData.DeltaV: stock only refreshes that in flight while
         // the staging window or engine control gauge is open, so at the point this dump runs it is
