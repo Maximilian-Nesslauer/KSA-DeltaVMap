@@ -7,7 +7,8 @@ using KSA;
 namespace DeltaVMap.Model;
 
 // The re-rooted visual tree: the physical tree turned inside out so the ego body
-// sits at the root, its ancestors become hub buses climbing to the star, and every
+// sits at the root, its ancestors become hub buses climbing to the system root (a
+// star, or the barycenter of a multiple star system), and every
 // body's ladder hangs off the structure. This is the data the layout and routing
 // code consume; it carries no positions and does no rendering.
 //
@@ -23,6 +24,14 @@ namespace DeltaVMap.Model;
 //    pairwise EdgeDv intact and avoids a starburst.
 //  - Transfer edges wrap the EdgeDv and are never collapsed; the actual burns are
 //    derived per route when one is selected.
+//  - When the loaded universe holds several star systems, the ego system's root hub
+//    also carries one Interstellar edge per other system (nearest first, at most
+//    SystemGraph.MaxShownSystems, the rest in one "+N star systems" group). Under it
+//    the destination system hangs from dV-free Approach edges: a star or barycenter is
+//    a hub with a parking-orbit leaf and its children below, a planet or moon is its
+//    ladder with its moons below. One tree keeps routing, selection and the route
+//    highlight the same for every target; the layout cuts the tree at the Interstellar
+//    edges and draws each destination as its own part.
 internal sealed class VisualTree
 {
     public required string SystemId { get; init; }
@@ -32,6 +41,26 @@ internal sealed class VisualTree
 
     // The node carrying the controlled vehicle's classified state, if any.
     public StateNode? YouAreHere { get; init; }
+
+    // The ego system's root hub, the node every Interstellar edge leaves from.
+    public required StateNode SystemHub { get; init; }
+
+    // The Interstellar edges, nearest destination first. Empty with a single star system.
+    public required IReadOnlyList<Edge> InterstellarEdges { get; init; }
+
+    private readonly Dictionary<(string BodyId, StateKind Kind), StateNode> _byBody = new();
+
+    // The node of one body in one state, or null when the tree does not hold it.
+    public StateNode? FindBodyNode(string bodyId, StateKind kind)
+    {
+        return _byBody.TryGetValue((bodyId, kind), out StateNode? node) ? node : null;
+    }
+
+    private void IndexBodies()
+    {
+        for (int i = 0; i < Nodes.Count; i++)
+            _byBody.TryAdd((Nodes[i].Body.Id, Nodes[i].Kind), Nodes[i]);
+    }
 
     public static VisualTree Build(SystemGraph graph, DvCache cache, PhysicalNode root, ClassifiedState? egoState, BuildOptions options)
     {
@@ -49,6 +78,7 @@ internal sealed class VisualTree
         private readonly DetailLevel _detail;
         private readonly BuildOptions _options;
         private readonly List<StateNode> _nodes = new();
+        private readonly List<Edge> _interstellar = new();
         private StateNode? _youAreHere;
 
         public Builder(SystemGraph graph, DvCache cache, DetailLevel detail, BuildOptions options)
@@ -60,11 +90,9 @@ internal sealed class VisualTree
         }
 
         // Whether a destination body is shown given the visibility toggles. A minor body
-        // (asteroid / comet / minor) drops when "show minor bodies" is off; a comet drops
-        // when "show comets" is off. Major bodies (planets, moons) are always shown. The
-        // root and spine ancestors are never passed here, so they are never hidden. This
-        // assumes every small body derives from MinorBody (Comet does), which holds in stock;
-        // a future small-body type outside that hierarchy would need adding here.
+        // (PhysicalNode.IsMinor) drops when "show minor bodies" is off; a comet drops when
+        // "show comets" is off. Major bodies (planets, moons, stars) are always shown. The
+        // root and spine ancestors are never passed here, so they are never hidden.
         private bool Include(PhysicalNode body)
         {
             Astronomical a = body.Astro;
@@ -74,7 +102,7 @@ internal sealed class VisualTree
             if (_options.IsRevealed(body.Id))
                 return true;
 
-            bool minor = a is MinorBody;
+            bool minor = body.IsMinor;
             // Isolate keeps only the spine, the major bodies and revealed bodies, so it hides
             // every un-revealed minor body (asteroids and comets alike).
             if (_options.Isolate && minor)
@@ -93,37 +121,57 @@ internal sealed class VisualTree
             StateNode rootNode;
             StateNode spineTail;
 
-            if (root.IsStar)
+            if (root.IsHubOnly)
             {
-                // Interplanetary-cruise root: the star has no ladder, so its hub bus
-                // is the tree root and planets hang off it. There is no well-defined
-                // parking origin here; the real origin is the vehicle's actual
-                // heliocentric orbit, resolved by the router. Link planets structurally.
+                // Cruise root: a star or barycenter is hub-only, so its hub bus is the tree
+                // root and its planets (or, under a barycenter, its stars) hang off it. There
+                // is no well-defined parking origin here; the real origin is the vehicle's
+                // actual orbit around the root, resolved by the router. Link them
+                // structurally. A star of a multiple system then climbs the spine to its
+                // barycenter like any other root, so its sibling stars stay reachable.
                 StateNode starHub = NewHub(root);
                 rootNode = starHub;
                 if (egoState.HasValue)
                     AttachCruiseYouAreHere(starHub, root, egoState.Value);
-                AddChildren(starHub, root.Children, child =>
+
+                // A vessel coasting on an open orbit around a system root (arriving from or
+                // leaving for another star system) has no orbit to transfer from, so with
+                // several systems its targets are priced from its measured excess: they hang
+                // from Approach edges like a destination system, the root's parking orbit
+                // included, so a capture chosen at that system's stub survives the crossing.
+                // The route panel prices them only while the vessel still falls inward.
+                if (egoState is { IsOpenCruise: true } && root.IsSystemRoot && _graph.HasSeveralSystems)
+                {
+                    ConnectApproach(starHub, NewNode(root, StateKind.LowOrbit, root.Ladder.LowOrbitRadius));
+                    AddChildren(starHub, root.Children, child => ConnectApproach(starHub, BuildDestination(child)));
+                }
+                else
+                {
+                    AddChildren(starHub, root.Children, child =>
+                    {
+                        LadderNodes childLadder = BuildBodySubtree(child);
+                        ConnectHubLink(starHub, childLadder.ArrivalAnchor);
+                    });
+                }
+                spineTail = starHub;
+            }
+            else
+            {
+                // Normal root: build its ladder (with the you-are-here marker), branch its
+                // moons off its local hub, then climb the spine of ancestor hubs.
+                LadderNodes rootLadder = BuildLadder(root, egoState, asDestination: false);
+                rootNode = rootLadder.LocalHub;
+
+                AddChildren(rootLadder.LocalHub, root.Children, child =>
                 {
                     LadderNodes childLadder = BuildBodySubtree(child);
-                    ConnectHubLink(starHub, childLadder.ArrivalAnchor);
+                    ConnectTransfer(rootLadder.LocalHub, childLadder.ArrivalAnchor,
+                        DirectTransfer(root.Body.Mu, rootLadder.LocalHubRadius, false, 0.0, TransferRadius(child), IsOpenOrbit(child), Ecc(child)));
                 });
-                return Finish(rootNode, root.Id);
+
+                spineTail = rootLadder.LocalHub;
             }
 
-            // Normal root: build its ladder (with the you-are-here marker), branch its
-            // moons off its local hub, then climb the spine of ancestor hubs.
-            LadderNodes rootLadder = BuildLadder(root, egoState, asDestination: false);
-            rootNode = rootLadder.LocalHub;
-
-            AddChildren(rootLadder.LocalHub, root.Children, child =>
-            {
-                LadderNodes childLadder = BuildBodySubtree(child);
-                ConnectTransfer(rootLadder.LocalHub, childLadder.ArrivalAnchor,
-                    DirectTransfer(root.Body.Mu, rootLadder.LocalHubRadius, false, 0.0, TransferRadius(child), IsOpenOrbit(child), Ecc(child)));
-            });
-
-            spineTail = rootLadder.LocalHub;
             PhysicalNode spineChild = root;
 
             foreach (HubLevel level in reroot.Spine)
@@ -133,8 +181,8 @@ internal sealed class VisualTree
 
                 // The hub's own ladder, reached from the hub like any other
                 // destination via the transfer that drops the spine child into the
-                // hub's low orbit. The star is hub-only and contributes no ladder.
-                if (!level.Hub.IsStar)
+                // hub's low orbit. A star or barycenter is hub-only and contributes no ladder.
+                if (!level.Hub.IsHubOnly)
                 {
                     LadderNodes hubLadder = BuildLadder(level.Hub, egoState: null, asDestination: false);
                     // The spine child descends to the hub's low orbit; the open end here is
@@ -159,19 +207,97 @@ internal sealed class VisualTree
                 spineChild = level.Hub;
             }
 
-            return Finish(rootNode, root.Id);
+            if (_graph.HasSeveralSystems)
+                AddDestinationSystems(spineTail, spineChild);
+
+            return Finish(rootNode, root.Id, spineTail);
         }
 
-        private VisualTree Finish(StateNode root, string rootBodyId)
+        private VisualTree Finish(StateNode root, string rootBodyId, StateNode systemHub)
         {
-            return new VisualTree
+            var tree = new VisualTree
             {
                 SystemId = _graph.SystemId,
                 RootBodyId = rootBodyId,
                 Root = root,
                 Nodes = _nodes,
-                YouAreHere = _youAreHere
+                YouAreHere = _youAreHere,
+                SystemHub = systemHub,
+                InterstellarEdges = _interstellar
             };
+            tree.IndexBodies();
+            return tree;
+        }
+
+        // One Interstellar edge from the ego system's root hub to each other star system,
+        // nearest first. Past MaxShownSystems the rest fold into one group node, except a
+        // system that holds a revealed (searched) body, which is always shown.
+        private void AddDestinationSystems(StateNode systemHub, PhysicalNode systemRoot)
+        {
+            IReadOnlyList<PhysicalNode> destinations = _graph.DestinationsFrom(systemRoot);
+            List<PhysicalNode>? folded = null;
+            int shown = 0;
+            for (int i = 0; i < destinations.Count; i++)
+            {
+                PhysicalNode destination = destinations[i];
+                if (shown >= SystemGraph.MaxShownSystems && !HoldsRevealedBody(destination))
+                {
+                    (folded ??= new List<PhysicalNode>()).Add(destination);
+                    continue;
+                }
+                shown++;
+                StateNode entry = BuildDestination(destination);
+                ConnectInterstellar(systemHub, entry, SystemGraph.Distance(systemRoot, destination));
+            }
+
+            if (folded != null)
+            {
+                var group = new StateNode
+                {
+                    Id = $"{systemRoot.Id}.SystemGroup",
+                    Body = systemRoot.Astro,
+                    Kind = StateKind.MinorGroup,
+                    RadiusFromBody = 0.0,
+                    Label = "+" + folded.Count.ToString(CultureInfo.InvariantCulture) + " star systems",
+                    GroupMembers = folded
+                };
+                _nodes.Add(group);
+                ConnectGroupLink(systemHub, group);
+            }
+        }
+
+        private bool HoldsRevealedBody(PhysicalNode systemRoot)
+        {
+            if (_options.RevealedBodies == null)
+                return false;
+            foreach (string id in _options.RevealedBodies)
+            {
+                PhysicalNode? body = _graph.Find(id);
+                if (body != null && ReferenceEquals(SystemGraph.SystemRootOf(body), systemRoot))
+                    return true;
+            }
+            return false;
+        }
+
+        // A body of another star system, or reached from an open cruise, and everything below
+        // it. A star or barycenter is a hub with its parking orbit as a leaf, so a route can end
+        // there without a planet ever hanging under that parking orbit. A planet or moon is its
+        // ladder entered at its arrival anchor, with its moons below its low orbit. Every edge in
+        // between is a dV-free Approach. Returns the node the incoming edge attaches to.
+        private StateNode BuildDestination(PhysicalNode body)
+        {
+            if (body.IsHubOnly)
+            {
+                StateNode hub = NewHub(body);
+                StateNode parking = NewNode(body, StateKind.LowOrbit, body.Ladder.LowOrbitRadius);
+                ConnectApproach(hub, parking);
+                AddChildren(hub, body.Children, child => ConnectApproach(hub, BuildDestination(child)));
+                return hub;
+            }
+
+            LadderNodes ladder = BuildLadder(body, egoState: null, asDestination: true);
+            AddChildren(ladder.LocalHub, body.Children, child => ConnectApproach(ladder.LocalHub, BuildDestination(child)));
+            return ladder.ArrivalAnchor;
         }
 
         // Recursively build a body's ladder and everything below it. The body is the
@@ -207,7 +333,7 @@ internal sealed class VisualTree
             int minorCount = 0;
             foreach (PhysicalNode child in children)
             {
-                if (Include(child) && child.Astro is MinorBody)
+                if (Include(child) && child.IsMinor)
                     minorCount++;
             }
 
@@ -220,7 +346,7 @@ internal sealed class VisualTree
                     continue;
                 // A revealed (searched) minor body is built as its own lane, never folded into
                 // the group, so the search pulls exactly that body out of the "+N".
-                if (collapse && child.Astro is MinorBody && !_options.IsRevealed(child.Id))
+                if (collapse && child.IsMinor && !_options.IsRevealed(child.Id))
                     collapsed!.Add(child);
                 else
                     buildChild(child);
@@ -409,7 +535,7 @@ internal sealed class VisualTree
 
         private void AttachCruiseYouAreHere(StateNode starHub, PhysicalNode star, ClassifiedState state)
         {
-            var youAreHere = NewNode(star, StateKind.YouAreHere, state.Radius);
+            var youAreHere = NewNode(star, StateKind.YouAreHere, state.Radius, state.IsOpenCruise);
             ConnectHubLink(starHub, youAreHere);
             youAreHere.IsYouAreHere = true;
             _youAreHere = youAreHere;
@@ -420,7 +546,7 @@ internal sealed class VisualTree
             return NewNode(body, StateKind.Hub, 0.0);
         }
 
-        private StateNode NewNode(PhysicalNode body, StateKind kind, double radius)
+        private StateNode NewNode(PhysicalNode body, StateKind kind, double radius, bool isOpenCruise = false)
         {
             var node = new StateNode
             {
@@ -428,7 +554,8 @@ internal sealed class VisualTree
                 Body = body.Astro,
                 Kind = kind,
                 RadiusFromBody = radius,
-                Label = $"{body.Id} {KindLabel(kind)}"
+                IsOpenCruise = isOpenCruise,
+                Label = $"{body.Id} {KindLabel(kind, body.IsHubOnly)}"
             };
             _nodes.Add(node);
             return node;
@@ -480,6 +607,18 @@ internal sealed class VisualTree
             return edge;
         }
 
+        private void ConnectInterstellar(StateNode from, StateNode to, double distance)
+        {
+            var edge = new Edge { From = from, To = to, Kind = SegmentKind.Interstellar, InterstellarDistance = distance };
+            from.AddChild(edge);
+            _interstellar.Add(edge);
+        }
+
+        private static void ConnectApproach(StateNode from, StateNode to)
+        {
+            from.AddChild(new Edge { From = from, To = to, Kind = SegmentKind.Approach });
+        }
+
         // Hang a minor-body group off its hub. Like a hub link it carries no dV, but it is a
         // leaf spoke, not part of the spine bus, so it gets its own SegmentKind (the layout
         // maps it to a column-starting transfer-class edge, never onto the horizontal hub row).
@@ -517,9 +656,9 @@ internal sealed class VisualTree
             return "minor bodies";
         }
 
-        // Transfer radius of a non-star body around its parent. Uses the shared
-        // OrbitalStates helper so the open-orbit (comet) fallback matches DvCache and
-        // cannot drift. Never called on the star (which has no orbit).
+        // Transfer radius of a body around its parent. Uses the shared OrbitalStates helper
+        // so the open-orbit (comet) fallback matches DvCache and cannot drift. Never called
+        // on a system root (which has no orbit).
         private static double TransferRadius(PhysicalNode body)
         {
             Orbit orbit = ((IOrbiter)body.Astro).Orbit;
@@ -534,9 +673,9 @@ internal sealed class VisualTree
             return ((IOrbiter)body.Astro).Orbit.Eccentricity >= 1.0;
         }
 
-        // Eccentricity of a non-star body's orbit, passed to DirectTransfer so an open
-        // (comet) endpoint can be velocity-matched at its perihelion. Never called on the
-        // star (which has no orbit); the spine child is always a planet/moon/comet.
+        // Eccentricity of a body's orbit, passed to DirectTransfer so an open (comet)
+        // endpoint can be velocity-matched at its perihelion. Never called on a system root
+        // (which has no orbit); the spine child always orbits something.
         private static double Ecc(PhysicalNode body)
         {
             return ((IOrbiter)body.Astro).Orbit.Eccentricity;
@@ -557,12 +696,14 @@ internal sealed class VisualTree
             return new EdgeDv(depart, arrive, time, r1Open || r2Open);
         }
 
-        private static string KindLabel(StateKind kind)
+        // A star's or barycenter's one orbit rung is a wide parking orbit, not a low orbit above a
+        // surface.
+        private static string KindLabel(StateKind kind, bool hubOnly)
         {
             return kind switch
             {
                 StateKind.Surface => "Surface",
-                StateKind.LowOrbit => "Low Orbit",
+                StateKind.LowOrbit => hubOnly ? "Parking Orbit" : "Low Orbit",
                 StateKind.Stationary => "Stationary",
                 StateKind.SoiEdge => "SOI Edge",
                 StateKind.Intercept => "Intercept",

@@ -56,6 +56,21 @@ internal static class StagedDv
     private static int _lastPartCount = -1;
     private static int _lastSequenceCount = -1;
 
+    // Owned copy of the per-sequence masses from the last recompute, because stock rewrites its
+    // published array in place two recomputes later.
+    private static StageMass[] _stages = Array.Empty<StageMass>();
+    private static int _stageCount;
+
+    // Bumped on every recompute and when a reading is dropped, so a consumer can key its own
+    // cache on the vessel's staged state without probing the part tree again.
+    private static int _revision;
+
+    internal static int Revision => _revision;
+
+    // The staged sequences behind the last total, in firing order. Valid after TryTotalDv
+    // returned a value; empty otherwise.
+    internal static ReadOnlySpan<StageMass> Stages => _totalDv.HasValue ? _stages.AsSpan(0, _stageCount) : ReadOnlySpan<StageMass>.Empty;
+
     internal static double? TryTotalDv()
     {
         try
@@ -117,6 +132,10 @@ internal static class StagedDv
 
     private static void Forget()
     {
+        // Runs every frame while there is no vehicle, so only dropping a reading counts as a
+        // change.
+        if (_totalDv.HasValue)
+            _revision++;
         _tree = null;
         _analyzer = null;
         _totalDv = null;
@@ -124,6 +143,7 @@ internal static class StagedDv
         _lastPropellantMass = double.NaN;
         _lastPartCount = -1;
         _lastSequenceCount = -1;
+        _stageCount = 0;
     }
 
     // Half of the change probe: propellant drains during a burn and is consumed or added by an
@@ -195,9 +215,16 @@ internal static class StagedDv
         ReadOnlySpan<SequencePerformance> perf = analyzer.PerformanceSequences;
         int count = Math.Min(sequences.Length, perf.Length);
 
+        if (_stages.Length < count)
+            _stages = new StageMass[count];
         double total = 0.0;
         for (int i = 0; i < count; i++)
+        {
             total += perf[i].DeltaV;
+            _stages[i] = new StageMass(perf[i].DeltaV, perf[i].WetMass, perf[i].BurnedFuelMass);
+        }
+        _stageCount = count;
+        _revision++;
         return total;
     }
 }
