@@ -19,17 +19,17 @@ namespace DeltaVMap.Layout;
 // meaning (the exact dV stays on the badge); a grid snap afterwards keeps dots from sharing
 // a cell, and edges are drawn straight rather than octilinear.
 //
-// Repulsion is computed with a Barnes-Hut quadtree (~O(n log n) per iteration) instead of
-// the original all-pairs O(n^2), and the iteration count is scaled down as the node count
-// grows. Together these keep the sim bounded on dense systems, where the old all-pairs loop
-// over thousands of nodes froze the game on the draw thread.
+// Repulsion is computed with a Barnes-Hut quadtree (~O(n log n) per iteration) rather than
+// all pairs (O(n^2)), and the iteration count is scaled down as the node count grows.
+// Together these keep the sim bounded on dense systems, where an all-pairs loop over
+// thousands of nodes would freeze the game on the draw thread.
 internal static class SpringLayout
 {
     // Golden angle, for a low-clumping deterministic initial spiral.
     private const double GoldenAngle = 2.399963229728653;
 
     // Iteration scaling: keep the configured count for small graphs, and shrink toward a floor
-    // as the node count grows, so a large settle never stretches into the old quadratic-cost
+    // as the node count grows, so a large settle never stretches into a quadratic-cost
     // freeze. The budget is the target product of iterations and node count, held between the
     // two clamps below; past the floor the per-build work grows only linearly again, and the
     // absolute node ceiling that caps it lives render-side (MapWindow.MaxLayoutNodes).
@@ -156,7 +156,7 @@ internal static class SpringLayout
     // Iterations to run for a graph of n nodes: the configured count for small graphs, scaled
     // down toward MinIterations as n grows so a large system cannot stretch the settle into a
     // multi-second build. Past about n = IterationWorkBudget / MinIterations the floor holds, so
-    // per-build work grows linearly again (MinIterations * O(n log n), not the old quadratic);
+    // per-build work grows linearly again (MinIterations * O(n log n), not quadratic);
     // the hard node bound is the render-side MaxLayoutNodes ceiling, not this. Never returns
     // more than the configured count.
     private static int ScaleIterations(int configured, int n)

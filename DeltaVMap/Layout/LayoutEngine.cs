@@ -47,25 +47,55 @@ internal static class LayoutEngine
                 BandLayout.AssignBands(tree, cfg);
             TidyTree.AssignX(tree, cfg);
         }
+        Spread(tree, cfg);
         GridSnap.Snap(tree, cfg);
         EdgeRouter.Route(tree, cfg);
         LabelPlacer.Result labels = LabelPlacer.Place(tree, cfg);
         return BuildResult(tree, cfg, labels);
     }
 
+    // Stretch the pre-snap positions by LayoutConfig.SpreadX about the root. Scaling keeps
+    // the order of every node, so the separations the X pass guaranteed only grow.
+    private static void Spread(LayoutTree tree, LayoutConfig cfg)
+    {
+        double k = cfg.SpreadX;
+        if (k <= 1.0)
+            return;
+        bool both = cfg.Mode == LayoutMode.Spring;
+        double rx = tree.Root.X;
+        double ry = tree.Root.Y;
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            node.X = rx + (node.X - rx) * k;
+            if (both)
+                node.Y = ry + (node.Y - ry) * k;
+        }
+    }
+
     // Node box and dot size. Width comes from real text metrics when measureText is
     // given, otherwise from a character-count estimate (the offline pass cannot reach
-    // ImGui.CalcTextSize, which only exists inside the draw loop).
+    // ImGui.CalcTextSize, which only exists inside the draw loop). The measured widths of
+    // both labels are kept on the node, so the renderer never measures them again.
     private static void MeasureNodes(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText)
     {
         foreach (LayoutNode node in tree.Nodes)
         {
-            double rawWidth = measureText != null ? measureText(node.Label) : node.Label.Length * cfg.CharWidthPx;
+            double rawWidth = Measure(node.Label, cfg, measureText);
+            node.LabelTextW = rawWidth;
+            node.ShortLabelTextW = node.ShortLabel.Length > 0 && node.ShortLabel != node.Label
+                ? Measure(node.ShortLabel, cfg, measureText)
+                : rawWidth;
+            node.SummaryTextW = node.Summary.Length > 0 ? Measure(node.Summary, cfg, measureText) : 0.0;
             double textWidth = Math.Max(cfg.MinNodeWidthPx, rawWidth);
             node.Width = textWidth + cfg.BadgePaddingPx;
             node.Height = cfg.LineHeightPx;
             node.DotRadius = DotRadiusFor(node, cfg);
         }
+    }
+
+    private static double Measure(string text, LayoutConfig cfg, Func<string, double>? measureText)
+    {
+        return measureText != null ? measureText(text) : text.Length * cfg.CharWidthPx;
     }
 
     private static double DotRadiusFor(LayoutNode node, LayoutConfig cfg)

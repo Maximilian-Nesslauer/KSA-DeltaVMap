@@ -120,6 +120,18 @@ internal static class OverlapCheck
         return report;
     }
 
+    // The universal no-overlap checks (dots and labels) over a whole composed scene, so a part
+    // placed beside the ego map can never cover a dot or a label of another part. The tree-shape
+    // checks run per part, on each part's own LayoutResult.
+    public static OverlapReport RunScene(LayoutScene scene)
+    {
+        var merged = new LayoutTree { Name = scene.Ego.Tree.Name, Root = scene.Root, Nodes = scene.Nodes };
+        var report = new OverlapReport { NodeCount = scene.Nodes.Count };
+        CheckNodes(merged, scene.Config, report);
+        CheckLabels(merged, scene.Config, report);
+        return report;
+    }
+
     // Band monotonicity: a normal edge must drop its child strictly below the parent
     // (so Y always reads as more dV downward and parent and child never share a row),
     // while a HubLink must keep both endpoints on the same band.

@@ -30,6 +30,15 @@ internal enum EdgeClass
 
 internal readonly record struct LayoutPoint(double X, double Y);
 
+// What a hub node stands for, for its glyph only. The layout rules read LayoutKind.Hub and
+// never this field, so a star and a barycenter lay out exactly like any other hub bus.
+internal enum HubRole
+{
+    None,
+    Star,
+    Barycenter
+}
+
 // One edge in the layout tree. From is the node nearer the root, To the node further
 // out. Dv is the representative cost used for band placement (the exact route burns
 // are derived later in routing); it is zero for HubLink edges.
@@ -75,6 +84,10 @@ internal sealed class LayoutEdge
     // otherwise, and for every non-sibling edge).
     public bool Aerobrake { get; init; }
     public double PlaneChangeDv { get; init; }
+
+    // An edge inside another star system, which carries no dV of its own (the arrival is one
+    // chain into the body the route ends at). Drawn as a thin line with no badge.
+    public bool IsApproach { get; init; }
 
     // Lane index among the parallel edges leaving From, assigned by the router so
     // sibling tracks get distinct perpendicular offsets.
@@ -126,6 +139,36 @@ internal sealed class LayoutNode
 
     public bool IsRoot { get; set; }
     public bool IsYouAreHere { get; set; }
+
+    // Cosmetic: the star or barycenter glyph for a hub, and the collapsed star-system glyph
+    // for the one-node part that stands for a whole destination system. Set only when the
+    // loaded universe holds several star systems, so a single-system map keeps its plain hub
+    // glyphs. Neither changes the layout.
+    public HubRole HubRole { get; init; }
+    public bool IsSystemStub { get; init; }
+
+    // The root of a star system's graph when the scene holds several systems: every
+    // destination part root, and the ego system's hub. The renderer draws its label as a
+    // system title with a ring around the dot. Unlike IsRoot it changes no size, halo or fit
+    // anchor, and SceneComposer clears it on the ego hub when no other system is shown.
+    public bool IsSystemRoot { get; set; }
+
+    // What a destination system holds ("1 star, 4 planets"), set on every destination root and
+    // empty for every other node, with its measured width from LayoutEngine.MeasureNodes. A
+    // collapsed system shows it as a dim second title line. An opened one keeps it too, so the
+    // strip can size the system's slot the same way whether it is open or not.
+    public string Summary { get; init; } = "";
+    public double SummaryTextW { get; set; }
+
+    // The node's position in LayoutScene.Nodes, set when the scene is composed. The renderer
+    // indexes its per-node caches with it, and the badge of an edge with edge.To.Index (in a
+    // tree every edge is the parent edge of its To node).
+    public int Index { get; set; } = -1;
+
+    // The measured text widths of Label and ShortLabel, from LayoutEngine.MeasureNodes, so the
+    // renderer never measures a label per frame.
+    public double LabelTextW { get; set; }
+    public double ShortLabelTextW { get; set; }
 
     public LayoutNode? Parent { get; set; }
     public LayoutEdge? ParentEdge { get; set; }
@@ -215,4 +258,83 @@ internal sealed class LayoutTree
             AssignDepth(edge.To, depth + 1, nodes);
         }
     }
+}
+
+// One separately laid-out part of the scene: another star system, collapsed to its root hub
+// or expanded to its whole tree. The part is laid out on its own at the origin and moved
+// next to the ego system by SceneComposer, which translates its nodes in place and records
+// the offset it applied, so a later compose moves it only by the difference.
+internal sealed class LayoutPart
+{
+    // The Id of the destination system's root hub node, the node the connector ends at.
+    public required string RootId { get; init; }
+    public required LayoutResult Result { get; init; }
+    public bool Expanded { get; init; }
+
+    public double AppliedDx { get; set; }
+    public double AppliedDy { get; set; }
+
+    public LayoutNode Root => Result.Tree.Root;
+    public double MinX => Result.MinX + AppliedDx;
+    public double MinY => Result.MinY + AppliedDy;
+    public double MaxX => Result.MaxX + AppliedDx;
+    public double MaxY => Result.MaxY + AppliedDy;
+}
+
+// The interstellar line from the ego system's root hub to one destination root. Its geometry
+// depends only on the bounds of the parts, never on a delta-v, so the cruise speed can never
+// move it. BadgeAnchor is the point where the line leaves the shared network (trunk and bus)
+// for its own branch, where the route badge of the leg sits. The branch is BadgeAnchor followed
+// by Polyline[BranchStart..]; everything before it is drawn once as LayoutScene.Network.
+internal sealed class LayoutConnector
+{
+    public required LayoutNode From { get; init; }
+    public required LayoutNode To { get; init; }
+    public required IReadOnlyList<LayoutPoint> Polyline { get; init; }
+    public LayoutPoint BadgeAnchor { get; init; }
+    public int BranchStart { get; init; }
+}
+
+// Which side of the ego map the strip of other star systems runs along.
+internal enum StripSide
+{
+    Below,
+    Right
+}
+
+// Everything the canvas draws: the ego system's layout as LayoutEngine produced it, the
+// destination parts in a strip beside it, the connectors between them and a scale-break mark
+// on the connector trunk. Nodes holds every node of every part in draw order, with
+// LayoutNode.Index set to the position in it. With no parts the scene is the ego layout alone.
+internal sealed class LayoutScene
+{
+    public required LayoutResult Ego { get; init; }
+    public required IReadOnlyList<LayoutPart> Parts { get; init; }
+    public required IReadOnlyList<LayoutNode> Nodes { get; init; }
+    public required IReadOnlyList<LayoutConnector> Connectors { get; init; }
+    public LayoutNode? EgoHub { get; init; }
+    public StripSide Side { get; init; }
+
+    // The line in the channel between the ego map and the first strip row (a Y for Below, an
+    // X for Right) that every connector runs along before it branches into its root, and the
+    // shared trunk from the ego hub to the point where it meets that line.
+    public double Bus { get; init; }
+    public IReadOnlyList<LayoutPoint> Trunk { get; init; } = System.Array.Empty<LayoutPoint>();
+
+    // The connector lines every destination shares, each drawn once: the trunk, the bus of each
+    // strip row and the link that runs on to a wrapped row. Each connector adds only its branch.
+    public IReadOnlyList<IReadOnlyList<LayoutPoint>> Network { get; init; } = System.Array.Empty<IReadOnlyList<LayoutPoint>>();
+
+    public bool HasBreakMark { get; init; }
+    public LayoutPoint BreakMark { get; init; }
+    public bool BreakMarkVertical { get; init; }
+    public double MinX { get; init; }
+    public double MinY { get; init; }
+    public double MaxX { get; init; }
+    public double MaxY { get; init; }
+
+    public LayoutConfig Config => Ego.Config;
+    public LayoutNode Root => Ego.Tree.Root;
+    public double Width => MaxX - MinX;
+    public double Height => MaxY - MinY;
 }

@@ -64,6 +64,12 @@ internal sealed class LayoutConfig
     public double SpringIdealLengthPx { get; init; } = 120.0;
     public int SpringIterations { get; init; } = 460;
 
+    // A factor the structure axis is stretched by about the root, after the X pass and before
+    // the grid snap (in Spring both axes, since its position has no dV meaning). The map lays
+    // out another star system with it, so the system stays readable at the zoom that fits the
+    // much larger home map. 1 leaves the layout as it is.
+    public double SpreadX { get; init; } = 1.0;
+
     // Horizontal breathing room. SiblingGap is added to the half-widths when the
     // tidy tree separates adjacent siblings; BusGap separates whole hub-bus subtrees.
     // Both are wide so neighbouring vertical lanes leave room for their labels.
@@ -112,6 +118,43 @@ internal sealed class LayoutConfig
 
     public static LayoutConfig Default => new();
 
+    // A copy with another structure spread and band step range, for laying out another star
+    // system beside a map laid out with this config. maxBandStep caps the cumulative and the
+    // gravity-well step alike.
+    public LayoutConfig WithSpread(double spreadX, int minBandStep, int maxBandStep)
+    {
+        return new LayoutConfig
+        {
+            Mode = Mode,
+            GridPx = GridPx,
+            BandHeightPx = BandHeightPx,
+            MinSegmentPx = MinSegmentPx,
+            BandQuantumDv = BandQuantumDv,
+            MinBandStep = minBandStep,
+            MaxBandStep = System.Math.Min(MaxBandStep, maxBandStep),
+            WellBandHeightPx = WellBandHeightPx,
+            WellMaxBandStep = System.Math.Min(WellMaxBandStep, maxBandStep),
+            SpringIdealLengthPx = SpringIdealLengthPx,
+            SpringIterations = SpringIterations,
+            SpreadX = spreadX,
+            SiblingGapPx = SiblingGapPx,
+            BusGapPx = BusGapPx,
+            RootMarginPx = RootMarginPx,
+            CharWidthPx = CharWidthPx,
+            LineHeightPx = LineHeightPx,
+            MinNodeWidthPx = MinNodeWidthPx,
+            BadgePaddingPx = BadgePaddingPx,
+            LaneOffsetPx = LaneOffsetPx,
+            EdgeDiagonalPx = EdgeDiagonalPx,
+            RootDotRadius = RootDotRadius,
+            HubDotRadius = HubDotRadius,
+            YouAreHereDotRadius = YouAreHereDotRadius,
+            PlanetDotRadius = PlanetDotRadius,
+            MoonDotRadius = MoonDotRadius,
+            MinorDotRadius = MinorDotRadius
+        };
+    }
+
     // Enforce the spacing invariants the comments above promise, so a misconfigured
     // instance fails loudly instead of silently producing overlaps. Cheap, called once
     // per layout run; all shipped configs satisfy it.
@@ -143,5 +186,8 @@ internal sealed class LayoutConfig
         if (SpringIterations < 1)
             throw new System.ArgumentException(
                 $"SpringIterations ({SpringIterations}) must be at least 1.");
+        if (SpreadX < 1.0 || SpreadX > 4.0)
+            throw new System.ArgumentException(
+                $"SpreadX ({SpreadX}) must be between 1 and 4.");
     }
 }

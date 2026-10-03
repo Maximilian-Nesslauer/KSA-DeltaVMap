@@ -13,7 +13,9 @@ namespace DeltaVMap.Layout;
 // visual-tree dumps. It exercises the layout engine end to end with no rendering: it
 // lays out a synthetic 100+ node tree and the real loaded system at a few roots,
 // asserts no overlaps, logs the verdict, and writes an SVG plus a text tree to disk
-// so the layout can be eyeballed in a browser before any in-game canvas exists.
+// so the layout can be eyeballed in a browser. With several star systems each root
+// also dumps its whole scene: every other system expanded beside the ego map, with the
+// connector polylines.
 internal static class LayoutDump
 {
     private const string Tag = "[DvMap]";
@@ -55,6 +57,13 @@ internal static class LayoutDump
         DumpStockRoot(graph, cache, "Luna", "moon root", outDir);
         DumpGasGiant(graph, cache, outDir);
         DumpEgoRoot(graph, cache, outDir);
+        for (int i = 1; i < graph.Roots.Count; i++)
+        {
+            PhysicalNode root = graph.Roots[i];
+            DumpStockRoot(graph, cache, root.Id, "other system root", outDir);
+            if (VisualTreeDump.FirstPlanet(root) is PhysicalNode planet)
+                DumpStockRoot(graph, cache, planet.Id, "other system planet", outDir);
+        }
 
         DefaultCategory.Log.Info($"{Tag} === End layout dump ===");
     }
@@ -78,7 +87,7 @@ internal static class LayoutDump
             chosen = null;
             foreach (PhysicalNode node in graph.AllNodes)
             {
-                if (node.IsStar || node.Ladder.HasSurface)
+                if (node.IsHubOnly || node.Ladder.HasSurface)
                     continue;
                 if (chosen == null || node.Ladder.MeanRadius > chosen.Ladder.MeanRadius
                     || (node.Ladder.MeanRadius == chosen.Ladder.MeanRadius && string.CompareOrdinal(node.Id, chosen.Id) < 0))
@@ -110,7 +119,7 @@ internal static class LayoutDump
             return;
         }
 
-        ClassifiedState state = StateClassifier.Classify(vehicle, node.Ladder);
+        ClassifiedState state = node.IsHubOnly ? StateClassifier.ClassifyCruise(vehicle) : StateClassifier.Classify(vehicle, node.Ladder);
         DumpStockTree(graph, cache, node, state, "ego root", outDir);
     }
 
@@ -120,7 +129,9 @@ internal static class LayoutDump
         {
             VisualTree visual = VisualTree.Build(graph, cache, root, egoState, BuildOptions.Default);
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual);
-            DumpLayout(tree, LayoutConfig.Default, outDir, role);
+            LayoutResult ego = DumpLayout(tree, LayoutConfig.Default, outDir, role);
+            if (visual.InterstellarEdges.Count > 0)
+                DumpScene(visual, ego, outDir, role);
         }
         catch (Exception ex)
         {
@@ -128,24 +139,62 @@ internal static class LayoutDump
         }
     }
 
-    private static void DumpLayout(LayoutTree tree, LayoutConfig cfg, string outDir, string role)
+    private static LayoutResult DumpLayout(LayoutTree tree, LayoutConfig cfg, string outDir, string role)
     {
         LayoutResult result = LayoutEngine.Run(tree, cfg);
         OverlapReport report = OverlapCheck.Run(result);
 
         DefaultCategory.Log.Info($"{Tag} [{tree.Name}] ({role}) {report.Summary()}");
+        LogReport(report);
+
+        if (!string.IsNullOrEmpty(outDir))
+        {
+            string stem = Sanitize(tree.Name);
+            WriteFile(Path.Combine(outDir, stem + ".svg"), LayoutDumpFormat.ToSvg(result));
+            WriteFile(Path.Combine(outDir, stem + ".txt"), LayoutDumpFormat.ToText(result));
+        }
+        return result;
+    }
+
+    // Every other star system expanded as its own part, composed beside the ego map.
+    private static void DumpScene(VisualTree visual, LayoutResult ego, string outDir, string role)
+    {
+        var parts = new System.Collections.Generic.List<LayoutPart>();
+        foreach (Edge edge in visual.InterstellarEdges)
+        {
+            LayoutResult part = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(edge, graph: null, expanded: true), ego, null);
+            OverlapReport partReport = OverlapCheck.Run(part);
+            DefaultCategory.Log.Info($"{Tag} [{part.Tree.Name}] ({role}, other system) {partReport.Summary()}");
+            LogReport(partReport);
+            parts.Add(new LayoutPart { RootId = edge.To.Id, Result = part, Expanded = true });
+        }
+
+        LayoutNode? hub = null;
+        foreach (LayoutNode node in ego.Tree.Nodes)
+        {
+            if (node.Id == visual.SystemHub.Id)
+                hub = node;
+        }
+        LayoutScene scene = SceneComposer.Compose(ego, hub, parts, ego.Config);
+        OverlapReport report = OverlapCheck.RunScene(scene);
+        DefaultCategory.Log.Info($"{Tag} [{ego.Tree.Name} scene] ({role}) {report.Summary()}");
+        LogReport(report);
+
+        if (string.IsNullOrEmpty(outDir))
+            return;
+        string stem = Sanitize(ego.Tree.Name) + "-scene";
+        WriteFile(Path.Combine(outDir, stem + ".svg"), LayoutDumpFormat.ToSvg(scene));
+        WriteFile(Path.Combine(outDir, stem + ".txt"), LayoutDumpFormat.ToText(scene));
+        WriteFile(Path.Combine(outDir, stem + "-fit.svg"), LayoutDumpFormat.ToFitSvg(scene, 1600, 1000));
+    }
+
+    private static void LogReport(OverlapReport report)
+    {
         LogIssues("dot", report.NodeOverlaps);
         LogIssues("subtree", report.SubtreeOverlaps);
         LogIssues("label", report.LabelOverlaps);
         LogIssues("band", report.BandViolations);
         LogIssues("bus", report.BusViolations);
-
-        if (string.IsNullOrEmpty(outDir))
-            return;
-
-        string stem = Sanitize(tree.Name);
-        WriteFile(Path.Combine(outDir, stem + ".svg"), LayoutDumpFormat.ToSvg(result));
-        WriteFile(Path.Combine(outDir, stem + ".txt"), LayoutDumpFormat.ToText(result));
     }
 
     private static void LogIssues(string kind, System.Collections.Generic.List<string> issues)
