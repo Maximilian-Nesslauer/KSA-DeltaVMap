@@ -20,6 +20,11 @@
     $(Configuration), so build the harness in the same configuration; adjust the path to your local
     clone.
   -->
+  <!-- The scene layout rules, shared with the offline tests and kept out of the mod itself. -->
+  <ItemGroup>
+    <Compile Include="..\DeltaVMap\Layout\SceneChecks.cs" Link="SceneChecks.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\DeltaVMap\DeltaVMap.csproj">
       <Private>false</Private>
