@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using DeltaVMap.Model;
 
 namespace DeltaVMap.Layout;
 
@@ -244,6 +245,82 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-dense-aggregated", root);
     }
 
+    // A Sol-like map whose giant planets carry hundreds of minor moons, folded by the real
+    // MinorFold rules: Saturn with 300 (10 inner, the rest far out), Jupiter with 93, Uranus with
+    // 28 whose 19 inner ones become lanes, a planet whose 30 inner moons overflow the lane budget
+    // into an inner group next to its outer group, and Sol with 50 minor bodies in one group.
+    public static LayoutTree BuildDenseMoons()
+    {
+        LayoutNode root = Node("Earth.LO", "Earth Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        Ladder(root, "Earth", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3210);
+
+        LayoutNode sol = Node("Sol.Hub", "Sol", LayoutKind.Hub, rank: 0);
+        HubLink(root, sol);
+
+        // Name, SOI (km), major moons, inner minor moons, outer minor moons.
+        (string Name, double SoiKm, int Major, int Inner, int Outer)[] giants =
+        {
+            ("Jupiter", 48.2e6, 4, 4, 89),
+            ("Saturn", 54.8e6, 14, 10, 290),
+            ("Uranus", 51.8e6, 0, 19, 9),
+            ("Neptune", 86.7e6, 1, 30, 20)
+        };
+        for (int i = 0; i < giants.Length; i++)
+        {
+            (string name, double soiKm, int major, int inner, int outer) = giants[i];
+            LayoutNode lo = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+            Transfer(sol, lo, depart: 5000 + i * 500, arrive: 3000 + i * 400);
+            LadderEdge(lo, Node(name + ".SoiEdge", name + " SOI Edge", LayoutKind.SoiEdge, rank: 1), 4000 + i * 100);
+
+            var moons = new List<(string Id, FoldChild Child, int Rank)>();
+            for (int m = 0; m < major; m++)
+                moons.Add((name + "Major" + m.ToString(Inv), new FoldChild(true, false, false, MinorKind.Other, (0.2 + m * 0.1) * 1e9), 2));
+            // The inner band ends at a tenth of the SOI; spread the inner moons below it and the
+            // outer ones between a fifth and a half of the SOI, as captured moons sit.
+            for (int m = 0; m < inner; m++)
+                moons.Add((ProvisionalName(name, m), new FoldChild(true, true, false, MinorKind.Other, soiKm * 1e3 * 0.09 * (m + 1) / inner), 3));
+            for (int m = 0; m < outer; m++)
+                moons.Add((ProvisionalName(name, inner + m), new FoldChild(true, true, false, MinorKind.Other, soiKm * 1e3 * (0.2 + 0.3 * m / outer)), 3));
+            moons.Sort((a, b) => a.Child.OrbitRadius.CompareTo(b.Child.OrbitRadius));
+
+            var children = new List<FoldChild>(moons.Count);
+            foreach (var moon in moons)
+                children.Add(moon.Child);
+            FoldSlot[] slots = MinorFold.Plan(children, BuildOptions.DefaultMinorGroupThreshold, soiKm * 1e3);
+
+            int inGroup = 0;
+            int outGroup = 0;
+            for (int m = 0; m < moons.Count; m++)
+            {
+                if (slots[m] == FoldSlot.InnerGroup)
+                    inGroup++;
+                else if (slots[m] == FoldSlot.OuterGroup)
+                    outGroup++;
+                else if (slots[m] == FoldSlot.Lane)
+                {
+                    LayoutNode moon = Node(moons[m].Id + ".LO", moons[m].Id + " Low Orbit", LayoutKind.LowOrbit, moons[m].Rank);
+                    Transfer(lo, moon, depart: 400 + m * 40, arrive: 150 + m * 10);
+                    LadderEdge(moon, Node(moons[m].Id + ".Surface", moons[m].Id + " Surface", LayoutKind.Surface, moons[m].Rank), 50 + m);
+                }
+            }
+            if (inGroup > 0)
+                GroupNode(lo, name + MinorFold.IdSuffix(FoldSlot.InnerGroup), MinorFold.Label(FoldSlot.InnerGroup, new MinorKind[inGroup]));
+            if (outGroup > 0)
+                GroupNode(lo, name + MinorFold.IdSuffix(FoldSlot.OuterGroup), MinorFold.Label(FoldSlot.OuterGroup, new MinorKind[outGroup]));
+        }
+        GroupNode(sol, "Sol" + MinorFold.IdSuffix(FoldSlot.Group), MinorFold.Label(FoldSlot.Group, new MinorKind[50]));
+
+        return LayoutTree.FromRoot("synthetic-dense-moons", root);
+    }
+
+    // A provisional designation as the long-tail moons carry ("S2004_S_07"), so label widths
+    // are realistic.
+    private static string ProvisionalName(string planet, int m)
+    {
+        return planet.Substring(0, 1) + (2000 + m % 24).ToString(Inv) + "_" + planet.Substring(0, 1) + "_" + (m / 24 + 1).ToString("00", Inv);
+    }
+
     // A planet root at the size of the stock Sol map: thirteen planets and dwarf planets, the
     // gas giants with their many moons, and the asteroid belt as one group. Its bounds come
     // close to the real map's, so a scene check on it judges the look at a realistic fit zoom.
@@ -400,7 +477,12 @@ internal static class SyntheticTree
     // (gravity-well), and the renderer draws no badge for it.
     private static void MinorGroup(LayoutNode hub, string bodyId, string label)
     {
-        LayoutNode group = Node(bodyId + ".MinorGroup", label, LayoutKind.MinorGroup, rank: 2);
+        GroupNode(hub, bodyId + ".MinorGroup", label);
+    }
+
+    private static void GroupNode(LayoutNode hub, string id, string label)
+    {
+        LayoutNode group = Node(id, label, LayoutKind.MinorGroup, rank: 2);
         hub.AddChild(new LayoutEdge { From = hub, To = group, Class = EdgeClass.Transfer, Dv = 0.0 });
     }
 

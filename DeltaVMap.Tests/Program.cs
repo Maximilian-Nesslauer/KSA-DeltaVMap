@@ -6,6 +6,7 @@ using DeltaVMap.Dv;
 using DeltaVMap.Layout;
 using DeltaVMap.Model;
 using DeltaVMap.Route;
+using DeltaVMap.Render;
 
 // Run the layout engine on the synthetic trees, assert no overlaps, and dump SVG and
 // text so the layout can be eyeballed before any in-game rendering exists. Exit code
@@ -87,6 +88,12 @@ var spring = new LayoutConfig { Mode = LayoutMode.Spring };
 failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), spring, "spring", outDir, minNodes: 100);
 failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), spring, "spring", outDir, minNodes: 0);
 failures += RunCase(SyntheticTree.BuildDenseAggregated(), spring, "spring", outDir, minNodes: 0);
+
+// Giant planets with hundreds of minor moons, folded by the real MinorFold rules: the inner
+// moons as lanes, the outer swarm as a group, and one hub with an inner and an outer group.
+failures += RunCase(SyntheticTree.BuildDenseMoons(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildDenseMoons(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildDenseMoons(), spring, "spring", outDir, minNodes: 0);
 failures += RunCase(SyntheticTree.BuildBarycenterRoot(), spring, "spring", outDir, minNodes: 0);
 failures += RunCase(SyntheticTree.BuildOrbitingStarRoot(), spring, "spring", outDir, minNodes: 0);
 
@@ -108,6 +115,7 @@ failures += RunInterstellarChecks();
 failures += RunCaptureChecks();
 failures += RunPropellantChecks();
 failures += RunForestChecks();
+failures += RunMinorFoldChecks();
 failures += RunCruiseSpeedChecks();
 failures += RunSceneChecks(outDir);
 failures += RunFormatChecks();
@@ -1353,6 +1361,120 @@ static int RunRouteTotalsChecks()
 
     Console.WriteLine(fails == 0 ? "  totals: OK" : $"  totals: {fails} FAIL");
     return fails;
+}
+
+// The fold of a hub's minor bodies: nothing folds up to the threshold, a star hub folds every
+// minor child into one group, a planet hub keeps its inner band as lanes up to the threshold and
+// folds the rest by band, a revealed body is always a lane, and no group holds a single body.
+static int RunMinorFoldChecks()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[fold] minor-body groups and the bands of a planet hub");
+    const int threshold = BuildOptions.DefaultMinorGroupThreshold;
+    const double soi = 50e9;
+    double edge = MinorFold.InnerBandSoiFraction * soi;
+
+    static FoldChild Minor(double radius, MinorKind kind = MinorKind.Other, bool included = true, bool revealed = false)
+    {
+        return new FoldChild(included, true, revealed, kind, radius);
+    }
+
+    static int Count(FoldSlot[] slots, FoldSlot slot)
+    {
+        int n = 0;
+        foreach (FoldSlot s in slots)
+        {
+            if (s == slot)
+                n++;
+        }
+        return n;
+    }
+
+    static List<FoldChild> Many(int count, double from, double to, MinorKind kind = MinorKind.Other)
+    {
+        var list = new List<FoldChild>(count);
+        for (int i = 0; i < count; i++)
+            list.Add(Minor(from + (to - from) * i / Math.Max(1, count - 1), kind));
+        return list;
+    }
+
+    FoldSlot[] atThreshold = MinorFold.Plan(Many(threshold, 2.0 * edge, 4.0 * edge), threshold, soi);
+    fails += Check("up to the threshold every minor body is a lane", Count(atThreshold, FoldSlot.Lane) == threshold);
+
+    List<FoldChild> hidden = Many(threshold, 2.0 * edge, 4.0 * edge);
+    hidden.Add(Minor(3.0 * edge, included: false));
+    fails += Check("a hidden body counts toward nothing", Count(MinorFold.Plan(hidden, threshold, soi), FoldSlot.Hidden) == 1
+        && Count(MinorFold.Plan(hidden, threshold, soi), FoldSlot.Lane) == threshold);
+
+    List<FoldChild> belt = Many(2892, 1e11, 5e11, MinorKind.Asteroid);
+    belt.Insert(0, new FoldChild(true, false, false, MinorKind.Other, 5e10));
+    FoldSlot[] starHub = MinorFold.Plan(belt, threshold, hubSoi: null);
+    fails += Check("a star hub folds every minor body into one group",
+        Count(starHub, FoldSlot.Group) == 2892 && starHub[0] == FoldSlot.Lane && Count(starHub, FoldSlot.OuterGroup) == 0);
+    fails += Check("an asteroid belt is labelled as asteroids", MinorFold.Label(FoldSlot.Group, Enumerable.Repeat(MinorKind.Asteroid, 2892).ToArray()) == "+2892 asteroids");
+    fails += Check("a mixed star group is minor bodies", MinorFold.Label(FoldSlot.Group, new[] { MinorKind.Asteroid, MinorKind.Comet, MinorKind.Other }) == "+3 minor bodies");
+    fails += Check("a comet group is comets", MinorFold.Label(FoldSlot.Group, new[] { MinorKind.Comet, MinorKind.Comet }) == "+2 comets");
+
+    // Saturn as a custom system has it: ten moons inside the band, 250 far outside.
+    List<FoldChild> saturn = Many(10, 0.01 * edge, 0.9 * edge);
+    saturn.AddRange(Many(250, 2.0 * edge, 5.0 * edge));
+    FoldSlot[] saturnSlots = MinorFold.Plan(saturn, threshold, soi);
+    fails += Check("the inner band of a planet is lanes", Count(saturnSlots, FoldSlot.Lane) == 10);
+    fails += Check("the outer swarm of a planet is one group", Count(saturnSlots, FoldSlot.OuterGroup) == 250 && Count(saturnSlots, FoldSlot.InnerGroup) == 0);
+    fails += Check("an outer group is labelled as outer moons", MinorFold.Label(FoldSlot.OuterGroup, new MinorKind[250]) == "+250 outer moons");
+
+    List<FoldChild> crowded = Many(30, 0.1 * edge, 0.9 * edge);
+    crowded.AddRange(Many(20, 2.0 * edge, 3.0 * edge));
+    crowded.Reverse();
+    FoldSlot[] crowdedSlots = MinorFold.Plan(crowded, threshold, soi);
+    bool innermostAreLanes = true;
+    for (int i = 0; i < crowded.Count; i++)
+    {
+        if (crowdedSlots[i] == FoldSlot.InnerGroup)
+        {
+            foreach (int j in Enumerable.Range(0, crowded.Count))
+                innermostAreLanes &= !(crowdedSlots[j] == FoldSlot.Lane && crowded[j].OrbitRadius > crowded[i].OrbitRadius);
+        }
+    }
+    fails += Check("a full inner band keeps the threshold as lanes and folds the rest",
+        Count(crowdedSlots, FoldSlot.Lane) == threshold && Count(crowdedSlots, FoldSlot.InnerGroup) == 6 && Count(crowdedSlots, FoldSlot.OuterGroup) == 20);
+    fails += Check("the innermost moons get the lanes, whatever the input order", innermostAreLanes);
+    fails += Check("the band edge belongs to the outer band",
+        MinorFold.Plan(Prepend(Many(threshold, 2.0 * edge, 3.0 * edge), Minor(edge)), threshold, soi)[0] == FoldSlot.OuterGroup);
+
+    List<FoldChild> revealed = Many(40, 2.0 * edge, 3.0 * edge);
+    revealed[5] = Minor(revealed[5].OrbitRadius, revealed: true);
+    FoldSlot[] revealedSlots = MinorFold.Plan(revealed, threshold, soi);
+    fails += Check("a revealed body is a lane outside the group", revealedSlots[5] == FoldSlot.Lane && Count(revealedSlots, FoldSlot.OuterGroup) == 39);
+
+    List<FoldChild> single = Many(threshold, 0.1 * edge, 0.9 * edge);
+    single.Add(Minor(2.0 * edge));
+    FoldSlot[] singleSlots = MinorFold.Plan(single, threshold, soi);
+    fails += Check("a group of one keeps its lane", Count(singleSlots, FoldSlot.Lane) == threshold + 1);
+
+    fails += Check("the group ids differ per band", MinorFold.IdSuffix(FoldSlot.Group) == ".MinorGroup"
+        && MinorFold.IdSuffix(FoldSlot.InnerGroup) != MinorFold.IdSuffix(FoldSlot.OuterGroup));
+
+    // The member list of a dense belt draws a capped number of rows and counts the rest.
+    var names = new List<string>();
+    for (int i = 0; i < 3170; i++)
+        names.Add("S" + (2000 + i).ToString(System.Globalization.CultureInfo.InvariantCulture) + "_S_07");
+    var shown = new List<int>();
+    int all = GroupListFilter.Apply(names, "  ", 200, shown);
+    fails += Check("a blank filter matches every row and draws the cap", all == 3170 && shown.Count == 200 && shown[199] == 199);
+    int some = GroupListFilter.Apply(names, "s2004_", 200, shown);
+    fails += Check("the filter ignores case", some == 1 && shown.Count == 1 && names[shown[0]] == "S2004_S_07");
+    fails += Check("no match draws nothing", GroupListFilter.Apply(names, "Titan", 200, shown) == 0 && shown.Count == 0);
+
+    Console.WriteLine(fails == 0 ? "  fold: OK" : $"  fold: {fails} FAIL");
+    return fails;
+
+    static List<FoldChild> Prepend(List<FoldChild> list, FoldChild first)
+    {
+        list.Insert(0, first);
+        return list;
+    }
 }
 
 static int Check(string name, bool ok)

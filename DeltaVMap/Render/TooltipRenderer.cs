@@ -41,8 +41,8 @@ internal sealed class TooltipRenderer
     }
 
     // A minor-body group ("+N more") or the group of folded star systems: the label, and a
-    // short preview of the collapsed bodies so the user can see what is inside without
-    // expanding it. Search / isolate is the way to pull a specific one out.
+    // short preview of the folded bodies so the user can see what is inside without opening
+    // its list. A click opens the full list, and search pulls a specific one out too.
     public void MinorGroup(StateNode node)
     {
         if (!IsCached(node, 1.0, false))
@@ -59,6 +59,7 @@ internal sealed class TooltipRenderer
                 AddDisabled("  " + members[i].Astro.Id);
             if (members.Count > shown)
                 AddDisabled("  ... and " + (members.Count - shown).ToString(Inv) + " more");
+            AddDisabled("Click to list them all");
         }
         Show();
     }

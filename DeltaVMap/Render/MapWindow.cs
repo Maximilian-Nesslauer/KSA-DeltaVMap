@@ -108,6 +108,7 @@ internal sealed class MapWindow : ImGuiWindow
     private readonly CanvasRenderer _canvas = new();
     private readonly TooltipRenderer _tooltips = new();
     private readonly RoutePanelRenderer _routePanel = new();
+    private readonly GroupListRenderer _groupList = new();
     private readonly TransferWindowRenderer _windowRenderer = new();
     private readonly TransferWindowMapOverlay _mapOverlay = new();
 
@@ -165,6 +166,12 @@ internal sealed class MapWindow : ImGuiWindow
     private string? _focusNodeId;
     private bool _isolate;
 
+    // The node Id of the "+N" group whose members are listed (null while the list is closed),
+    // and the body the last list pick revealed. The pick is kept apart from _revealedBodyIds, so
+    // the next pick replaces it instead of adding a lane, and it does not arm isolate.
+    private string? _groupListId;
+    private string? _listPickId;
+
     // Set (to the node count) when a build was refused for exceeding MaxLayoutNodes; drives the
     // "too large" note in place of the canvas. Zero when the current build laid out normally.
     private int _oversizedCount;
@@ -201,6 +208,10 @@ internal sealed class MapWindow : ImGuiWindow
     // The sibling whose clock dot or list row the overlay is hovering, or null. Drives the map
     // highlight, and is fed back in next frame so the hovered body also lights its clock dot.
     private string? _windowsHoverBodyId;
+    // The screen top and right edge the transfer-window overlay takes this frame, so the group
+    // list above it can stop short of it. Infinite while that overlay draws nothing.
+    private float _windowsPanelTop = float.PositiveInfinity;
+    private float _windowsPanelRight = float.NegativeInfinity;
     // Whether the inline transfer-window markers are drawn on the map (off by default; the toggle
     // lives in the list panel). Dense roots are why it defaults off.
     private bool _showWindowMarkers;
@@ -537,6 +548,8 @@ internal sealed class MapWindow : ImGuiWindow
         // to, else (in the renderer) the soonest. _routeSiblingId is cleared wherever the route
         // is, so it is non-null only while a route to a sibling is selected.
         string? emphasisHint = _windowsHoverBodyId ?? _routeSiblingId;
+        _windowsPanelTop = float.PositiveInfinity;
+        _windowsPanelRight = float.NegativeInfinity;
 
         const float margin = 8f;
         const float gap = 6f;
@@ -610,6 +623,9 @@ internal sealed class MapWindow : ImGuiWindow
 
         string? hover = null;
         bool hotEdge = false;
+
+        _windowsPanelTop = clockPos is float2 top ? Math.Min(listPos.Y, top.Y) : listPos.Y;
+        _windowsPanelRight = clockPos is float2 right ? Math.Max(listPos.X + width, right.X + clockSide) : listPos.X + width;
 
         ImGui.SetCursorScreenPos(listPos);
         ImGui.PushStyleColor(ImGuiCol.ChildBg, TransferOverlayBg);
@@ -703,6 +719,90 @@ internal sealed class MapWindow : ImGuiWindow
 
         _windowsHoverBodyId = hover;
         return overList || overClock || hotEdge;
+    }
+
+    // The member list of the "+N" group the player clicked, floated at the top-right of the
+    // canvas. The open group is kept by node Id and looked up in the current tree every frame,
+    // so a rebuild that drops the group closes the list and one that keeps it lists the new
+    // members. Returns whether the mouse is over the panel, so the canvas suppresses hover / pan
+    // / select underneath, and the picked body, if any.
+    private bool DrawGroupListOverlay(float2 origin, float2 size, out PhysicalNode? pick)
+    {
+        pick = null;
+        if (_groupListId == null || _lookup == null
+            || !_lookup.TryGetValue(_groupListId, out StateNode? group) || group.Kind != StateKind.MinorGroup)
+        {
+            // Closed, or the group left the tree. Dropping the rows also releases the old tree.
+            _groupListId = null;
+            _groupList.Reset();
+            return false;
+        }
+
+        const float margin = 8f;
+        const float gap = 6f;
+        float width = Math.Min(400f, size.X * 0.45f);
+        if (width < 220f || size.Y < 160f)
+            return false;
+        var pos = new float2(origin.X + size.X - margin - width, origin.Y + margin);
+        float row = ImGui.GetFrameHeightWithSpacing();
+
+        // The list stops above an expanded transfer-window overlay that reaches under it, unless
+        // that leaves too little room, where it keeps the canvas height and draws on top.
+        float room = size.Y - 2f * margin;
+        float above = _windowsPanelTop - gap - pos.Y;
+        if (pos.X < _windowsPanelRight && above >= 8f * row)
+            room = Math.Min(room, above);
+
+        bool close = false;
+        float height = room;
+        ImGui.SetCursorScreenPos(pos);
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, TransferOverlayBg);
+        try
+        {
+            int rows = _groupList.Prepare(group);
+            // The title, the filter, the hint, the table header and the "+N more" line, then the rows.
+            height = Math.Min(room, (Math.Min(rows, 16) + 6) * row);
+            ImGui.BeginChild("##dvmgrouppanel"u8, new float2?(new float2(width, height)), ImGuiChildFlags.Borders);
+            try
+            {
+                pick = _groupList.Draw(out close);
+            }
+            finally
+            {
+                ImGui.EndChild();
+            }
+        }
+        catch (Exception ex)
+        {
+            LogHelper.ErrorOnce("group-list", $"[DvMap] Group list failed for '{_groupListId}': {ex}");
+        }
+        finally
+        {
+            // Pop even if BeginChild threw, so the style-color stack stays balanced for the frame.
+            ImGui.PopStyleColor();
+        }
+        if (close)
+            _groupListId = null;
+        return MouseInRect(pos, width, height);
+    }
+
+    // A pick in a group list shows that one body as its own lane, selects the route to it and
+    // centers on it. A star system picked from the "+N star systems" list is shown and opened
+    // the same way, with the route to its parking orbit.
+    private void PickFromList(PhysicalNode body)
+    {
+        if (_currentRootId == null)
+            return;
+
+        _listPickId = body.Id;
+        _focusBodyId = body.Id;
+        // The pick replaces the selected route, so the rebuild has none to carry over.
+        _selectedId = null;
+        RebuildPreservingSelection(_currentRootId);
+        _selectedId = BestBodyNode(body.Id)?.Id;
+        RecomputeRoute();
+        UpdateScene(anchorBodyId: body.Id);
+        FocusOnBody(body.Id);
     }
 
     // Clamp a panel dimension into [min, max], except when the canvas is smaller than the minimum,
@@ -1110,8 +1210,9 @@ internal sealed class MapWindow : ImGuiWindow
         _queryBlank = true;
         _focusBodyId = null;
         _focusNodeId = null;
-        bool hadRevealed = _revealedBodyIds.Count > 0;
+        bool hadRevealed = _revealedBodyIds.Count > 0 || _listPickId != null;
         _revealedBodyIds.Clear();
+        _listPickId = null;
         // Clearing the find resets isolate too: with nothing revealed it would be inert anyway,
         // and unticking it keeps the checkbox honest.
         _isolate = false;
@@ -1195,8 +1296,14 @@ internal sealed class MapWindow : ImGuiWindow
         // so neither a click on its rows nor a drag over it leaks through to a node or a pan.
         bool overWindows = DrawTransferWindowOverlay(origin, size);
 
-        bool overAny = overOverlay || overWindows;
+        // The member list of a clicked "+N" group floats top-right and claims its input the
+        // same way.
+        bool overGroupList = DrawGroupListOverlay(origin, size, out PhysicalNode? listPick);
+
+        bool overAny = overOverlay || overWindows || overGroupList;
         HandleInput(hovered && !overAny, active, clicked && !overAny, origin, in transform);
+        if (listPick != null)
+            PickFromList(listPick);
 
         // A clock dot or list row hovered in the overlay highlights that sibling's node on the
         // map, reusing the canvas hover glow. Applied after HandleInput, which clears _hoverId
@@ -1404,9 +1511,9 @@ internal sealed class MapWindow : ImGuiWindow
                 }
                 else if (hit.Kind == LayoutKind.MinorGroup)
                 {
-                    // A group is not routable. A plain click is a no-op (search / isolate
-                    // pulls out a specific body), so it never throws away a selected route by
-                    // clearing the selection.
+                    // A group is not routable. A plain click opens or closes its member list
+                    // and leaves the selected route alone.
+                    _groupListId = _groupListId == hit.Id ? null : hit.Id;
                 }
                 else
                 {
@@ -1539,8 +1646,8 @@ internal sealed class MapWindow : ImGuiWindow
     // extends an orbit click down to the body's surface.
     private StateNode? ResolveTarget(StateNode clicked)
     {
-        // A group is a synthetic aggregate, not a real destination, so it plans no route.
-        // Search / isolate pulls out a specific body instead.
+        // A group is a synthetic aggregate, not a real destination, so it plans no route. Its
+        // member list, search and isolate pull out a specific body instead.
         if (clicked.Kind == StateKind.MinorGroup)
             return null;
 
@@ -1809,6 +1916,9 @@ internal sealed class MapWindow : ImGuiWindow
 
             // A new system invalidates the search state (the bodies are different).
             _revealedBodyIds.Clear();
+            _listPickId = null;
+            _groupListId = null;
+            _groupList.Reset();
             _searchResults.Clear();
             _searchLabels.Clear();
             _searchMatchTotal = 0;
@@ -2050,8 +2160,11 @@ internal sealed class MapWindow : ImGuiWindow
             // revealed it would just hide every minor body, duplicating the "Show minor bodies"
             // toggle, so it stays inert until there is something to isolate to.
             bool effectiveIsolate = _isolate && _revealedBodyIds.Count > 0;
+            IReadOnlySet<string> revealed = _listPickId == null
+                ? _revealedBodyIds
+                : new HashSet<string>(_revealedBodyIds) { _listPickId };
             var buildOptions = new BuildOptions(_fullLadder, _view.ShowMinorBodies, _view.ShowComets,
-                effectiveIsolate, _revealedBodyIds);
+                effectiveIsolate, revealed);
             VisualTree visual;
             {
 #if DEBUG

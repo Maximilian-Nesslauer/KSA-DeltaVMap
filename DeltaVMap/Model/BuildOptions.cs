@@ -9,12 +9,13 @@ namespace DeltaVMap.Model;
 // able to see where you are and route through the hubs), only destinations.
 internal readonly struct BuildOptions
 {
-    // When a hub carries more visible minor bodies than this, all of its minor bodies
-    // collapse into a single "+N" group node instead of one lane each (so a dense belt does
-    // not blow the map up to hundreds of thousands of pixels), and the "+N" is the full
-    // count. It sits comfortably above the busiest stock hub (Sol, with 9 minor children) so
-    // the stock map collapses nothing and keeps one lane per minor body, while a dense
-    // system's hundreds-to-thousands collapse. Tunable.
+    // When a hub carries more visible minor bodies than this, they fold into "+N" group nodes
+    // instead of one lane each (so a dense belt does not blow the map up to hundreds of
+    // thousands of pixels), and a folded planet keeps at most this many inner moons as lanes
+    // (MinorFold has the rules, with the single-body groups and revealed bodies that add a
+    // lane). It sits comfortably above the busiest stock hub (Sol, with 9 minor children) so
+    // the stock map folds nothing and keeps one lane per minor body, while a dense system's
+    // hundreds-to-thousands fold. Tunable.
     public const int DefaultMinorGroupThreshold = 24;
 
     public readonly bool FullLadder;
@@ -28,9 +29,9 @@ internal readonly struct BuildOptions
     // this only drops un-revealed minor bodies.
     public readonly bool Isolate;
 
-    // Bodies forced visible even when their hub would collapse them (or isolate would hide
-    // them): the search/focus picks add to this so a chosen body is materialized as its own
-    // lane instead of staying inside the "+N" group. Null means none are revealed.
+    // Bodies forced visible even when their hub would fold them (or isolate would hide them).
+    // The search picks and the group-list pick add to this, so a chosen body is materialized
+    // as its own lane instead of staying inside its "+N" group. Null means none are revealed.
     public readonly IReadOnlySet<string>? RevealedBodies;
 
     public BuildOptions(bool fullLadder, bool showMinorBodies, bool showComets,
@@ -43,12 +44,6 @@ internal readonly struct BuildOptions
         Isolate = isolate;
         RevealedBodies = revealedBodies;
         MinorGroupThreshold = minorGroupThreshold;
-    }
-
-    // Whether a body has been revealed (searched) and so must always be shown individually.
-    public bool IsRevealed(string bodyId)
-    {
-        return RevealedBodies != null && RevealedBodies.Contains(bodyId);
     }
 
     // The defaults: full detail context-dependent, everything visible, adaptive collapse.

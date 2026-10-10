@@ -47,6 +47,12 @@
     <!-- The route totals text is pure, so the harness locks which figure the panel pins as
          the headline and which lines scroll with the breakdown. -->
     <Compile Include="..\DeltaVMap\Route\RouteTotals.cs" />
+    <!-- Which minor bodies of a hub fold into "+N" groups is pure too, so the harness locks the
+         threshold, the bands of a planet hub and the group labels, and the synthetic dense-moon
+         map folds through the same rules. The member list's row filter is pure as well. -->
+    <Compile Include="..\DeltaVMap\Model\MinorFold.cs" />
+    <Compile Include="..\DeltaVMap\Model\BuildOptions.cs" />
+    <Compile Include="..\DeltaVMap\Render\GroupListFilter.cs" />
   </ItemGroup>
 
 </Project>

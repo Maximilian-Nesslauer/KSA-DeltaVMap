@@ -77,6 +77,7 @@ internal sealed class VisualTree
         private readonly DvCache _cache;
         private readonly DetailLevel _detail;
         private readonly BuildOptions _options;
+        private readonly HashSet<string>? _revealedPaths;
         private readonly List<StateNode> _nodes = new();
         private readonly List<Edge> _interstellar = new();
         private StateNode? _youAreHere;
@@ -87,6 +88,30 @@ internal sealed class VisualTree
             _cache = cache;
             _detail = detail;
             _options = options;
+            _revealedPaths = RevealedPaths(graph, options.RevealedBodies);
+        }
+
+        // The revealed bodies and every body above them. A revealed moon of a minor body that
+        // is itself folded or hidden (Dysnomia under Eris) is only built when its parent is, so
+        // the parent counts as revealed too.
+        private static HashSet<string>? RevealedPaths(SystemGraph graph, IReadOnlySet<string>? revealed)
+        {
+            if (revealed == null || revealed.Count == 0)
+                return null;
+            var paths = new HashSet<string>();
+            foreach (string id in revealed)
+            {
+                paths.Add(id);
+                PhysicalNode? p = graph.Find(id)?.Parent;
+                while (p != null && paths.Add(p.Id))
+                    p = p.Parent;
+            }
+            return paths;
+        }
+
+        private bool IsRevealed(string bodyId)
+        {
+            return _revealedPaths != null && _revealedPaths.Contains(bodyId);
         }
 
         // Whether a destination body is shown given the visibility toggles. A minor body
@@ -99,7 +124,7 @@ internal sealed class VisualTree
 
             // A revealed (searched) body is always shown, ahead of every hide rule, so a
             // chosen asteroid stays visible under isolate and is pulled out of its group.
-            if (_options.IsRevealed(body.Id))
+            if (IsRevealed(body.Id))
                 return true;
 
             bool minor = body.IsMinor;
@@ -143,11 +168,11 @@ internal sealed class VisualTree
                 if (egoState is { IsOpenCruise: true } && root.IsSystemRoot && _graph.HasSeveralSystems)
                 {
                     ConnectApproach(starHub, NewNode(root, StateKind.LowOrbit, root.Ladder.LowOrbitRadius));
-                    AddChildren(starHub, root.Children, child => ConnectApproach(starHub, BuildDestination(child)));
+                    AddChildren(starHub, root, root.Children, child => ConnectApproach(starHub, BuildDestination(child)));
                 }
                 else
                 {
-                    AddChildren(starHub, root.Children, child =>
+                    AddChildren(starHub, root, root.Children, child =>
                     {
                         LadderNodes childLadder = BuildBodySubtree(child);
                         ConnectHubLink(starHub, childLadder.ArrivalAnchor);
@@ -162,7 +187,7 @@ internal sealed class VisualTree
                 LadderNodes rootLadder = BuildLadder(root, egoState, asDestination: false);
                 rootNode = rootLadder.LocalHub;
 
-                AddChildren(rootLadder.LocalHub, root.Children, child =>
+                AddChildren(rootLadder.LocalHub, root, root.Children, child =>
                 {
                     LadderNodes childLadder = BuildBodySubtree(child);
                     ConnectTransfer(rootLadder.LocalHub, childLadder.ArrivalAnchor,
@@ -195,7 +220,7 @@ internal sealed class VisualTree
                 // local pins the spine child for the callback, since the loop reassigns it
                 // below (the callback runs synchronously here, but the local keeps it clear).
                 PhysicalNode hubSpineChild = spineChild;
-                AddChildren(hubNode, level.OtherChildren, sibling =>
+                AddChildren(hubNode, level.Hub, level.OtherChildren, sibling =>
                 {
                     LadderNodes siblingLadder = BuildBodySubtree(sibling);
                     EdgeDv transfer = _cache.GetTransfer((IOrbiter)hubSpineChild.Astro, (IOrbiter)sibling.Astro);
@@ -291,12 +316,12 @@ internal sealed class VisualTree
                 StateNode hub = NewHub(body);
                 StateNode parking = NewNode(body, StateKind.LowOrbit, body.Ladder.LowOrbitRadius);
                 ConnectApproach(hub, parking);
-                AddChildren(hub, body.Children, child => ConnectApproach(hub, BuildDestination(child)));
+                AddChildren(hub, body, body.Children, child => ConnectApproach(hub, BuildDestination(child)));
                 return hub;
             }
 
             LadderNodes ladder = BuildLadder(body, egoState: null, asDestination: true);
-            AddChildren(ladder.LocalHub, body.Children, child => ConnectApproach(ladder.LocalHub, BuildDestination(child)));
+            AddChildren(ladder.LocalHub, body, body.Children, child => ConnectApproach(ladder.LocalHub, BuildDestination(child)));
             return ladder.ArrivalAnchor;
         }
 
@@ -308,7 +333,7 @@ internal sealed class VisualTree
         {
             LadderNodes ladder = BuildLadder(body, egoState: null, asDestination: true);
 
-            AddChildren(ladder.LocalHub, body.Children, child =>
+            AddChildren(ladder.LocalHub, body, body.Children, child =>
             {
                 LadderNodes childLadder = BuildBodySubtree(child);
                 ConnectTransfer(ladder.LocalHub, childLadder.ArrivalAnchor,
@@ -318,57 +343,87 @@ internal sealed class VisualTree
             return ladder;
         }
 
-        // Branch a hub's children off it, collapsing minor bodies into one synthetic "+N"
-        // group when the hub carries more of them than the threshold. buildChild builds one
-        // real child's subtree and wires its incoming edge; it runs for every shown body, in
-        // the graph's deterministic (innermost-first) order, so a hub under the threshold
-        // keeps its exact lane layout (a stock-sized system is unchanged). Only a dense hub
-        // collapses, and then the minor bodies are recorded on the group rather than built as
-        // thousands of lanes / subtrees; search / isolate surfaces a chosen member later, so
-        // the lanes are never built all at once (the member list itself is cheap). Visibility
-        // (Include) is applied first, so a hidden minor body counts toward neither the lanes
-        // nor the group.
-        private void AddChildren(StateNode hub, IReadOnlyList<PhysicalNode> children, Action<PhysicalNode> buildChild)
+        // Branch a hub's children off it, folding minor bodies into synthetic "+N" groups when
+        // the hub carries more of them than the threshold (MinorFold has the rules). buildChild
+        // builds one real child's subtree and wires its incoming edge, and it runs for every lane
+        // in the graph's deterministic (innermost-first) order, so a hub under the threshold
+        // keeps its exact lane layout (a stock-sized system is unchanged). Folded bodies are
+        // recorded on their group rather than built as thousands of lanes / subtrees; search /
+        // isolate / the group list surface a chosen member later, so the lanes are never built
+        // all at once (the member list itself is cheap). Visibility (Include) is applied first,
+        // so a hidden minor body counts toward neither the lanes nor a group.
+        private void AddChildren(StateNode hub, PhysicalNode hubBody, IReadOnlyList<PhysicalNode> children, Action<PhysicalNode> buildChild)
         {
-            int minorCount = 0;
-            foreach (PhysicalNode child in children)
+            // Only a planet or moon folds by band; a star or barycenter (even one orbiting a
+            // barycenter, which has a finite SOI) folds into one group, so only a band needs the
+            // orbit radius.
+            double? bandSoi = hubBody.Role == BodyRole.Body ? hubBody.Ladder.SoiRadius : null;
+            var fold = new FoldChild[children.Count];
+            for (int i = 0; i < children.Count; i++)
             {
-                if (Include(child) && child.IsMinor)
-                    minorCount++;
+                PhysicalNode child = children[i];
+                double radius = bandSoi != null && child.IsMinor ? TransferRadius(child) : 0.0;
+                fold[i] = new FoldChild(Include(child), child.IsMinor, IsRevealed(child.Id), KindOf(child.Astro), radius);
             }
 
-            bool collapse = minorCount > _options.MinorGroupThreshold;
-            List<PhysicalNode>? collapsed = collapse ? new List<PhysicalNode>(minorCount) : null;
+            FoldSlot[] slots = MinorFold.Plan(fold, _options.MinorGroupThreshold, bandSoi);
 
-            foreach (PhysicalNode child in children)
+            List<PhysicalNode>? group = null;
+            List<PhysicalNode>? inner = null;
+            List<PhysicalNode>? outer = null;
+            for (int i = 0; i < children.Count; i++)
             {
-                if (!Include(child))
-                    continue;
-                // A revealed (searched) minor body is built as its own lane, never folded into
-                // the group, so the search pulls exactly that body out of the "+N".
-                if (collapse && child.IsMinor && !_options.IsRevealed(child.Id))
-                    collapsed!.Add(child);
-                else
-                    buildChild(child);
+                switch (slots[i])
+                {
+                    case FoldSlot.Lane:
+                        buildChild(children[i]);
+                        break;
+                    case FoldSlot.Group:
+                        (group ??= new List<PhysicalNode>()).Add(children[i]);
+                        break;
+                    case FoldSlot.InnerGroup:
+                        (inner ??= new List<PhysicalNode>()).Add(children[i]);
+                        break;
+                    case FoldSlot.OuterGroup:
+                        (outer ??= new List<PhysicalNode>()).Add(children[i]);
+                        break;
+                }
             }
 
-            if (collapsed != null && collapsed.Count > 0)
-                AddMinorGroup(hub, collapsed);
+            if (group != null)
+                AddMinorGroup(hub, FoldSlot.Group, group);
+            if (inner != null)
+                AddMinorGroup(hub, FoldSlot.InnerGroup, inner);
+            if (outer != null)
+                AddMinorGroup(hub, FoldSlot.OuterGroup, outer);
         }
 
-        // Create the synthetic "+N" group node for a hub's collapsed minor bodies and hang it
-        // off the hub by a dV-free GroupLink. The group borrows the hub's body for its color
-        // and a stable Id ("<hub>.MinorGroup", unique because a hub appears once per tree); it
-        // is not a real destination, so it carries no ladder and no transfer cost.
-        private void AddMinorGroup(StateNode hub, List<PhysicalNode> members)
+        private static MinorKind KindOf(Astronomical astro)
         {
+            return astro switch
+            {
+                Comet => MinorKind.Comet,
+                Asteroid => MinorKind.Asteroid,
+                _ => MinorKind.Other
+            };
+        }
+
+        // Create a synthetic "+N" group node for some of a hub's folded minor bodies and hang it
+        // off the hub by a dV-free GroupLink. The group borrows the hub's body for its color and
+        // a stable Id ("<hub>.MinorGroup" plus the band, unique because a hub appears once per
+        // tree); it is not a real destination, so it carries no ladder and no transfer cost.
+        private void AddMinorGroup(StateNode hub, FoldSlot slot, List<PhysicalNode> members)
+        {
+            var kinds = new MinorKind[members.Count];
+            for (int i = 0; i < members.Count; i++)
+                kinds[i] = KindOf(members[i].Astro);
             var group = new StateNode
             {
-                Id = $"{hub.Body.Id}.MinorGroup",
+                Id = hub.Body.Id + MinorFold.IdSuffix(slot),
                 Body = hub.Body,
                 Kind = StateKind.MinorGroup,
                 RadiusFromBody = 0.0,
-                Label = MinorGroupLabel(members),
+                Label = MinorFold.Label(slot, kinds),
                 GroupMembers = members
             };
             _nodes.Add(group);
@@ -627,33 +682,6 @@ internal sealed class VisualTree
             var edge = new Edge { From = from, To = to, Kind = SegmentKind.GroupLink };
             from.AddChild(edge);
             return edge;
-        }
-
-        // The group label, e.g. "+2892 asteroids". The noun is the concrete type when the
-        // collapsed bodies are uniform (a pure asteroid belt reads "asteroids"), otherwise the
-        // generic "minor bodies". The count is always well above the threshold, so the plural
-        // is always correct.
-        private static string MinorGroupLabel(IReadOnlyList<PhysicalNode> members)
-        {
-            return "+" + members.Count.ToString(CultureInfo.InvariantCulture) + " " + MinorNoun(members);
-        }
-
-        private static string MinorNoun(IReadOnlyList<PhysicalNode> members)
-        {
-            bool allAsteroid = true;
-            bool allComet = true;
-            foreach (PhysicalNode m in members)
-            {
-                if (m.Astro is not Asteroid)
-                    allAsteroid = false;
-                if (m.Astro is not Comet)
-                    allComet = false;
-            }
-            if (allAsteroid)
-                return "asteroids";
-            if (allComet)
-                return "comets";
-            return "minor bodies";
         }
 
         // Transfer radius of a body around its parent. Uses the shared OrbitalStates helper
