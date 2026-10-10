@@ -5,6 +5,7 @@ using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using DeltaVMap.Layout;
 using DeltaVMap.Model;
+using DeltaVMap.Route;
 
 // Run the layout engine on the synthetic trees, assert no overlaps, and dump SVG and
 // text so the layout can be eyeballed before any in-game rendering exists. Exit code
@@ -110,6 +111,7 @@ failures += RunForestChecks();
 failures += RunCruiseSpeedChecks();
 failures += RunSceneChecks(outDir);
 failures += RunFormatChecks();
+failures += RunRouteTotalsChecks();
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
@@ -1295,6 +1297,62 @@ static int Approx(string name, double actual, double expected, double relToleran
         return 0;
     Console.WriteLine($"  FAIL {name}: got {actual}, expected {expected}");
     return 1;
+}
+
+// The route totals the panel shows: the headline is the figure the vehicle bar compares
+// against (the round trip when the return is shown), it is never repeated in the detail lines,
+// and the plane change is paid on both legs of a round trip.
+static int RunRouteTotalsChecks()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[totals] route totals headline and detail lines");
+    var details = new List<(string Text, bool Disabled)>();
+
+    static TotalsInput Input(double outbound = 3000.0, double ret = 0.0, double plane = 0.0, double time = 0.0,
+        string? aero = null, string? returnAero = null, bool returnTrip = false, int margin = 0,
+        bool interstellar = false, string? coast = null)
+    {
+        return new TotalsInput(outbound, ret, plane, time, aero, returnAero, returnTrip, margin, interstellar, coast);
+    }
+
+    RouteTotalsText plain = RouteTotals.Build(Input(), details);
+    fails += Check("a plain route heads with its total", plain.Headline == "Total: " + Format.Dv(3000.0) && plain.Needed == 3000.0);
+    fails += Check("a plain route has no detail lines and no margin note", details.Count == 0 && plain.MarginLine.Length == 0);
+
+    RouteTotalsText plane = RouteTotals.Build(Input(plane: 200.0, time: 7200.0), details);
+    fails += Check("the plane change is in the total", plane.Needed == 3200.0 && plane.Headline == "Total: " + Format.Dv(3200.0));
+    fails += Check("the plane change and the transfer time are details",
+        details.Count == 2 && details[0].Text == "+ plane change: " + Format.Dv(200.0) && details[1].Text == "Transfer time: 2.0 h");
+
+    RouteTotalsText round = RouteTotals.Build(Input(ret: 2500.0, plane: 200.0, time: 7200.0, returnTrip: true), details);
+    fails += Check("a round trip pays the plane change twice", round.Needed == 3200.0 + 2700.0);
+    fails += Check("a round trip heads with the round trip", round.Headline == "Round trip: " + Format.Dv(5900.0));
+    fails += Check("a round trip lists both legs and a one-way time",
+        details.Exists(d => d.Text == "Outbound: " + Format.Dv(3200.0))
+        && details.Exists(d => d.Text == "Return: " + Format.Dv(2700.0))
+        && details.Exists(d => d.Text == "Transfer time: 2.0 h (one way)"));
+
+    RouteTotalsText margin = RouteTotals.Build(Input(margin: 10, aero: "Mars", returnAero: "Earth", returnTrip: true), details);
+    fails += Check("a margin is named under the headline", margin.MarginLine == "incl. +10% piloting margin");
+    fails += Check("the aerobrakes are details",
+        details.Exists(d => d.Text == "Aerobrake at Mars") && details.Exists(d => d.Text == "Aerobrake on return at Earth"));
+
+    RouteTotalsText leg = RouteTotals.Build(Input(outbound: 90000.0, ret: 500.0, plane: 300.0, returnTrip: true,
+        interstellar: true, coast: "Coast: 43.44 yr"), details);
+    fails += Check("an interstellar route heads with its trip total", leg.Headline == "Total: " + Format.Dv(90000.0) && leg.Needed == 90000.0);
+    fails += Check("an interstellar route lists only its coast time", details.Count == 1 && details[0].Text == "Coast: 43.44 yr");
+
+    bool neverRepeated = true;
+    foreach (TotalsInput input in new[] { Input(), Input(plane: 1.0, returnTrip: true, ret: 5.0), Input(interstellar: true, coast: "c") })
+    {
+        RouteTotalsText text = RouteTotals.Build(in input, details);
+        neverRepeated &= !details.Exists(d => d.Text == text.Headline || d.Text.StartsWith("Total:") || d.Text.StartsWith("Round trip:"));
+    }
+    fails += Check("the headline is never a detail line", neverRepeated);
+
+    Console.WriteLine(fails == 0 ? "  totals: OK" : $"  totals: {fails} FAIL");
+    return fails;
 }
 
 static int Check(string name, bool ok)

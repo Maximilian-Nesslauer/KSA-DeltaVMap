@@ -4,12 +4,12 @@ using Brutal.Numerics;
 
 namespace DeltaVMap.Render;
 
-// The map legend, drawn at the top of the route panel. It renders the very same NodeGlyphs
-// the canvas draws, next to one-line labels, so the symbol set is self-documenting and can
-// never drift from the map. Static and compact; no interaction. Colors are a fixed
-// representative system color rather than any one body's, so the legend reads the same
-// whatever is on screen. The star-system rows only show when the universe holds several star
-// systems, the only time the map draws them.
+// The controls help and the map legend, drawn under their headers in the route panel. The
+// legend renders the very same NodeGlyphs the canvas draws, next to one-line labels, so the
+// symbol set is self-documenting and can never drift from the map. It is static and has no
+// interaction. Colors are a fixed representative system color rather than any one body's, so
+// the legend reads the same whatever is on screen. The star-system rows only show when the
+// universe holds several star systems, the only time the map draws them.
 internal static class LegendRenderer
 {
     private static readonly byte4 Fill = new byte4(120, 170, 210, 255);
@@ -20,24 +20,24 @@ internal static class LegendRenderer
     private const float CellH = 22f;
     private const float R = 7f;
 
-    public static void Draw(bool severalSystems)
+    // The help lines wrap at the panel edge, because the panel can be narrower than the
+    // longest line at a large interface scale.
+    public static void DrawControls(bool severalSystems)
     {
-        // Controls first, so the map's interactions are discoverable without a manual.
-        ImGui.SeparatorText("Controls"u8);
+        ImGui.PushTextWrapPos(0f);
         ImGui.TextDisabled("Click a body: plan a route to it");
         if (severalSystems)
-        {
-            ImGui.PushTextWrapPos(0f);
             ImGui.TextDisabled("Click a star system: plan a trip there and open it");
-            ImGui.PopTextWrapPos();
-        }
         ImGui.TextDisabled("Click it again: clear the route");
         ImGui.TextDisabled("Shift+click: re-root the map here");
         ImGui.TextDisabled("Drag: pan,  mouse wheel: zoom");
         ImGui.TextDisabled("Top-left icon: switch layout");
+        ImGui.PopTextWrapPos();
+    }
 
-        ImGui.SeparatorText("Legend"u8);
-
+    public static void DrawLegend(bool severalSystems)
+    {
+        ImGui.PushTextWrapPos(0f);
         Row("Low orbit", static (dl, c) => NodeGlyphs.LowOrbit(dl, c, R, Fill, Stroke));
         Row("Stationary orbit", static (dl, c) => NodeGlyphs.Stationary(dl, c, R, Fill, Stroke));
         Row("Elliptical to SOI edge", static (dl, c) => NodeGlyphs.SoiEdge(dl, c, R, Fill, Stroke));
@@ -74,6 +74,7 @@ internal static class LegendRenderer
         ImGui.TextDisabled("Transfer dV: injection + capture, then total");
         ImGui.TextDisabled("With a margin: base (left) | amber +margin (right)");
         ImGui.TextDisabled("~  approximate (closed-form estimate)");
+        ImGui.PopTextWrapPos();
     }
 
     // Draw a glyph centered in a fixed cell, then its label vertically centered beside it.

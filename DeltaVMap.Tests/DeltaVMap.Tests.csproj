@@ -44,6 +44,9 @@
     <!-- The forest's structural rules (body roles, which minor bodies count as planets, the
          order of the system roots) are pure, so the harness locks them for multi-star shapes. -->
     <Compile Include="..\DeltaVMap\Model\ForestRules.cs" />
+    <!-- The route totals text is pure, so the harness locks which figure the panel pins as
+         the headline and which lines scroll with the breakdown. -->
+    <Compile Include="..\DeltaVMap\Route\RouteTotals.cs" />
   </ItemGroup>
 
 </Project>

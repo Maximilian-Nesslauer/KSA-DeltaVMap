@@ -26,9 +26,9 @@ The delta-v figures are the idealized optimal values, so they assume a well-time
 - **Ego-centric metro layout.** The body you are currently in is the root; the map re-roots automatically on the next open after an SOI change or a crossing into another star system, and Shift-Click re-roots to any body on demand.
 - **Every star system.** The other star systems sit apart from your map as small graphs of their own, joined to your star by a dashed interstellar line (not to scale). Click one to open it and plan a trip there; the **System** menu roots the map in any of them.
 - **Accurate budgets.** Closed-form Hohmann transfers with Oberth-combined ejection and capture, a per-body state ladder (surface, low orbit, stationary, SOI edge, intercept) and a "you are here" marker at your actual orbit.
-- **Route planning.** Click any body to highlight the exact route from your current state, with a running total and a per-segment breakdown. Toggles for from-surface, landing, aerobraking, plane change and a return trip, plus a piloting-margin percentage to budget for non-optimal flying.
-- **Vehicle comparison.** A bar compares the selected route against your ship's available delta-v.
-- **Readable at scale.** Node-symbol vocabulary with a legend, search / focus / isolate, and automatic minor-body aggregation so a dense system (thousands of asteroids) stays usable.
+- **Route planning.** Click any body to highlight the exact route from your current state, with a per-segment breakdown. The route total stays pinned at the bottom of the side panel, below everything that scrolls. Toggles for from-surface, landing, aerobraking, plane change and a return trip, plus a piloting-margin percentage to budget for non-optimal flying.
+- **Vehicle comparison.** A bar under the pinned total compares the selected route against your ship's available delta-v.
+- **Readable at scale.** Node-symbol vocabulary with a legend, collapsible side-panel sections, search / focus / isolate, and automatic minor-body aggregation so a dense system (thousands of asteroids) stays usable.
 - **Three layout modes**, switched from the on-canvas toggle or the Options menu:
 
 | Cumulative-down (default) | Gravity-well | Spring |

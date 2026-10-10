@@ -42,6 +42,10 @@ internal sealed class MapWindow : ImGuiWindow
     private const int MaxSearchResults = 40;
     // Visible result rows before the list scrolls (the list child is sized to this).
     private const int MaxVisibleSearchRows = 7;
+    // The fewest rows the panel's scrolling region keeps above a pinned footer. Below that the
+    // footer joins the end of the scrolling content instead, so a very short window still
+    // reaches every control.
+    private const int MinPanelScrollRows = 6;
     // Search text buffer capacity in characters; body names are short.
     private const int SearchBufferCapacity = 64;
 
@@ -437,7 +441,10 @@ internal sealed class MapWindow : ImGuiWindow
 
             ImGui.SameLine();
 
-            ImGui.BeginChild("##dvmap_panel_col"u8, new float2?(new float2(panelWidth, 0f)));
+            // The column itself never scrolls, because DrawPanel puts a scrolling region and the
+            // pinned footer inside it, sized to fit.
+            ImGui.BeginChild("##dvmap_panel_col"u8, new float2?(new float2(panelWidth, 0f)), ImGuiChildFlags.None,
+                ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
             try
             {
                 DrawPanel();
@@ -459,23 +466,52 @@ internal sealed class MapWindow : ImGuiWindow
     // map is re-rooted away from where the vehicle currently is. A route with an interstellar
     // leg first brings the leg up to date for this frame, so its breakdown lines, the totals
     // and the bar include it; the cruise speed and the vessel's burn change only the leg.
+    //
+    // The route's total and the vehicle bar sit in a footer pinned below a scrolling region
+    // that holds everything else, so the answer stays in view whatever is open above it. The
+    // region has to be sized before it is drawn, so the footer is decided from the route as it
+    // stands at the start of the frame. A change made inside the region (a search pick that
+    // changes the route, the margin slider leaving zero, an interstellar leg getting its first
+    // estimate) is sized for from the next frame, so for one frame the footer can be clipped or
+    // sit at the end of the region. A window too short for the footer and a usable region
+    // scrolls as one column with the footer at its end.
     private void DrawPanel()
     {
 #if DEBUG
         using var perf = new PerfTracker.Scope("DvMap.Draw.Panel");
 #endif
         double? availableDv = TryGetAvailableDv();
-        DrawSearchPanel();
 
+        float availY = ImGui.GetContentRegionAvail().Y;
+        bool footer = RoutePanelRenderer.HasFooter(_routeSummary, _routeSummary?.Interstellar != null ? _interstellar : null);
+        float footerH = footer ? RoutePanelRenderer.FooterHeight(_view.PilotingMarginPercent) : 0f;
+        bool pinned = footer && availY - footerH >= MinPanelScrollRows * ImGui.GetFrameHeightWithSpacing();
+
+        PanelResult result;
         InterstellarSection? section = null;
         bool routeStale = false;
-        if (_routeSummary?.Interstellar is InterstellarRoute leg && _graph != null)
+        ImGui.BeginChild("##dvmap_panel_scroll"u8, new float2?(new float2(0f, pinned ? availY - footerH : 0f)));
+        try
         {
-            routeStale = _interstellar.Update(_graph, leg, availableDv, _view.DvScale, _options.FromSurface);
-            section = _interstellar;
-        }
+            DrawSearchPanel();
 
-        PanelResult result = _routePanel.Draw(_options, _view, _routeSummary, availableDv, section, _graph?.HasSeveralSystems == true);
+            if (_routeSummary?.Interstellar is InterstellarRoute leg && _graph != null)
+            {
+                routeStale = _interstellar.Update(_graph, leg, availableDv, _view.DvScale, _options.FromSurface);
+                section = _interstellar;
+            }
+
+            result = _routePanel.DrawBody(_options, _view, _routeSummary, section, _graph?.HasSeveralSystems == true);
+            if (!pinned)
+                _routePanel.DrawFooter(_options, _view, _routeSummary, section, availableDv);
+        }
+        finally
+        {
+            ImGui.EndChild();
+        }
+        if (pinned)
+            _routePanel.DrawFooter(_options, _view, _routeSummary, section, availableDv);
+
         // A visibility change rebuilds the tree (and re-resolves the selected route against
         // the new node set); a plain route-toggle change only re-accumulates the path, as does
         // a vessel that parked at or left the departure body of an interstellar route.
