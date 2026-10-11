@@ -22,9 +22,11 @@ namespace DeltaVMap.Render;
 // route target or the searched body, so opening one lays out only that part.
 internal sealed class MapWindow : ImGuiWindow
 {
-    // The default Earth root is a ~132-node tree that does not fit at 25%, so the zoom
-    // floor sits lower and auto-fit can show the whole map on open.
-    private const double MinZoom = 0.1;
+    // A system with hundreds of moons is tens of thousands of pixels wide, so the zoom floor
+    // sits far below the zoom that fits a stock map, and auto-fit can show the whole map on
+    // open. At this floor the lanes of such a map are closer than one dot, so it reads as an
+    // overview and the labels have already thinned out by rank.
+    private const double MinZoom = 0.02;
     private const double MaxZoom = 4.0;
     private const double HoverRadiusPx = 14.0;
 
