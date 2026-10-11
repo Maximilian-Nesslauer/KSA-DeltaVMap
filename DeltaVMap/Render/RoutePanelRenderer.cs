@@ -116,16 +116,16 @@ internal sealed class RoutePanelRenderer
         bool changed = false;
         bool rebuild = false;
 
-        if (Section("Controls"u8, ref _controlsOpen))
+        if (Section("##dvmsec_controls"u8, "Controls"u8, ref _controlsOpen))
             LegendRenderer.DrawControls(severalSystems);
-        if (Section("Legend"u8, ref _legendOpen))
+        if (Section("##dvmsec_legend"u8, "Legend"u8, ref _legendOpen))
             LegendRenderer.DrawLegend(severalSystems);
 
         bool interstellar = summary?.Interstellar != null;
 
-        if (Section("Route options"u8, ref _routeOpen))
+        if (Section("##dvmsec_route"u8, "Route options"u8, ref _routeOpen))
             changed = DrawRouteOptions(options, summary, interstellar);
-        if (Section("View"u8, ref _viewOpen))
+        if (Section("##dvmsec_view"u8, "View"u8, ref _viewOpen))
             rebuild = DrawViewOptions(view);
 
         ImGui.Separator();
@@ -189,12 +189,53 @@ internal sealed class RoutePanelRenderer
         DrawVehicleBar(_headline.Needed, availableDv);
     }
 
-    // The bool is the open state, so it survives rebuilds without relying on ImGui's per-id
-    // storage.
-    private static bool Section(ReadOnlySpan<byte> label, ref bool open)
+    // A section header in the console look of the rest of the panel. It draws the title and a
+    // rule to the right edge as SeparatorText does, with an arrow in front that shows the state,
+    // and the whole row toggles. The bool is the open state, so it survives rebuilds without relying on
+    // ImGui's per-id storage.
+    private static bool Section(ReadOnlySpan<byte> id, ReadOnlySpan<byte> title, ref bool open)
     {
-        ImGui.SetNextItemOpen(open, ImGuiCond.Always);
-        open = ImGui.CollapsingHeader(label);
+        float2 pos = ImGui.GetCursorScreenPos();
+        float width = Math.Max(1f, ImGui.GetContentRegionAvail().X);
+        float height = ImGui.GetFrameHeight();
+        if (ImGui.InvisibleButton(id, new float2(width, height)))
+            open = !open;
+        bool hovered = ImGui.IsItemHovered();
+        if (hovered)
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+        ImDrawListPtr dl = ImGui.GetWindowDrawList();
+        uint text = ImGui.GetColorU32(ImGuiCol.Text);
+        uint rule = ImGui.GetColorU32(hovered ? ImGuiCol.SeparatorHovered : ImGuiCol.Separator);
+        float cy = pos.Y + height * 0.5f;
+        float s = MathF.Max(3f, height * 0.18f);
+        float ax = pos.X + s + 2f;
+        if (open)
+        {
+            var a = new float2(ax - s, cy - s * 0.6f);
+            var b = new float2(ax + s, cy - s * 0.6f);
+            var c = new float2(ax, cy + s * 0.8f);
+            dl.AddTriangleFilled(in a, in b, in c, text);
+        }
+        else
+        {
+            var a = new float2(ax - s * 0.6f, cy - s);
+            var b = new float2(ax - s * 0.6f, cy + s);
+            var c = new float2(ax + s * 0.8f, cy);
+            dl.AddTriangleFilled(in a, in b, in c, text);
+        }
+
+        float2 size = ImGui.CalcTextSize(title);
+        var textPos = new float2(ax + s + 6f, cy - size.Y * 0.5f);
+        dl.AddText(textPos, text, title);
+        float right = pos.X + width;
+        float lineStart = textPos.X + size.X + 6f;
+        if (lineStart < right)
+        {
+            var from = new float2(lineStart, cy);
+            var to = new float2(right, cy);
+            dl.AddLine(in from, in to, rule, 1f);
+        }
         return open;
     }
 
