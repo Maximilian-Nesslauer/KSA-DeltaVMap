@@ -147,7 +147,7 @@ internal static class RowWrap
         double zNom = ScreenZoom(w0, h0, cfg);
         double g = cfg.GridPx;
         double gap = Math.Max(cfg.BandHeightPx, SnapUp(cfg.ShelfClearScreenPx / zNom, g));
-        double gutter = Math.Max(cfg.WrapGutterPx, SnapUp(2.0 * (cfg.MoonDotRadius + OverlapCheck.WrapLineClearPx) / zNom, g));
+        double gutter = Gutter(cfg, zNom * cfg.WrapLineZoomShare);
 
         List<LayoutWrap> wraps = Apply(tree, cfg, fans, cap, gap, gutter, skipRevealed: true);
         (double w, double h) = Measure(tree, cfg, wraps);
@@ -156,6 +156,16 @@ internal static class RowWrap
             rows += wrap.RowSizes.Count;
         Reset(tree);
         return new Candidate(cap, wraps.Count, rows, w, h, Score(w, h, cfg), gap, gutter);
+    }
+
+    // The gutter holds a moon dot and the line clearance on each side of the trunk at the given
+    // zoom. In Cumulative-down the hub's rungs hang inside row 0 right beside the trunk, so the
+    // gutter is sized for the lowest zoom the map is drawn at, WrapLineZoomShare of its nominal
+    // one. In GravityWell the rungs stay in the hub's column, which HubGutter already keeps a
+    // rung label away from the trunk, so the nominal zoom is enough there.
+    private static double Gutter(LayoutConfig cfg, double zoom)
+    {
+        return Math.Max(cfg.WrapGutterPx, SnapUp(2.0 * (cfg.MoonDotRadius + OverlapCheck.WrapLineClearPx) / zoom, cfg.GridPx));
     }
 
     // The zoom the gap and the gutter of a candidate are sized for, which is its own nominal fit
@@ -559,7 +569,7 @@ internal static class RowWrap
         double zNom = ScreenZoom(w0, h0, cfg);
         double g = cfg.GridPx;
         double gap = Math.Max(cfg.WellBandHeightPx, SnapUp(cfg.ShelfClearScreenPx / zNom, g));
-        double gutter = Math.Max(cfg.WrapGutterPx, SnapUp(2.0 * (cfg.MoonDotRadius + OverlapCheck.WrapLineClearPx) / zNom, g));
+        double gutter = Gutter(cfg, zNom);
 
         WellPass pass = AssignWell(tree, cfg, plan, cap, shelves, gap, gutter, skipRevealed: true);
         (double w, double h) = WellBounds(tree, cfg, plan, pass);

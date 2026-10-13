@@ -22,6 +22,10 @@ internal sealed class ColorPalette
     // line.
     internal static readonly byte4 InterstellarLine = new byte4(190, 150, 255, 255);
 
+    // The neutral grey of the lines that carry no delta-v inside one system: the solid hub bus
+    // and the dashed row break that joins the rows of a wrapped fan.
+    internal static readonly byte4 HubBusLine = new byte4(122, 138, 152, 255);
+
     private ColorPalette(Dictionary<string, byte4> byBodyId)
     {
         _byBodyId = byBodyId;

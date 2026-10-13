@@ -1731,10 +1731,12 @@ internal sealed class MapWindow : ImGuiWindow
             {
                 LayoutEdge edge = node.Out[e];
                 // Skip hub links (no dV) and the group connector (its target is a synthetic
-                // aggregate, so an edge tooltip there would be meaningless).
+                // aggregate, so an edge tooltip there would be meaningless). The layout-only
+                // prefix of an edge into a lower row runs along the shared trunk, so the hover
+                // measures from DvStart and a mouse on the trunk picks no lane.
                 if (edge.IsHubLink || edge.To.Kind == LayoutKind.MinorGroup || edge.Polyline.Count < 2)
                     continue;
-                double sq = DistanceSqToPolyline(mouse, edge.Polyline, in transform);
+                double sq = DistanceSqToPolyline(mouse, edge.Polyline, in transform, edge.DvStart);
                 if (sq < bestSq)
                 {
                     bestSq = sq;
@@ -1800,10 +1802,10 @@ internal sealed class MapWindow : ImGuiWindow
         return dx * dx + dy * dy;
     }
 
-    private static double DistanceSqToPolyline(float2 mouse, IReadOnlyList<LayoutPoint> line, in CanvasTransform transform)
+    private static double DistanceSqToPolyline(float2 mouse, IReadOnlyList<LayoutPoint> line, in CanvasTransform transform, int start = 0)
     {
         double best = double.MaxValue;
-        for (int i = 1; i < line.Count; i++)
+        for (int i = start + 1; i < line.Count; i++)
         {
             float2 a = transform.ToScreen(line[i - 1].X, line[i - 1].Y);
             float2 b = transform.ToScreen(line[i].X, line[i].Y);

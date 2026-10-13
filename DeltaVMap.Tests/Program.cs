@@ -150,6 +150,7 @@ failures += RunWrapStability();
 failures += RunWrapParts();
 failures += RunOpaqueBlock(outDir);
 failures += RunTextWidthChecks();
+failures += RunRowBreakChecks();
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
@@ -993,8 +994,8 @@ static int RunSceneChecks(string outDir)
             // The fit with the strip each wrapping map reached when the rows were tuned.
             double reached = (mode, sol) switch
             {
-                (LayoutMode.CumulativeDown, "-dense") => 0.124,
-                (LayoutMode.CumulativeDown, "-clamped") => 0.091,
+                (LayoutMode.CumulativeDown, "-dense") => 0.119,
+                (LayoutMode.CumulativeDown, "-clamped") => 0.089,
                 (LayoutMode.GravityWell, "") => 0.557,
                 (LayoutMode.GravityWell, "-realsol") => 0.343,
                 (LayoutMode.GravityWell, "-dense") => 0.270,
@@ -1200,6 +1201,7 @@ static int CheckAtFit(string tag, LayoutScene scene, double aloneFit, double? mi
                 fails += Check(FormattableString.Invariant($"{at}: the fit zoom keeps {100 * min:F0}% of the ego map alone ({100 * ratio:F1}%)"), ratio >= min);
         }
         fails += Expect($"{at}: the connectors keep clear", SceneChecks.Connectors(scene, w, h));
+        fails += Expect($"{at}: the row breaks keep clear", SceneChecks.WrapLines(scene, w, h));
         fails += Expect($"{at}: the fit look holds", SceneChecks.Fit(scene, w, h, out double band));
         Console.WriteLine(FormattableString.Invariant($"  {at}: empty band {band:F0} px"));
     }
@@ -2009,12 +2011,12 @@ static int RunWrapGates()
 
     var locked = new Dictionary<string, double>
     {
-        ["dense-moons"] = 0.149,
-        ["clamped-giants"] = 0.103,
-        ["wide-fan"] = 0.293,
+        ["dense-moons"] = 0.143,
+        ["clamped-giants"] = 0.098,
+        ["wide-fan"] = 0.291,
         ["flat-fan-26"] = 0.262,
         ["flat-fan-60"] = 0.184,
-        ["many-moons"] = 0.262
+        ["many-moons"] = 0.258
     };
 
     LayoutConfig auto = LayoutConfig.Default.WithWrap(WrapMode.Auto);
@@ -2633,6 +2635,108 @@ static int RunWrappedNegativeFixtures()
         rung.SnappedY = hub.SnappedY + wrap.RowDy[1] / 2.0;
     });
     return fails;
+}
+
+// The drawn row breaks of every wrapped map in both tree modes, alone on the canvas. Each gap
+// between two rows has one break, its "//" mark sits on the vertical run of the trunk inside the
+// empty height between the rows, and its fold rule crosses no dot. At fit zoom on a 1600x1000
+// and a 1300x860 canvas, the trunk and the prefixes keep their screen clearance from the dots.
+// The SVG dump draws every trunk and leaves out every prefix, as the canvas does.
+static int RunRowBreakChecks()
+{
+    int fails = 0;
+    int fans = 0;
+    int breaks = 0;
+    var cases = new List<(string Name, Func<LayoutTree> Build, LayoutConfig Cfg)>();
+    foreach ((string name, Func<LayoutTree> build) in WrapCases())
+        cases.Add((name + " CD", build, LayoutConfig.Default.WithWrap(WrapMode.Auto)));
+    foreach ((string name, Func<LayoutTree> build) in WellWrapCases())
+        cases.Add((name + " GW", build, new LayoutConfig { Mode = LayoutMode.GravityWell }.WithWrap(WrapMode.Auto)));
+
+    foreach ((string name, Func<LayoutTree> build, LayoutConfig cfg) in cases)
+    {
+        LayoutResult result = LayoutEngine.Run(build(), cfg);
+        if (result.Wraps.Count == 0)
+            continue;
+        var hubs = new List<(LayoutNode Hub, LayoutWrap Wrap)>();
+        WrapGeometry.Collect(result, hubs);
+        fails += Check($"{name}: every wrap has its hub", hubs.Count == result.Wraps.Count);
+        foreach ((LayoutNode hub, LayoutWrap wrap) in hubs)
+        {
+            fans++;
+            var found = new List<RowBreak>();
+            WrapGeometry.AddBreaks(hub, wrap, wrap.Mode, found);
+            breaks += found.Count;
+            fails += Check($"{name}: '{hub.Id}' has one break per gap between rows ({found.Count})", found.Count == wrap.RowSizes.Count - 1);
+            RowBox[] boxes = WrapGeometry.RowBoxes(hub, wrap, wrap.Mode);
+            for (int r = 1; r <= found.Count && r < boxes.Length; r++)
+            {
+                RowBreak brk = found[r - 1];
+                bool onTrunk = false;
+                for (int i = 0; i + 1 < wrap.Trunk.Count; i++)
+                {
+                    bool vertical = Math.Abs(wrap.Trunk[i].X - wrap.Trunk[i + 1].X) < 1e-9;
+                    onTrunk |= vertical && SceneComposer.SegmentPointDistance(wrap.Trunk[i], wrap.Trunk[i + 1], brk.Mark) < 1e-6;
+                }
+                fails += Check($"{name}: the break above row {r} of '{hub.Id}' sits on the vertical trunk", onTrunk);
+                double below = Math.Min(boxes[r].MinY, hub.SnappedY + wrap.RowDy[r]);
+                fails += Check(FormattableString.Invariant($"{name}: the break above row {r} of '{hub.Id}' lies in the gap ({boxes[r - 1].MaxY:F0} < {brk.Mark.Y:F0} < {below:F0})"),
+                    boxes[r - 1].MaxY < brk.Mark.Y && brk.Mark.Y < below);
+                var ruleA = new LayoutPoint(brk.RuleLeft, brk.Mark.Y);
+                var ruleB = new LayoutPoint(brk.RuleRight, brk.Mark.Y);
+                var crossed = new List<string>();
+                foreach (LayoutNode node in result.Tree.Nodes)
+                {
+                    if (SceneComposer.SegmentPointDistance(ruleA, ruleB, new LayoutPoint(node.SnappedX, node.SnappedY)) < node.DotRadius)
+                        crossed.Add(node.Id);
+                }
+                fails += Check($"{name}: the fold rule above row {r} of '{hub.Id}' crosses no dot ({string.Join(", ", crossed)})", crossed.Count == 0);
+            }
+        }
+
+        LayoutScene alone = SceneComposer.Compose(result, null, new List<LayoutPart>(), cfg);
+        foreach ((double w, double h) in new[] { (1600.0, 1000.0), (1300.0, 860.0) })
+            fails += Expect(FormattableString.Invariant($"{name} at {w}x{h}: the row breaks keep clear"), SceneChecks.WrapLines(alone, w, h));
+
+        string svg = LayoutDumpFormat.ToSvg(result);
+        int trunks = CountOf(svg, "stroke=\"#7a8a98\" stroke-width=\"1.6\" stroke-dasharray=\"7 5\"");
+        fails += Check($"{name}: the SVG dump draws every trunk once ({trunks})", trunks == result.Wraps.Count);
+        bool dvPartsOnly = true;
+        foreach (LayoutNode node in result.Tree.Nodes)
+        {
+            foreach (LayoutEdge edge in node.Out)
+            {
+                if (edge.DvStart <= 0)
+                    continue;
+                dvPartsOnly &= svg.Contains(SvgPoints(edge.Polyline, edge.DvStart, result), StringComparison.Ordinal)
+                    && !svg.Contains(SvgPoints(edge.Polyline, 0, result), StringComparison.Ordinal);
+            }
+        }
+        fails += Check($"{name}: the SVG dump draws each edge into a lower row from its dV part on", dvPartsOnly);
+    }
+    Console.WriteLine(FormattableString.Invariant($"  row breaks: {breaks} breaks on {fans} wrapped fans drawn and checked"));
+    return fails;
+}
+
+// The points attribute the tree SVG dump writes for a polyline from point start on.
+static string SvgPoints(IReadOnlyList<LayoutPoint> line, int start, LayoutResult result)
+{
+    var sb = new System.Text.StringBuilder("points=\"");
+    for (int i = start; i < line.Count; i++)
+    {
+        if (i > start)
+            sb.Append(' ');
+        sb.Append(FormattableString.Invariant($"{line[i].X + 40.0 - result.MinX:0.0},{line[i].Y + 40.0 - result.MinY:0.0}"));
+    }
+    return sb.Append('"').ToString();
+}
+
+static int CountOf(string text, string part)
+{
+    int count = 0;
+    for (int i = text.IndexOf(part, StringComparison.Ordinal); i >= 0; i = text.IndexOf(part, i + part.Length, StringComparison.Ordinal))
+        count++;
+    return count;
 }
 
 static int Check(string name, bool ok)

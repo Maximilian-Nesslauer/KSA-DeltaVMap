@@ -449,10 +449,7 @@ internal static class OverlapCheck
             foreach (LayoutNode node in tree.Nodes)
                 nodesById.TryAdd(node.Id, node);
 
-            // In Cumulative-down the hub's rungs hang inside the block of row 0, so the row
-            // geometry counts them. In GravityWell they stay in the hub's own column, left of
-            // the trunk, and the rows are the lanes alone.
-            bool rungsInRows = cfg.Mode == LayoutMode.CumulativeDown;
+            bool rungsInRows = WrapGeometry.RungsInRows(cfg.Mode);
             double bandHeightPx = cfg.Mode == LayoutMode.GravityWell ? cfg.WellBandHeightPx : cfg.BandHeightPx;
             foreach (LayoutWrap wrap in result.Wraps)
             {
@@ -464,7 +461,7 @@ internal static class OverlapCheck
                 // The geometry rules below need well-formed rows to measure.
                 if (!CheckRowOrder(hub, wrap, cfg, report))
                     continue;
-                List<LayoutNode>[] rows = RowMembers(hub, wrap, rungsInRows);
+                List<LayoutNode>[] rows = WrapGeometry.RowMembers(hub, wrap, rungsInRows);
                 CheckTrunk(hub, wrap, report);
                 CheckRowClearance(hub, rows, bandHeightPx, report);
                 CheckRowStarts(hub, wrap, rows, cfg.GridPx, report);
@@ -620,23 +617,6 @@ internal static class OverlapCheck
         if (wrap.Balanced && most - fewest > 1)
             Fail($"the rows of '{hub.Id}' are not balanced, they hold {fewest} to {most} lanes");
         return ok;
-    }
-
-    // The nodes of each row, which are the subtrees of the row's lanes and, in row 0, also the
-    // subtrees of the hub's rungs when they hang inside the block.
-    private static List<LayoutNode>[] RowMembers(LayoutNode hub, LayoutWrap wrap, bool rungsInRows)
-    {
-        var rows = new List<LayoutNode>[wrap.RowSizes.Count];
-        for (int r = 0; r < rows.Length; r++)
-            rows[r] = new List<LayoutNode>();
-        foreach (LayoutEdge edge in hub.Out)
-        {
-            int row = edge.To.WrapRow;
-            if (row < 0 || row >= rows.Length || (edge.Class == EdgeClass.Ladder && !rungsInRows))
-                continue;
-            rows[row].AddRange(LayoutTree.PreOrder(edge.To));
-        }
-        return rows;
     }
 
     // The shared trunk runs from the hub over to the gutter and down to the last row, with only

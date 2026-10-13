@@ -156,6 +156,12 @@ internal sealed class LayoutConfig
     // result up to GridPx, so this value itself is not on the grid.
     public double ShelfClearScreenPx { get; init; } = 44.0;
 
+    // The share of the nominal fit zoom down to which a Cumulative-down trunk keeps the line
+    // clearance of the scene checks from the dots on both sides of its gutter. A 1300x860 canvas
+    // with the strip of other star systems below the map and one of them opened draws the map at
+    // about this share, so a hub's own rung dot stays clear of its trunk there too.
+    public double WrapLineZoomShare { get; init; } = 0.6;
+
     // Width over height of the nominal canvas the wrap scores against. ForMap sets 1.6, or 2.4
     // when other star systems need the strip below the map, so a wrapped map stays wide enough
     // for the strip to stay below it.
@@ -230,6 +236,7 @@ internal sealed class LayoutConfig
             WrapMinGain = WrapMinGain,
             WrapGutterPx = WrapGutterPx,
             ShelfClearScreenPx = ShelfClearScreenPx,
+            WrapLineZoomShare = WrapLineZoomShare,
             WrapTargetAspect = WrapTargetAspect,
             WrapScreenZoom = WrapScreenZoom
         };
@@ -315,6 +322,9 @@ internal sealed class LayoutConfig
         if (ShelfClearScreenPx <= 0.0)
             throw new System.ArgumentException(
                 $"ShelfClearScreenPx ({ShelfClearScreenPx}) must be positive.");
+        if (WrapLineZoomShare <= 0.0 || WrapLineZoomShare > 1.0)
+            throw new System.ArgumentException(
+                $"WrapLineZoomShare ({WrapLineZoomShare}) must be above 0 and at most 1.");
         if (WrapTargetAspect <= 0.0)
             throw new System.ArgumentException(
                 $"WrapTargetAspect ({WrapTargetAspect}) must be positive.");

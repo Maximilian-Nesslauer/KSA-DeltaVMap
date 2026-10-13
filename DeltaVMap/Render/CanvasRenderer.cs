@@ -76,7 +76,11 @@ internal readonly record struct ConnectorBadge(string DestinationRootId, string 
 //
 // Six passes per frame:
 //  1. Edge polylines and the dashed interstellar connectors (off-route faded, then the
-//     route heavy and white on top), plus the scale-break mark on the connector trunk.
+//     route heavy and white on top), plus the scale-break mark on the connector trunk. A fan
+//     wrapped into rows adds its row break under the edges: the dashed grey trunk, a "//"
+//     mark and a faint fold rule in each gap between two rows. These carry no delta-v, so an
+//     edge into a lower row draws only from DvStart and leaves its layout-only prefix to the
+//     trunk, except on the route, where the prefix is dashed in the route color.
 //  2. Node dots, their state-kind glyphs, and the atmosphere/ring node markers. With other
 //     star systems shown, each system root gets a quiet ring and a collapsed system its
 //     larger square with a faint fan under it.
@@ -147,7 +151,7 @@ internal sealed class CanvasRenderer
 
     internal static readonly byte4 CanvasBackground = new byte4(17, 21, 28, 255);
 
-    private static readonly byte4 HubBus = new byte4(122, 138, 152, 255);
+    private static readonly byte4 HubBus = ColorPalette.HubBusLine;
     private static readonly byte4 BadgeBg = new byte4(16, 20, 28, 210);
     private static readonly byte4 BadgeTextColor = new byte4(198, 208, 220, 255);
     private static readonly byte4 BadgeSubText = new byte4(150, 162, 176, 255);
@@ -182,6 +186,12 @@ internal sealed class CanvasRenderer
     private const float ConnectorWidth = 2.2f;
     private const float ConnectorRouteWidth = 4f;
 
+    // The row break of a wrapped fan: the dashed trunk a little thinner than a transfer line,
+    // and the fold rule faint enough that it never reads as an edge.
+    private const float RowBreakWidth = 1.6f;
+    private const float FoldRuleWidth = 1f;
+    private const double FoldRuleAlpha = 0.3;
+
     // Per-scene caches.
     private LayoutScene? _styleScene;
     private ColorPalette? _stylePalette;
@@ -197,6 +207,12 @@ internal sealed class CanvasRenderer
     private ScreenRect[] _titleRects = Array.Empty<ScreenRect>();
     private bool[] _titleDrawn = Array.Empty<bool>();
     private int _titleCount;
+
+    // The trunks and row breaks of every wrapped fan in the scene, collected once per scene.
+    private LayoutScene? _wrapScene;
+    private readonly List<IReadOnlyList<LayoutPoint>> _wrapTrunks = new();
+    private readonly List<RowBreak> _rowBreaks = new();
+    private readonly List<(LayoutNode Hub, LayoutWrap Wrap)> _wrapHubs = new();
 
     private LayoutScene? _badgeScene;
     private double _badgeScale = double.NaN;
@@ -247,6 +263,7 @@ internal sealed class CanvasRenderer
         _clipMax = canvasMax;
         _lineHeight = ImGui.GetTextLineHeight();
         EnsureStyles(scene, lookup, palette);
+        EnsureWraps(scene);
         if (t.Zoom >= BadgeMinZoom)
             EnsureBadges(scene, dvScale, showTransferTimes);
 
@@ -266,6 +283,10 @@ internal sealed class CanvasRenderer
         _styles = Array.Empty<NodeStyle>();
         _badgeScene = null;
         _badges = Array.Empty<BadgeText?>();
+        _wrapScene = null;
+        _wrapTrunks.Clear();
+        _rowBreaks.Clear();
+        _wrapHubs.Clear();
         _titleNames = Array.Empty<string?>();
         _titleDistances = Array.Empty<string?>();
         _titleDistanceX = Array.Empty<float>();
@@ -339,6 +360,28 @@ internal sealed class CanvasRenderer
         }
     }
 
+    // The trunk and the row breaks of every wrapped fan, from the home map and every opened
+    // destination. A compose builds a new scene whenever it moves a part, so the geometry
+    // read here stays valid for the scene it was read from.
+    private void EnsureWraps(LayoutScene scene)
+    {
+        if (ReferenceEquals(scene, _wrapScene))
+            return;
+        _wrapTrunks.Clear();
+        _rowBreaks.Clear();
+        _wrapHubs.Clear();
+        WrapGeometry.Collect(scene, _wrapHubs);
+        for (int i = 0; i < _wrapHubs.Count; i++)
+        {
+            (LayoutNode hub, LayoutWrap wrap) = _wrapHubs[i];
+            if (wrap.Trunk.Count >= 2)
+                _wrapTrunks.Add(wrap.Trunk);
+            WrapGeometry.AddBreaks(hub, wrap, wrap.Mode, _rowBreaks);
+        }
+        _wrapHubs.Clear();
+        _wrapScene = scene;
+    }
+
     // The system root whose title box holds the point, from the titles drawn last frame, or -1.
     public int TitleAt(float2 point)
     {
@@ -360,8 +403,12 @@ internal sealed class CanvasRenderer
         IReadOnlyList<LayoutConnector> connectors = scene.Connectors;
         byte4 lane = routing ? Fade(ColorPalette.InterstellarLine, OffRouteAlpha) : ColorPalette.InterstellarLine;
 
+        DrawRowBreaks(dl, in t, routing);
+
         // Base pass: every edge except the highlighted route (deferred so the heavy
-        // white line draws on top). Off-route edges fade when a route is active.
+        // white line draws on top). Off-route edges fade when a route is active. An edge into
+        // a lower row of a wrapped fan starts at DvStart, because the trunk already draws the
+        // way its prefix runs.
         for (int n = 0; n < nodes.Count; n++)
         {
             LayoutNode node = nodes[n];
@@ -388,7 +435,7 @@ internal sealed class CanvasRenderer
                     color = _styles[edge.To.Index].Fill;
                     width = edge.IsApproach ? 1.4f : edge.Class == EdgeClass.Transfer ? 2.2f : 1.6f;
                 }
-                DrawPolyline(dl, edge.Polyline, in t, routing ? Fade(color, OffRouteAlpha) : color, width);
+                DrawPolyline(dl, edge.Polyline, edge.DvStart, in t, routing ? Fade(color, OffRouteAlpha) : color, width);
             }
         }
 
@@ -409,7 +456,8 @@ internal sealed class CanvasRenderer
         if (!routing)
             return;
 
-        // Route pass: the selected path, heavy and white.
+        // Route pass: the selected path, heavy and white. The layout-only prefix of an edge
+        // into a lower row is dashed, so the route still shows which length states no dV.
         for (int n = 0; n < nodes.Count; n++)
         {
             LayoutNode node = nodes[n];
@@ -418,7 +466,9 @@ internal sealed class CanvasRenderer
                 LayoutEdge edge = node.Out[e];
                 if (edge.Polyline.Count < 2 || !OnRoute(edge, routeNodes!))
                     continue;
-                DrawPolyline(dl, edge.Polyline, in t, RouteLine, RouteLineWidth);
+                if (edge.DvStart > 0)
+                    DrawDashedPolyline(dl, edge.Polyline, 0, edge.DvStart, in t, RouteLine, RouteLineWidth);
+                DrawPolyline(dl, edge.Polyline, edge.DvStart, in t, RouteLine, RouteLineWidth);
             }
         }
         for (int i = 0; i < connectors.Count; i++)
@@ -442,9 +492,10 @@ internal sealed class CanvasRenderer
         return routeNodes.Contains(connector.From.Id) && routeNodes.Contains(connector.To.Id);
     }
 
-    private static void DrawPolyline(ImDrawListPtr dl, IReadOnlyList<LayoutPoint> line, in CanvasTransform t, byte4 color, float width)
+    // The polyline from point start to its end.
+    private static void DrawPolyline(ImDrawListPtr dl, IReadOnlyList<LayoutPoint> line, int start, in CanvasTransform t, byte4 color, float width)
     {
-        for (int i = 1; i < line.Count; i++)
+        for (int i = start + 1; i < line.Count; i++)
         {
             float2 a = t.ToScreen(line[i - 1].X, line[i - 1].Y);
             float2 b = t.ToScreen(line[i].X, line[i].Y);
@@ -454,11 +505,43 @@ internal sealed class CanvasRenderer
 
     private void DrawDashedPolyline(ImDrawListPtr dl, IReadOnlyList<LayoutPoint> line, in CanvasTransform t, byte4 color, float width)
     {
-        for (int i = 1; i < line.Count; i++)
+        DrawDashedPolyline(dl, line, 0, line.Count - 1, in t, color, width);
+    }
+
+    // The dashed polyline from point start to point end.
+    private void DrawDashedPolyline(ImDrawListPtr dl, IReadOnlyList<LayoutPoint> line, int start, int end, in CanvasTransform t, byte4 color, float width)
+    {
+        for (int i = start + 1; i <= end && i < line.Count; i++)
         {
             float2 a = t.ToScreen(line[i - 1].X, line[i - 1].Y);
             float2 b = t.ToScreen(line[i].X, line[i].Y);
             NodeGlyphs.DashedSegment(dl, a, b, color, width, _clipMin, _clipMax);
+        }
+    }
+
+    // The row breaks of every wrapped fan, under the edges: the faint fold rule across the block
+    // in each gap between two rows, the dashed trunk that joins the rows, and the vertical "//"
+    // on the trunk in each gap. They fade with the other off-route geometry, because no route
+    // runs along them.
+    private void DrawRowBreaks(ImDrawListPtr dl, in CanvasTransform t, bool routing)
+    {
+        if (_wrapTrunks.Count == 0)
+            return;
+        byte4 line = routing ? Fade(HubBus, OffRouteAlpha) : HubBus;
+        byte4 rule = Fade(HubBus, routing ? FoldRuleAlpha * OffRouteAlpha : FoldRuleAlpha);
+        for (int i = 0; i < _rowBreaks.Count; i++)
+        {
+            RowBreak brk = _rowBreaks[i];
+            float2 a = t.ToScreen(brk.RuleLeft, brk.Mark.Y);
+            float2 b = t.ToScreen(brk.RuleRight, brk.Mark.Y);
+            dl.AddLine(in a, in b, rule, FoldRuleWidth);
+        }
+        for (int i = 0; i < _wrapTrunks.Count; i++)
+            DrawDashedPolyline(dl, _wrapTrunks[i], in t, line, RowBreakWidth);
+        for (int i = 0; i < _rowBreaks.Count; i++)
+        {
+            RowBreak brk = _rowBreaks[i];
+            NodeGlyphs.ScaleBreak(dl, t.ToScreen(brk.Mark.X, brk.Mark.Y), line, CanvasBackground, vertical: true);
         }
     }
 

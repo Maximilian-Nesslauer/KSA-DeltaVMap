@@ -30,6 +30,9 @@ internal static class LayoutDumpFormat
         sb.Append(Inv, $"<text x=\"8\" y=\"18\" fill=\"#8aa0b4\">{Escape(tree.Name)}  ({tree.Nodes.Count} nodes, {result.Labels.Placed}/{result.Labels.Total} labels)</text>\n");
 
         DrawBandGuides(sb, result, tx, ty, w);
+        var wraps = new List<(LayoutNode Hub, LayoutWrap Wrap)>();
+        WrapGeometry.Collect(result, wraps);
+        DrawRowBreaks(sb, wraps, (x, y) => (x + tx, y + ty));
         DrawEdges(sb, tree.Nodes, result.Config.Mode, tx, ty);
         DrawNodes(sb, tree.Nodes, tx, ty);
         DrawLabels(sb, tree.Nodes, tx, ty);
@@ -60,6 +63,10 @@ internal static class LayoutDumpFormat
                 pts.Append(Inv, $"{Fmt(p.X + tx)},{Fmt(p.Y + ty)} ");
             sb.Append(Inv, $"<polyline points=\"{pts.ToString().Trim()}\" fill=\"none\" stroke=\"#be96ff\" stroke-width=\"2.2\" stroke-dasharray=\"7 5\"/>\n");
         }
+        var wraps = new List<(LayoutNode Hub, LayoutWrap Wrap)>();
+        WrapGeometry.Collect(scene, wraps);
+        DrawRowBlocks(sb, wraps, (x, y) => (x + tx, y + ty));
+        DrawRowBreaks(sb, wraps, (x, y) => (x + tx, y + ty));
         DrawEdges(sb, scene.Nodes, scene.Config.Mode, tx, ty);
         DrawNodes(sb, scene.Nodes, tx, ty);
         DrawLabels(sb, scene.Nodes, tx, ty);
@@ -118,6 +125,10 @@ internal static class LayoutDumpFormat
                 branch.Add(connector.Polyline[i]);
             sb.Append(Inv, $"<polyline points=\"{ScreenPoints(fit, branch)}\" fill=\"none\" stroke=\"#be96ff\" stroke-width=\"2.2\" stroke-dasharray=\"7 5\"/>\n");
         }
+        var wraps = new List<(LayoutNode Hub, LayoutWrap Wrap)>();
+        WrapGeometry.Collect(scene, wraps);
+        DrawRowBlocks(sb, wraps, fit.ToScreen);
+        DrawRowBreaks(sb, wraps, fit.ToScreen);
         foreach (LayoutNode node in scene.Nodes)
         {
             foreach (LayoutEdge edge in node.Out)
@@ -126,7 +137,7 @@ internal static class LayoutDumpFormat
                     continue;
                 string color = edge.IsHubLink ? "#7a8a98" : Hue(edge.To);
                 double width = edge.IsHubLink ? 3.5 : edge.IsApproach ? 1.4 : edge.Class == EdgeClass.Transfer ? 2.2 : 1.6;
-                sb.Append(Inv, $"<polyline points=\"{ScreenPoints(fit, edge.Polyline)}\" fill=\"none\" stroke=\"{color}\" stroke-opacity=\"0.85\" stroke-width=\"{Fmt(width)}\"/>\n");
+                sb.Append(Inv, $"<polyline points=\"{ScreenPoints(fit, DvPart(edge))}\" fill=\"none\" stroke=\"{color}\" stroke-opacity=\"0.85\" stroke-width=\"{Fmt(width)}\"/>\n");
             }
         }
         if (scene.HasBreakMark)
@@ -242,6 +253,7 @@ internal static class LayoutDumpFormat
         return Hues[(int)(h % (uint)Hues.Length)];
     }
 
+    // The grid rows in use, and the row block boxes of every wrapped fan on top of them.
     private static void DrawBandGuides(StringBuilder sb, LayoutResult result, double tx, double ty, double w)
     {
         var rows = new SortedSet<int>();
@@ -253,6 +265,71 @@ internal static class LayoutDumpFormat
             double y = row * result.Config.GridPx + ty;
             sb.Append(Inv, $"<line x1=\"0\" y1=\"{Fmt(y)}\" x2=\"{Fmt(w)}\" y2=\"{Fmt(y)}\" stroke=\"#1d2530\" stroke-width=\"1\"/>\n");
         }
+
+        var wraps = new List<(LayoutNode Hub, LayoutWrap Wrap)>();
+        WrapGeometry.Collect(result, wraps);
+        DrawRowBlocks(sb, wraps, (x, y) => (x + tx, y + ty));
+    }
+
+    // A dotted box round each row of every wrapped fan, so a dump shows which nodes form a row.
+    private static void DrawRowBlocks(StringBuilder sb, List<(LayoutNode Hub, LayoutWrap Wrap)> wraps, Func<double, double, (double X, double Y)> toScreen)
+    {
+        foreach ((LayoutNode hub, LayoutWrap wrap) in wraps)
+        {
+            foreach (RowBox box in WrapGeometry.RowBoxes(hub, wrap, wrap.Mode))
+            {
+                (double x0, double y0) = toScreen(box.MinX, box.MinY);
+                (double x1, double y1) = toScreen(box.MaxX, box.MaxY);
+                sb.Append(Inv, $"<rect x=\"{Fmt(x0 - 4)}\" y=\"{Fmt(y0 - 4)}\" width=\"{Fmt(x1 - x0 + 8)}\" height=\"{Fmt(y1 - y0 + 8)}\" fill=\"none\" stroke=\"#3a4654\" stroke-width=\"1\" stroke-dasharray=\"2 4\"/>\n");
+            }
+        }
+    }
+
+    // The row break of every wrapped fan as the canvas draws it: a faint fold rule across the
+    // block in each gap between two rows, the dashed grey trunk, and the vertical "//" mark on
+    // the trunk in each gap.
+    private static void DrawRowBreaks(StringBuilder sb, List<(LayoutNode Hub, LayoutWrap Wrap)> wraps, Func<double, double, (double X, double Y)> toScreen)
+    {
+        var breaks = new List<RowBreak>();
+        foreach ((LayoutNode hub, LayoutWrap wrap) in wraps)
+            WrapGeometry.AddBreaks(hub, wrap, wrap.Mode, breaks);
+        foreach (RowBreak brk in breaks)
+        {
+            (double x0, double y) = toScreen(brk.RuleLeft, brk.Mark.Y);
+            (double x1, _) = toScreen(brk.RuleRight, brk.Mark.Y);
+            sb.Append(Inv, $"<line x1=\"{Fmt(x0)}\" y1=\"{Fmt(y)}\" x2=\"{Fmt(x1)}\" y2=\"{Fmt(y)}\" stroke=\"#7a8a98\" stroke-opacity=\"0.3\" stroke-width=\"1\"/>\n");
+        }
+        foreach ((_, LayoutWrap wrap) in wraps)
+        {
+            if (wrap.Trunk.Count < 2)
+                continue;
+            var pts = new StringBuilder();
+            foreach (LayoutPoint p in wrap.Trunk)
+            {
+                (double x, double y) = toScreen(p.X, p.Y);
+                pts.Append(Inv, $"{Fmt(x)},{Fmt(y)} ");
+            }
+            sb.Append(Inv, $"<polyline points=\"{pts.ToString().TrimEnd()}\" fill=\"none\" stroke=\"#7a8a98\" stroke-width=\"1.6\" stroke-dasharray=\"7 5\"/>\n");
+        }
+        foreach (RowBreak brk in breaks)
+        {
+            (double mx, double my) = toScreen(brk.Mark.X, brk.Mark.Y);
+            sb.Append(Inv, $"<rect x=\"{Fmt(mx - 7)}\" y=\"{Fmt(my - 6)}\" width=\"14\" height=\"12\" fill=\"#11151c\"/>\n");
+            for (int i = -1; i <= 1; i += 2)
+                sb.Append(Inv, $"<line x1=\"{Fmt(mx - 7)}\" y1=\"{Fmt(my + i * 3 + 3)}\" x2=\"{Fmt(mx + 7)}\" y2=\"{Fmt(my + i * 3 - 3)}\" stroke=\"#7a8a98\" stroke-width=\"2\"/>\n");
+        }
+    }
+
+    // The points of an edge from DvStart on. The layout-only prefix of an edge into a lower row
+    // runs along the trunk, which draws it once for every lane, as on the canvas.
+    private static IReadOnlyList<LayoutPoint> DvPart(LayoutEdge edge)
+    {
+        if (edge.DvStart <= 0)
+            return edge.Polyline;
+        var pts = new List<LayoutPoint>(edge.Polyline.Count - edge.DvStart);
+        for (int i = edge.DvStart; i < edge.Polyline.Count; i++)
+            pts.Add(edge.Polyline[i]);
+        return pts;
     }
 
     private static void DrawEdges(StringBuilder sb, IReadOnlyList<LayoutNode> nodes, LayoutMode mode, double tx, double ty)
@@ -268,7 +345,7 @@ internal static class LayoutDumpFormat
                 double width = edge.IsHubLink ? 3.5 : edge.Class == EdgeClass.Transfer ? 2.0 : 1.5;
 
                 var pts = new StringBuilder();
-                foreach (LayoutPoint p in edge.Polyline)
+                foreach (LayoutPoint p in DvPart(edge))
                     pts.Append(Inv, $"{Fmt(p.X + tx)},{Fmt(p.Y + ty)} ");
                 sb.Append(Inv, $"<polyline points=\"{pts.ToString().Trim()}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{Fmt(width)}\"/>\n");
 

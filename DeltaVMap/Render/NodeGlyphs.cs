@@ -204,13 +204,21 @@ internal static class NodeGlyphs
         return true;
     }
 
-    // The scale-break mark on the interstellar trunk: two short parallel slashes across the
-    // line, so it reads as not to scale. vertical is the direction of the line it sits on.
+    // The scale-break mark on the interstellar trunk and on the row break of a wrapped fan: two
+    // short parallel slashes across the line, so it reads as not to scale. vertical is the
+    // direction of the line it sits on. The background plate cuts the line under the slashes.
     public static void ScaleBreak(ImDrawListPtr dl, float2 p, byte4 color, byte4 background, bool vertical)
     {
         var bgMin = vertical ? new float2(p.X - 7f, p.Y - 6f) : new float2(p.X - 6f, p.Y - 7f);
         var bgMax = vertical ? new float2(p.X + 7f, p.Y + 6f) : new float2(p.X + 6f, p.Y + 7f);
         dl.AddRectFilled(in bgMin, in bgMax, background);
+        ScaleBreakSlashes(dl, p, color, vertical);
+    }
+
+    // The two slashes of the scale-break mark alone, for a place with no fixed background color
+    // such as the legend.
+    public static void ScaleBreakSlashes(ImDrawListPtr dl, float2 p, byte4 color, bool vertical)
+    {
         for (int i = -1; i <= 1; i += 2)
         {
             var a = vertical ? new float2(p.X - 7f, p.Y + i * 3f + 3f) : new float2(p.X + i * 3f - 3f, p.Y + 7f);

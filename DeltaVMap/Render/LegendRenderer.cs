@@ -57,6 +57,21 @@ internal static class LegendRenderer
         });
         PlaneChangeRow("Max plane change (when on)");
 
+        // The dashed grey line with its "//" mark that joins the rows of a wrapped fan. It sits
+        // just before the interstellar row, the other line drawn not to scale.
+        Row("Row break (no delta-v)", static (dl, c) =>
+        {
+            var a = new float2(c.X - CellW * 0.5f + 2f, c.Y);
+            var b = new float2(c.X + CellW * 0.5f - 2f, c.Y);
+            var gapA = new float2(c.X - 5f, c.Y);
+            var gapB = new float2(c.X + 5f, c.Y);
+            var clipMin = a - new float2(1f, 4f);
+            var clipMax = b + new float2(1f, 4f);
+            NodeGlyphs.DashedSegment(dl, a, gapA, ColorPalette.HubBusLine, 1.6f, clipMin, clipMax);
+            NodeGlyphs.DashedSegment(dl, gapB, b, ColorPalette.HubBusLine, 1.6f, clipMin, clipMax);
+            NodeGlyphs.ScaleBreakSlashes(dl, c, ColorPalette.HubBusLine, vertical: false);
+        });
+
         if (severalSystems)
         {
             Row("Interstellar trip (length not to scale)", static (dl, c) =>

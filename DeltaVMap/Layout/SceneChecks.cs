@@ -264,6 +264,66 @@ internal static class SceneChecks
         return fails;
     }
 
+    // The row breaks at fit zoom, in screen space the way the canvas draws them. The trunk and
+    // every layout-only prefix of a wrapped fan keep LineClearPx from every dot but their hub's,
+    // so the dashed line that states no delta-v never reads as an edge into a dot where the map
+    // is smallest. Labels and titles are not checked, because their plate covers a row break the
+    // same as any other line. It holds for the home map alone as well as for a scene with other
+    // star systems, whose opened systems may wrap too.
+    public static List<string> WrapLines(LayoutScene scene, double canvasW, double canvasH)
+    {
+        var fails = new List<string>();
+        var wraps = new List<(LayoutNode Hub, LayoutWrap Wrap)>();
+        WrapGeometry.Collect(scene, wraps);
+        if (wraps.Count == 0)
+            return fails;
+        FitPreview fit = FitPreview.Build(scene, canvasW, canvasH);
+        string at = string.Create(Inv, $"at {canvasW}x{canvasH}");
+        foreach ((LayoutNode hub, LayoutWrap wrap) in wraps)
+        {
+            var lines = new List<(string What, IReadOnlyList<LayoutPoint> Points, int End)>
+            {
+                ($"the trunk of {hub.Id}", wrap.Trunk, wrap.Trunk.Count - 1)
+            };
+            foreach (LayoutEdge edge in hub.Out)
+            {
+                if (edge.DvStart > 0)
+                    lines.Add(($"the prefix to {edge.To.Id}", edge.Polyline, edge.DvStart));
+            }
+
+            // The lines leave the hub, so the part near its glyph is cut off the way ScanLine cuts
+            // a connector at the node it starts from.
+            (double hx, double hy) = fit.ToScreen(hub.SnappedX, hub.SnappedY);
+            double hubR = SceneComposer.GlyphRadiusPx(hub) + SceneComposer.SystemRingPx + (hub.IsRoot ? 10.0 : 0.0) + 2.0 * LineClearPx;
+            foreach ((string what, IReadOnlyList<LayoutPoint> points, int end) in lines)
+            {
+                var blocks = new SortedSet<string>(StringComparer.Ordinal);
+                for (int i = 0; i < end && i + 1 < points.Count; i++)
+                {
+                    (double ax, double ay) = fit.ToScreen(points[i].X, points[i].Y);
+                    (double bx, double by) = fit.ToScreen(points[i + 1].X, points[i + 1].Y);
+                    var a = new LayoutPoint(ax, ay);
+                    var b = new LayoutPoint(bx, by);
+                    if (!Trim(ref a, ref b, new LayoutPoint(hx, hy), hubR))
+                        continue;
+                    foreach (LayoutNode node in scene.Nodes)
+                    {
+                        if (node == hub)
+                            continue;
+                        (double x, double y) = fit.ToScreen(node.SnappedX, node.SnappedY);
+                        double r = SceneComposer.GlyphRadiusPx(node) + (node.IsSystemRoot ? SceneComposer.SystemRingPx : 0.0);
+                        double d = SceneComposer.SegmentPointDistance(a, b, new LayoutPoint(x, y));
+                        if (d < r + LineClearPx)
+                            blocks.Add(string.Create(Inv, $"the dot of {node.Id} ({d - r:F1} px)"));
+                    }
+                }
+                if (blocks.Count > 0)
+                    fails.Add($"{at}: {what} runs within {LineClearPx:F0} px of {string.Join(", ", blocks)}");
+            }
+        }
+        return fails;
+    }
+
     // The places that must hold when one system opens, taken before it opens: the parts are
     // moved in place, so the positions have to be copied.
     public sealed class Places
