@@ -72,9 +72,17 @@ internal static class SceneComposer
     private const double MaxPartAcross = 0.6;
     private const double MaxPartAlong = 0.5;
 
+    public const double NominalWidthPx = NominalW;
+    public const double NominalHeightPx = NominalH;
+
     public static double NominalZoom(LayoutResult ego)
     {
-        return Math.Min(1.0, Math.Min(NominalW / Math.Max(1.0, ego.Width), NominalH / Math.Max(1.0, ego.Height)));
+        return NominalZoom(ego.Width, ego.Height);
+    }
+
+    public static double NominalZoom(double width, double height)
+    {
+        return Math.Min(1.0, Math.Min(NominalW / Math.Max(1.0, width), NominalH / Math.Max(1.0, height)));
     }
 
     // The whole factor a destination graph is spread by in the tree modes, so its nodes stay

@@ -102,8 +102,9 @@ internal static class OverlapCheck
     private const double Epsilon = 1e-6;
 
     // How far a line that carries no dV keeps from a dot or a label plate, in layout pixels. It
-    // is the clearance the scene checks ask of a connector in screen pixels.
-    private const double WrapLineClearPx = 6.0;
+    // is the clearance the scene checks ask of a connector in screen pixels. The label placer and
+    // the row gutter keep the same distance.
+    internal const double WrapLineClearPx = 6.0;
 
     public static OverlapReport Run(LayoutResult result)
     {

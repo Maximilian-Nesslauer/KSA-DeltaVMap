@@ -39,7 +39,8 @@ internal sealed class LayoutConfig
 
     // Row wrapping of wide fans. Off by default, so a caller that does not ask for it gets
     // one row per fan. The map window builds its config through ForMap, which sets it.
-    public WrapMode Wrap { get; init; } = WrapMode.Off;
+    public WrapMode Wrap { get => _wrap; init => _wrap = value; }
+    private WrapMode _wrap = WrapMode.Off;
     // Square snap grid. Must be at least the sum of the two largest dot radii so that
     // two dots in orthogonally adjacent cells never overlap; the overlap check relies
     // on it. Validate() enforces this.
@@ -135,8 +136,8 @@ internal sealed class LayoutConfig
     // CumulativeDown row adds a drop that is not delta-v while a GravityWell row costs only its
     // local well height. These are tunables for calibration.
     public int WrapMinLanesCd { get; init; } = 12;
-    public int WrapKmaxCd { get; init; } = 10;
-    public int WrapMaxRowsCd { get; init; } = 3;
+    public int WrapKmaxCd { get; init; } = 7;
+    public int WrapMaxRowsCd { get; init; } = 4;
     public int WrapMinLanesGw { get; init; } = 8;
     public int WrapKmaxGw { get; init; } = 7;
     public int WrapMaxRowsGw { get; init; } = 6;
@@ -220,6 +221,15 @@ internal sealed class LayoutConfig
     public LayoutConfig WithoutWrap()
     {
         return WithSpread(SpreadX, MinBandStep, System.Math.Max(MaxBandStep, WellMaxBandStep));
+    }
+
+    // An exact copy with another wrap mode and every wrap tunable kept, so one config can be laid
+    // out with and without its rows.
+    public LayoutConfig WithWrap(WrapMode wrap)
+    {
+        var copy = (LayoutConfig)MemberwiseClone();
+        copy._wrap = wrap;
+        return copy;
     }
 
     // Enforce the spacing invariants the comments above promise, so a misconfigured

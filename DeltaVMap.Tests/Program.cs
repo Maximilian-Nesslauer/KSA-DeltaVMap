@@ -33,69 +33,72 @@ Console.WriteLine();
 int failures = 0;
 
 // The 100+ node stress tree: a moon root with a three-hub horizontal bus.
-failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), LayoutConfig.Default, "default", outDir, minNodes: 100);
+failures += RunBoth(SyntheticTree.BuildLargeMoonRoot, LayoutConfig.Default, "default", outDir, minNodes: 100);
 
 // The same stress tree on a deliberately tight grid, to force grid-snap collisions
 // and confirm the nudge pass still ends overlap-free. GridPx is the tightest the dot
 // radii allow (the two largest must fit one cell), and BandHeightPx the smallest whole
 // multiple of it that still clears MinSegmentPx.
 var tightGrid = new LayoutConfig { GridPx = 35.0, BandHeightPx = 70.0, SiblingGapPx = 12.0, BusGapPx = 24.0 };
-failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), tightGrid, "tight", outDir, minNodes: 100);
+failures += RunBoth(SyntheticTree.BuildLargeMoonRoot, tightGrid, "tight", outDir, minNodes: 100);
 
 // A stock-like planet root, for eyeballing realism.
-failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildStockLikePlanetRoot, LayoutConfig.Default, "default", outDir, minNodes: 0);
 
 // The interplanetary-cruise root: a star-shaped hub bus rather than a chain.
-failures += RunCase(SyntheticTree.BuildCruiseRoot(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildCruiseRoot, LayoutConfig.Default, "default", outDir, minNodes: 0);
 
 // A wide, shallow fan: dense single-band siblings stressing the grid-snap nudge.
-failures += RunCase(SyntheticTree.BuildWideFan(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildWideFan, LayoutConfig.Default, "default", outDir, minNodes: 0);
 
 // The gravity-well arrival model: capture anchor above low orbit for destinations.
-failures += RunCase(SyntheticTree.BuildArrivalDemo(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildArrivalDemo, LayoutConfig.Default, "default", outDir, minNodes: 0);
 
 // A dense system after minor-body aggregation: a "+N" group node off the hub bus and off a
 // deeper local hub. Exercises the synthetic MinorGroup node's layout in all three modes.
-failures += RunCase(SyntheticTree.BuildDenseAggregated(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildDenseAggregated, LayoutConfig.Default, "default", outDir, minNodes: 0);
+
+// The real-like Sol map has no fan wide enough to wrap, so its Auto layout must be its Off layout.
+failures += RunBoth(SyntheticTree.BuildRealLikeSolRoot, LayoutConfig.Default, "default", outDir, minNodes: 0);
 
 // GravityWell mode, the alternative to the Cumulative-down default: the same dense trees must
 // stay overlap-free with the spine / well / bus assertions holding, on a fresh tree instance
 // each time since the layout pass mutates node positions.
 var gravityWell = new LayoutConfig { Mode = LayoutMode.GravityWell };
-failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), gravityWell, "gravitywell", outDir, minNodes: 100);
-failures += RunCase(SyntheticTree.BuildWideFan(), gravityWell, "gravitywell", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildArrivalDemo(), gravityWell, "gravitywell", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), gravityWell, "gravitywell", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildCruiseRoot(), gravityWell, "gravitywell", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildDenseAggregated(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildLargeMoonRoot, gravityWell, "gravitywell", outDir, minNodes: 100);
+failures += RunBoth(SyntheticTree.BuildWideFan, gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildArrivalDemo, gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildStockLikePlanetRoot, gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildCruiseRoot, gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildDenseAggregated, gravityWell, "gravitywell", outDir, minNodes: 0);
 
 // The realistic cruise root: planets attach to the star hub via HubLink onto their
 // Intercept (above the spine). Exercises the GravityWell spine / well / relaxed-bus
 // rules on the actual in-game cruise shape, in both modes.
-failures += RunCase(SyntheticTree.BuildCruiseRootArrival(), LayoutConfig.Default, "default", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildCruiseRootArrival(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildCruiseRootArrival, LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildCruiseRootArrival, gravityWell, "gravitywell", outDir, minNodes: 0);
 
 // Multiple star systems: a barycenter root with its stars on the bus, and a star of a multiple
 // system as the root, climbing to its barycenter with the sibling stars branching off it.
-failures += RunCase(SyntheticTree.BuildBarycenterRoot(), LayoutConfig.Default, "default", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildBarycenterRoot(), gravityWell, "gravitywell", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildOrbitingStarRoot(), LayoutConfig.Default, "default", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildOrbitingStarRoot(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildBarycenterRoot, LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildBarycenterRoot, gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildOrbitingStarRoot, LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildOrbitingStarRoot, gravityWell, "gravitywell", outDir, minNodes: 0);
 
 // Spring (force-directed): the tree-shape invariants do not apply, but the settled web
 // plus the grid snap must still leave no two dots (and no two labels) overlapping.
 var spring = new LayoutConfig { Mode = LayoutMode.Spring };
-failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), spring, "spring", outDir, minNodes: 100);
-failures += RunCase(SyntheticTree.BuildStockLikePlanetRoot(), spring, "spring", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildDenseAggregated(), spring, "spring", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildLargeMoonRoot, spring, "spring", outDir, minNodes: 100);
+failures += RunBoth(SyntheticTree.BuildStockLikePlanetRoot, spring, "spring", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildDenseAggregated, spring, "spring", outDir, minNodes: 0);
 
 // Giant planets with hundreds of minor moons, folded by the real MinorFold rules: the inner
 // moons as lanes, the outer swarm as a group, and one hub with an inner and an outer group.
-failures += RunCase(SyntheticTree.BuildDenseMoons(), LayoutConfig.Default, "default", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildDenseMoons(), gravityWell, "gravitywell", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildDenseMoons(), spring, "spring", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildBarycenterRoot(), spring, "spring", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildOrbitingStarRoot(), spring, "spring", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildDenseMoons, LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildDenseMoons, gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildDenseMoons, spring, "spring", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildBarycenterRoot, spring, "spring", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildOrbitingStarRoot, spring, "spring", outDir, minNodes: 0);
 
 // Fans at the band clamp, the shape real moon transfers give: flat fans of 12, 13, 26 and 60
 // lanes, the dense giants with every moon lane clamped, and one giant with 435 minor moons whose
@@ -103,21 +106,22 @@ failures += RunCase(SyntheticTree.BuildOrbitingStarRoot(), spring, "spring", out
 const int MapNodeCeiling = 8000; // MapWindow.MaxLayoutNodes, which the offline tests do not compile
 foreach (int lanes in new[] { 12, 13, 26, 60 })
 {
-    failures += RunCase(SyntheticTree.BuildFlatFan(lanes), LayoutConfig.Default, "default", outDir, minNodes: 0);
-    failures += RunCase(SyntheticTree.BuildFlatFan(lanes), gravityWell, "gravitywell", outDir, minNodes: 0);
+    failures += RunBoth(() => SyntheticTree.BuildFlatFan(lanes), LayoutConfig.Default, "default", outDir, minNodes: 0);
+    failures += RunBoth(() => SyntheticTree.BuildFlatFan(lanes), gravityWell, "gravitywell", outDir, minNodes: 0);
 }
-failures += RunCase(SyntheticTree.BuildClampedGiants(), LayoutConfig.Default, "default", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildClampedGiants(), gravityWell, "gravitywell", outDir, minNodes: 0);
-failures += RunCase(SyntheticTree.BuildManyMoons(), LayoutConfig.Default, "default", outDir, minNodes: 0, maxNodes: MapNodeCeiling, printTiming: true);
-failures += RunCase(SyntheticTree.BuildManyMoons(), gravityWell, "gravitywell", outDir, minNodes: 0, maxNodes: MapNodeCeiling, printTiming: true);
+failures += RunBoth(SyntheticTree.BuildClampedGiants, LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildClampedGiants, gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunBoth(SyntheticTree.BuildManyMoons, LayoutConfig.Default, "default", outDir, minNodes: 0, maxNodes: MapNodeCeiling, printTiming: true);
+failures += RunBoth(SyntheticTree.BuildManyMoons, gravityWell, "gravitywell", outDir, minNodes: 0, maxNodes: MapNodeCeiling, printTiming: true);
 failures += RunClampedFanChecks();
 failures += RunNegativeFixtures();
+failures += RunWrappedNegativeFixtures();
 
 // Large spring stress: exercises the Barnes-Hut repulsion and the iteration cap at a scale
 // (~1800 nodes) an all-pairs loop could not handle in a frame, and confirms the grid snap still
 // leaves it overlap-free. No timing assertion (it would be machine-dependent and flaky); the
 // value is the overlap-free check at this scale.
-failures += RunCase(SyntheticTree.BuildSpringStress(), spring, "spring", outDir, minNodes: 1500);
+failures += RunBoth(SyntheticTree.BuildSpringStress, spring, "spring", outDir, minNodes: 1500);
 
 // The closed-form delta-v kernel (pure math, no game types) gets its own asserts.
 failures += RunMathChecks();
@@ -138,21 +142,48 @@ failures += RunFormatChecks();
 failures += RunRouteTotalsChecks();
 failures += RunEdgeGeometryChecks();
 failures += RunWrapConfigChecks();
+failures += RunWrapGates();
+failures += RunChooserChecks();
+failures += RunWrapStability();
+failures += RunWrapParts();
+failures += RunOpaqueBlock(outDir);
+failures += RunTextWidthChecks();
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
 return failures == 0 ? 0 : 1;
 
-// maxNodes is the node ceiling a case must stay below, and printTiming prints the node count and
-// the layout time on a line of its own, with no timing assertion because it is machine-dependent.
+// Every case runs twice: with the wrap Off under today's file name and assertions, and with the
+// wrap Auto under a "-wrap" suffix, where the acceptance check must pass too. Spring ignores the
+// wrap, and an Auto layout that wraps no fan must be the Off layout to the byte.
+static int RunBoth(Func<LayoutTree> build, LayoutConfig cfg, string variant, string outDir, int minNodes, int maxNodes = int.MaxValue, bool printTiming = false)
+{
+    int fails = RunCaseFull(build(), cfg, variant, outDir, minNodes, maxNodes, printTiming, out LayoutResult off);
+    fails += RunCaseFull(build(), cfg.WithWrap(WrapMode.Auto), variant, outDir, minNodes, maxNodes, printTiming, out LayoutResult auto, suffix: "-wrap");
+    string tag = (variant == "default" ? off.Tree.Name : off.Tree.Name + "-" + variant) + "-wrap";
+    if (cfg.Mode == LayoutMode.Spring)
+        fails += Check($"{tag}: Spring lays out the same with the wrap Auto", Snapshot(auto.Tree.Nodes) == Snapshot(off.Tree.Nodes) && auto.Wraps.Count == 0);
+    if (auto.Wraps.Count == 0)
+        fails += Check($"{tag}: with no wrapped fan the layout is the Off layout", LayoutDumpFormat.ToText(auto) == LayoutDumpFormat.ToText(off) && Snapshot(auto.Tree.Nodes) == Snapshot(off.Tree.Nodes));
+    return fails;
+}
+
 static int RunCase(LayoutTree tree, LayoutConfig cfg, string variant, string outDir, int minNodes, int maxNodes = int.MaxValue, bool printTiming = false)
 {
+    return RunCaseFull(tree, cfg, variant, outDir, minNodes, maxNodes, printTiming, out _);
+}
+
+// maxNodes is the node ceiling a case must stay below, and printTiming prints the node count and
+// the layout time on a line of its own, with no timing assertion because it is machine-dependent.
+// suffix goes after the tag in the log and the dump file names.
+static int RunCaseFull(LayoutTree tree, LayoutConfig cfg, string variant, string outDir, int minNodes, int maxNodes, bool printTiming, out LayoutResult result, string suffix = "")
+{
     var watch = System.Diagnostics.Stopwatch.StartNew();
-    LayoutResult result = LayoutEngine.Run(tree, cfg);
+    result = LayoutEngine.Run(tree, cfg);
     watch.Stop();
     OverlapReport report = OverlapCheck.Run(result);
 
-    string tag = variant == "default" ? tree.Name : tree.Name + "-" + variant;
+    string tag = (variant == "default" ? tree.Name : tree.Name + "-" + variant) + suffix;
     Console.WriteLine($"[{tag}] {report.Summary()}");
     PrintIssues("node", report.NodeOverlaps);
     PrintIssues("subtree", report.SubtreeOverlaps);
@@ -924,8 +955,49 @@ static int RunSceneChecks(string outDir)
 
     fails += RunWrapCheck(outDir);
 
+    // The rows in Cumulative-down with the strip of other systems, under the map config of a
+    // universe with several systems. The stock-like and real-like maps do not wrap, the dense
+    // and the clamped giants do. With the strip the fit must never fall, and it must gain a tenth
+    // wherever a fan wraps. The clamped giants fit below the 0.1 floor of the fit preview even
+    // with their rows, as the dense maps do without them, so the screen checks would judge a
+    // canvas the map overflows, and only their fit is compared.
+    LayoutConfig wrapCfg = LayoutConfig.ForMap(LayoutMode.CumulativeDown, hasSeveralSystems: true, WrapMode.Auto);
+    foreach ((string sol, Func<LayoutTree> buildEgo) in new (string, Func<LayoutTree>)[]
+    {
+        ("", SyntheticTree.BuildStockLikePlanetRoot),
+        ("-realsol", SyntheticTree.BuildRealLikeSolRoot),
+        ("-dense", SyntheticTree.BuildDenseMoons),
+        ("-clamped", SyntheticTree.BuildClampedGiants)
+    })
+    {
+        if (sol != "-clamped")
+            fails += RunSceneCase("default-wrap" + sol, wrapCfg, buildEgo, outDir);
+
+        double fsOff = StripFit(buildEgo, LayoutConfig.Default, out _);
+        double fsAuto = StripFit(buildEgo, wrapCfg, out bool wraps);
+        string name = "scene" + (sol.Length > 0 ? sol : "-planet-root");
+        Console.WriteLine(FormattableString.Invariant($"[wrap] {name} CD fit with the strip {fsAuto:F3} ({100.0 * (fsAuto / fsOff - 1.0):+0;-0;+0}%), Off {fsOff:F3}"));
+        fails += Check($"{name}: the rows never lower the fit with the strip", fsAuto >= fsOff - 1e-12);
+        if (wraps)
+            fails += Check(FormattableString.Invariant($"{name}: the rows raise the fit with the strip by a tenth ({fsAuto / fsOff:F2})"), fsAuto >= 1.10 * fsOff);
+        // The fit with the strip each wrapping map reached when the rows were tuned.
+        double reached = sol switch { "-dense" => 0.127, "-clamped" => 0.093, _ => 0.0 };
+        if (reached > 0.0)
+            fails += Check(FormattableString.Invariant($"{name}: the fit with the strip keeps 98% of the {reached:F3} reached"), wraps && fsAuto >= reached * 0.98);
+    }
+
     Console.WriteLine(fails == 0 ? "  scene: OK" : $"  scene: {fails} FAIL");
     return fails;
+}
+
+// The fit zoom of the ego map with the three stock systems collapsed in the strip.
+static double StripFit(Func<LayoutTree> buildEgo, LayoutConfig cfg, out bool wraps)
+{
+    int ignored = 0;
+    LayoutResult ego = LayoutEngine.Run(buildEgo(), cfg);
+    wraps = ego.Wraps.Count > 0;
+    LayoutScene scene = SceneComposer.Compose(ego, FindNode(ego.Tree, "Sol.Hub"), StockStubs(ego, "strip-fit", ref ignored), cfg);
+    return SceneFit.Fit(scene, 1600, 1000, 0.02, 4.0, out _, out _);
 }
 
 static int RunSceneCase(string tag, LayoutConfig cfg, Func<LayoutTree> buildEgo, string outDir)
@@ -1782,6 +1854,475 @@ static int RunWrapConfigChecks()
     fails += Check("Validate rejects a wrap gutter that is not a whole multiple of GridPx", offGrid);
 
     Console.WriteLine(fails == 0 ? "  wrap-config: OK" : $"  wrap-config: {fails} FAIL");
+    return fails;
+}
+
+// The fit zoom of a map shown alone on a 1600x1000 canvas, down to the lowest zoom the map
+// window allows, so the fit of a dense map is not clamped and the gain of its rows shows in full.
+static double AloneFit(LayoutResult result)
+{
+    return SceneFit.Fit(SceneComposer.Compose(result, null, new List<LayoutPart>(), result.Config), 1600, 1000, 0.02, 4.0, out _, out _);
+}
+
+// The fit zoom of a laid-out map on the nominal canvas the row chooser scores against.
+static double TargetFit(LayoutResult result)
+{
+    double w = SceneComposer.NominalWidthPx;
+    double h = Math.Min(SceneComposer.NominalHeightPx, w / result.Config.WrapTargetAspect);
+    return Math.Min(w / result.Width, h / result.Height);
+}
+
+// The median screen distance at a zoom between two neighbouring transfer lanes of one hub in one row.
+static double MedianLanePitch(LayoutResult result, double zoom)
+{
+    var pitches = new List<double>();
+    foreach (LayoutNode node in result.Tree.Nodes)
+    {
+        var byRow = new Dictionary<int, List<double>>();
+        foreach (LayoutEdge edge in node.Out)
+        {
+            if (edge.Class != EdgeClass.Transfer)
+                continue;
+            if (!byRow.TryGetValue(edge.To.WrapRow, out List<double>? xs))
+            {
+                xs = new List<double>();
+                byRow[edge.To.WrapRow] = xs;
+            }
+            xs.Add(edge.To.SnappedX);
+        }
+        foreach (List<double> xs in byRow.Values)
+        {
+            xs.Sort();
+            for (int i = 0; i + 1 < xs.Count; i++)
+                pitches.Add((xs[i + 1] - xs[i]) * zoom);
+        }
+    }
+    if (pitches.Count == 0)
+        return 0.0;
+    pitches.Sort();
+    return pitches[pitches.Count / 2];
+}
+
+static int TotalRows(LayoutResult result)
+{
+    int rows = 0;
+    foreach (LayoutWrap wrap in result.Wraps)
+        rows += wrap.RowSizes.Count;
+    return rows;
+}
+
+static string WrapState(LayoutResult result)
+{
+    var sb = new System.Text.StringBuilder();
+    foreach (LayoutNode node in result.Tree.Nodes)
+        sb.Append(FormattableString.Invariant($"{node.Id}:{node.WrapRow},{node.Shelf},{node.WrapDy};"));
+    foreach (LayoutWrap wrap in result.Wraps)
+        sb.Append(FormattableString.Invariant($"{wrap.ParentId}:{string.Join("/", wrap.RowSizes)}:{string.Join("/", wrap.RowDy)}:{wrap.TrunkX}|"));
+    return sb.ToString();
+}
+
+// The Cumulative-down maps the row wrap is judged on, by a short name.
+static (string Name, Func<LayoutTree> Build)[] WrapCases()
+{
+    return new (string, Func<LayoutTree>)[]
+    {
+        ("planet-root", SyntheticTree.BuildStockLikePlanetRoot),
+        ("dense-aggregated", SyntheticTree.BuildDenseAggregated),
+        ("real-like-sol", SyntheticTree.BuildRealLikeSolRoot),
+        ("moon-root", SyntheticTree.BuildLargeMoonRoot),
+        ("dense-moons", SyntheticTree.BuildDenseMoons),
+        ("clamped-giants", SyntheticTree.BuildClampedGiants),
+        ("wide-fan", SyntheticTree.BuildWideFan),
+        ("flat-fan-12", () => SyntheticTree.BuildFlatFan(12)),
+        ("flat-fan-13", () => SyntheticTree.BuildFlatFan(13)),
+        ("flat-fan-26", () => SyntheticTree.BuildFlatFan(26)),
+        ("flat-fan-60", () => SyntheticTree.BuildFlatFan(60)),
+        ("many-moons", SyntheticTree.BuildManyMoons),
+        ("opaque-block", SyntheticTree.BuildOpaqueBlock)
+    };
+}
+
+// What the rows gain in Cumulative-down, as the fit zoom of the map alone with the wrap Auto
+// against Off. The stock-like and real-like maps have no fan wide enough, so they must not change
+// at all. The dense and the clamped giants must gain clearly. Every map that wraps is locked
+// within two percent of the fit it reached when the rows were tuned.
+static int RunWrapGates()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[wrap] fit zoom of the map alone, wrap Auto against Off, Cumulative-down");
+
+    var locked = new Dictionary<string, double>
+    {
+        ["dense-moons"] = 0.149,
+        ["clamped-giants"] = 0.103,
+        ["wide-fan"] = 0.293,
+        ["flat-fan-26"] = 0.262,
+        ["flat-fan-60"] = 0.184,
+        ["many-moons"] = 0.262
+    };
+
+    LayoutConfig auto = LayoutConfig.Default.WithWrap(WrapMode.Auto);
+    foreach ((string name, Func<LayoutTree> build) in WrapCases())
+    {
+        LayoutResult off = LayoutEngine.Run(build(), LayoutConfig.Default);
+        LayoutResult wrapped = LayoutEngine.Run(build(), auto);
+        double fOff = AloneFit(off);
+        double fAuto = AloneFit(wrapped);
+        double fill = wrapped.Height * fAuto / 936.0;
+        double pitch = MedianLanePitch(wrapped, fAuto);
+        Console.WriteLine(FormattableString.Invariant(
+            $"[wrap] {name} CD fit {fAuto:F3} ({100.0 * (fAuto / fOff - 1.0):+0;-0;+0}%), Off {fOff:F3}, {wrapped.Wraps.Count} wrapped fans in {TotalRows(wrapped)} rows, bounds {wrapped.Width:F0}x{wrapped.Height:F0}, fill {100.0 * fill:F0}%, lane pitch {pitch:F1} px"));
+        fails += Check($"{name}: the rows never lower the fit", fAuto >= fOff - 1e-12);
+        if (locked.TryGetValue(name, out double reached))
+        {
+            fails += Check(FormattableString.Invariant($"{name}: the fit keeps 98% of the {reached:F3} reached"), fAuto >= reached * 0.98);
+            fails += Check($"{name}: a fan wraps", wrapped.Wraps.Count > 0);
+        }
+
+        switch (name)
+        {
+            case "planet-root":
+            case "dense-aggregated":
+            case "real-like-sol":
+            case "moon-root":
+            case "flat-fan-12":
+                fails += Check($"{name}: no fan wraps and the layout is the Off layout",
+                    wrapped.Wraps.Count == 0 && LayoutDumpFormat.ToText(wrapped) == LayoutDumpFormat.ToText(off));
+                fails += Check($"{name}: no fan wraps even with the most rows forced",
+                    LayoutEngine.RunWithRowCap(build(), auto, auto.WrapMaxRowsCd).Wraps.Count == 0);
+                break;
+            case "flat-fan-13":
+                // One lane over the minimum makes the fan a candidate, and with two rows forced it
+                // wraps cleanly. Alone it gains no tenth of fit from a second row, so Auto keeps it
+                // in one row.
+                LayoutResult forced = LayoutEngine.RunWithRowCap(build(), auto, 2);
+                fails += Check($"{name}: the fan wraps into two clean rows when two rows are forced",
+                    forced.Wraps.Count == 1 && forced.Wraps[0].RowSizes.Count == 2 && OverlapCheck.Run(forced).Ok);
+                break;
+            case "dense-moons":
+                fails += Check(FormattableString.Invariant($"{name}: the fit is at least 0.136 ({fAuto:F3})"), fAuto >= 0.136);
+                fails += Check(FormattableString.Invariant($"{name}: the map fills at least 40% of the height ({100.0 * fill:F0}%)"), fill >= 0.40);
+                fails += Check(FormattableString.Invariant($"{name}: the median lane pitch at fit is at least 24 px ({pitch:F1})"), pitch >= 24.0);
+                break;
+            case "clamped-giants":
+                fails += Check(FormattableString.Invariant($"{name}: the fit is at least 1.6 times Off ({fAuto / fOff:F2})"), fAuto >= 1.6 * fOff);
+                break;
+        }
+    }
+    return fails;
+}
+
+// The chooser scores each row cap once on the nominal canvas and takes one more row only for a
+// gain of WrapMinGain, so the chosen cap scores best of the caps up to it, no later cap beats it
+// by the gain, and it beats one row by the gain unless it is one row. The full layouts of the
+// three best caps confirm the score: each one fits within 5% of its score, and the chosen one
+// within 5% of the best fit short of the gain a further row must bring.
+static int RunChooserChecks()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[wrap-chooser] row caps scored on the nominal canvas");
+
+    foreach (bool several in new[] { false, true })
+    {
+        LayoutConfig cfg = LayoutConfig.ForMap(LayoutMode.CumulativeDown, several, WrapMode.Auto);
+        foreach ((string name, Func<LayoutTree> build) in WrapCases())
+        {
+            LayoutTree tree = build();
+            LayoutResult result = LayoutEngine.Run(tree, cfg);
+            List<RowWrap.Candidate> candidates = RowWrap.Candidates(tree, cfg);
+            if (candidates.Count == 0)
+                continue;
+            int chosen = RowWrap.Choose(candidates, cfg.WrapMinGain);
+            string at = FormattableString.Invariant($"{name} at aspect {cfg.WrapTargetAspect}");
+            foreach (RowWrap.Candidate c in candidates)
+            {
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  {at}: cap {c.RowCap}{(c.RowCap == candidates[chosen].RowCap ? " (chosen)" : "")}: {c.Fans} fans in {c.Rows} rows, {c.Width:F0}x{c.Height:F0}, score {c.Score:F4}, gap {c.GapPx:F0}, gutter {c.GutterPx:F0}"));
+            }
+
+            RowWrap.Candidate pick = candidates[chosen];
+            bool rules = chosen == 0 || pick.Score >= candidates[0].Score * (1.0 + cfg.WrapMinGain);
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (i < chosen)
+                    rules &= candidates[i].Score < pick.Score;
+                else if (i > chosen)
+                    rules &= candidates[i].Score < pick.Score * (1.0 + cfg.WrapMinGain);
+            }
+            fails += Check($"{at}: the chosen cap scores best, gains enough and keeps fewer rows on a tie", rules);
+            fails += Check($"{at}: the layout wraps the chosen cap", result.Wraps.Count == pick.Fans && TotalRows(result) == pick.Rows);
+
+            var top = new List<RowWrap.Candidate>(candidates);
+            top.Sort((a, b) => b.Score.CompareTo(a.Score));
+            double best = 0.0;
+            bool agree = true;
+            for (int i = 0; i < Math.Min(3, top.Count); i++)
+            {
+                double fit = TargetFit(LayoutEngine.RunWithRowCap(build(), cfg, top[i].RowCap));
+                best = Math.Max(best, fit);
+                agree &= Math.Abs(fit / top[i].Score - 1.0) <= 0.05;
+            }
+            double picked = TargetFit(LayoutEngine.RunWithRowCap(build(), cfg, pick.RowCap));
+            fails += Check($"{at}: the full layouts of the three best caps fit within 5% of their scores", agree);
+            fails += Check(FormattableString.Invariant($"{at}: the full layout of the chosen cap fits within 5% of the best short of the gain ({picked:F4} of {best:F4})"),
+                picked * (1.0 + cfg.WrapMinGain) >= 0.95 * best);
+        }
+    }
+    return fails;
+}
+
+// A reveal must not move any other lane between rows or shelves, and the plan is the same on
+// every run.
+static int RunWrapStability()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[wrap-stability] a reveal and repeated runs keep the rows");
+
+    LayoutConfig cfg = LayoutConfig.Default.WithWrap(WrapMode.Auto);
+    const string revealedMoon = "S2014_S_05";
+    LayoutResult plain = LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg);
+    LayoutResult revealed = LayoutEngine.Run(SyntheticTree.BuildClampedGiants(revealedMoon), cfg);
+    LayoutNode lane = FindNode(revealed.Tree, revealedMoon + ".LO");
+    fails += Check("the revealed moon is a revealed lane of Saturn", lane.IsRevealed && lane.Parent!.Id == "Saturn.LO");
+
+    var before = new Dictionary<string, (int Row, int Shelf)>();
+    foreach (LayoutNode node in plain.Tree.Nodes)
+        before[node.Id] = (node.WrapRow, node.Shelf);
+    int moved = 0;
+    foreach (LayoutNode node in revealed.Tree.Nodes)
+    {
+        if (before.TryGetValue(node.Id, out (int Row, int Shelf) was) && was != (node.WrapRow, node.Shelf))
+        {
+            moved++;
+            Console.WriteLine($"  moved: {node.Id} from row {was.Row} shelf {was.Shelf} to row {node.WrapRow} shelf {node.Shelf}");
+        }
+    }
+    LayoutWrap saturn = revealed.Wraps.First(w => w.ParentId == "Saturn.LO");
+    Console.WriteLine($"  the revealed lane sits in row {lane.WrapRow} of {saturn.RowSizes.Count}, {moved} other nodes changed row or shelf");
+    fails += Check("revealing one moon of Saturn's group moves no other node to another row or shelf", moved == 0 && plain.Wraps.Count > 0);
+    fails += Check("the revealed lane joins the row of the lane before it", lane.WrapRow == saturn.RowSizes.Count - 1);
+
+    string first = WrapState(LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg));
+    bool same = true;
+    for (int run = 0; run < 2; run++)
+        same &= WrapState(LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg)) == first;
+    LayoutTree tree = SyntheticTree.BuildClampedGiants();
+    LayoutResult once = LayoutEngine.Run(tree, cfg);
+    string planned = WrapState(once);
+    for (int run = 0; run < 3; run++)
+    {
+        IReadOnlyList<LayoutWrap> wraps = RowWrap.Plan(tree, cfg);
+        same &= wraps.Count == once.Wraps.Count;
+        for (int i = 0; same && i < wraps.Count; i++)
+            same &= wraps[i].ParentId == once.Wraps[i].ParentId && wraps[i].RowSizes.SequenceEqual(once.Wraps[i].RowSizes) && wraps[i].RowDy.SequenceEqual(once.Wraps[i].RowDy);
+    }
+    fails += Check("three runs give the same rows, shelves and offsets", same && planned == first);
+    return fails;
+}
+
+// A destination system never wraps, the plain layout included, even next to a wrapped ego map,
+// and opening it keeps the ego map as it is.
+static int RunWrapParts()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[wrap-parts] destination systems never wrap");
+
+    LayoutConfig cfg = LayoutConfig.ForMap(LayoutMode.CumulativeDown, hasSeveralSystems: true, WrapMode.Auto);
+    LayoutResult ego = LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg);
+    string egoBefore = Snapshot(ego.Tree.Nodes);
+    LayoutResult part = SceneComposer.LayOutPart(() =>
+    {
+        LayoutTree tree = SyntheticTree.BuildFlatFan(26);
+        tree.Root.IsRoot = false;
+        tree.Root.IsSystemRoot = true;
+        return tree;
+    }, ego, null);
+    bool unwrapped = part.Wraps.Count == 0 && part.Config.Wrap == WrapMode.Off;
+    foreach (LayoutNode node in part.Tree.Nodes)
+        unwrapped &= node.WrapRow == -1 && node.Shelf == 0 && node.WrapDy == 0.0;
+    Console.WriteLine($"  ego: {ego.Wraps.Count} wrapped fans, part: {part.Wraps.Count} wrapped fans, spread {part.Config.SpreadX}");
+    fails += Check("the ego map wraps", ego.Wraps.Count > 0);
+    fails += Check("a dense destination next to a wrapped ego map has no row", unwrapped);
+
+    var parts = new List<LayoutPart> { new LayoutPart { RootId = "Giant.LO", Result = part, Expanded = true } };
+    LayoutScene scene = SceneComposer.Compose(ego, FindNode(ego.Tree, "Sol.Hub"), parts, cfg);
+    fails += Check("opening the destination keeps the ego map", Snapshot(ego.Tree.Nodes) == egoBefore && scene.Parts.Count == 1);
+    return fails;
+}
+
+// A right neighbour whose deep moons sit at the heights of the lower rows of a wrapped fan. The X
+// pass must keep the whole block of rows opaque, so no node needs a grid nudge to clear another.
+// The deep neighbour makes the map tall, so the chooser alone keeps one row, and the rows are
+// forced here.
+static int RunOpaqueBlock(string outDir)
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[wrap-block] a wrapped fan is opaque to its neighbours at every depth");
+
+    fails += RunCase(SyntheticTree.BuildOpaqueBlock(), LayoutConfig.Default, "default", outDir, 0);
+    LayoutResult result = LayoutEngine.RunWithRowCap(SyntheticTree.BuildOpaqueBlock(), LayoutConfig.Default.WithWrap(WrapMode.Auto), 3);
+    OverlapReport report = OverlapCheck.Run(result);
+    string tag = result.Tree.Name + "-wrap";
+    Console.WriteLine($"[{tag}] {report.Summary()}");
+    PrintIssues("node", report.NodeOverlaps);
+    PrintIssues("subtree", report.SubtreeOverlaps);
+    PrintIssues("label", report.LabelOverlaps);
+    PrintIssues("band", report.BandViolations);
+    PrintIssues("bus", report.BusViolations);
+    PrintIssues("wrap", report.WrapViolations);
+    File.WriteAllText(Path.Combine(outDir, tag + ".svg"), LayoutDumpFormat.ToSvg(result));
+    File.WriteAllText(Path.Combine(outDir, tag + ".txt"), LayoutDumpFormat.ToText(result));
+    fails += Check($"{tag} passes the acceptance check", report.Ok);
+    double g = result.Config.GridPx;
+    double worst = 0.0;
+    foreach (LayoutNode node in result.Tree.Nodes)
+        worst = Math.Max(worst, Math.Max(Math.Abs(node.SnappedX - node.X), Math.Abs(node.SnappedY - node.Y)));
+
+    LayoutNode giant = FindNode(result.Tree, "Giant.LO");
+    double blockRight = double.NegativeInfinity;
+    double rowsTop = double.PositiveInfinity;
+    double rowsBottom = double.NegativeInfinity;
+    foreach (LayoutEdge edge in giant.Out)
+    {
+        foreach (LayoutNode node in LayoutTree.PreOrder(edge.To))
+        {
+            blockRight = Math.Max(blockRight, node.X + node.Width / 2.0);
+            if (edge.To.WrapRow >= 1)
+            {
+                rowsTop = Math.Min(rowsTop, node.Y);
+                rowsBottom = Math.Max(rowsBottom, node.Y);
+            }
+        }
+    }
+    double deepLeft = double.PositiveInfinity;
+    bool deepAtRowHeight = false;
+    foreach (LayoutNode node in LayoutTree.PreOrder(FindNode(result.Tree, "Deep.LO")))
+    {
+        deepLeft = Math.Min(deepLeft, node.X - node.Width / 2.0);
+        deepAtRowHeight |= node.Y >= rowsTop && node.Y <= rowsBottom;
+    }
+    Console.WriteLine(FormattableString.Invariant($"  largest snap move {worst:F1} px, block right edge {blockRight:F0}, deep subtree left edge {deepLeft:F0}"));
+    fails += Check("the giant's fan wraps", result.Wraps.Any(w => w.ParentId == "Giant.LO"));
+    fails += Check("the deep subtree reaches the heights of the lower rows", deepAtRowHeight);
+    fails += Check("the deep subtree stays right of the whole block", deepLeft >= blockRight + result.Config.SiblingGapPx - 1e-6);
+    fails += Check(FormattableString.Invariant($"no node moves more than one grid cell in the snap ({worst:F1} px)"), worst <= g + 1e-6);
+    return fails;
+}
+
+// The real text widths differ from the offline estimate, so the rows must hold for narrower and
+// wider text, and wider text never gives fewer rows.
+static int RunTextWidthChecks()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[wrap-text] the rows at other text widths");
+
+    LayoutConfig cfg = LayoutConfig.Default.WithWrap(WrapMode.Auto);
+    foreach ((string name, Func<LayoutTree> build) in new (string, Func<LayoutTree>)[] { ("dense-moons", SyntheticTree.BuildDenseMoons), ("wide-fan", SyntheticTree.BuildWideFan) })
+    {
+        int lastRows = 0;
+        foreach (double charW in new[] { 5.5, 7.0, 9.5 })
+        {
+            LayoutResult result = LayoutEngine.Run(build(), cfg, s => s.Length * charW);
+            OverlapReport report = OverlapCheck.Run(result);
+            PrintIssues("wrap", report.WrapViolations);
+            int rows = TotalRows(result);
+            Console.WriteLine(FormattableString.Invariant($"  {name} at {charW} px per character: {result.Wraps.Count} wrapped fans in {rows} rows, fit {AloneFit(result):F3}, {report.Summary()}"));
+            fails += Check(FormattableString.Invariant($"{name} at {charW} px per character passes the acceptance check"), report.Ok && result.Wraps.Count > 0);
+            fails += Check(FormattableString.Invariant($"{name} at {charW} px per character has no fewer rows than with narrower text"), rows >= lastRows);
+            lastRows = rows;
+        }
+    }
+    return fails;
+}
+
+// The wrap rules must catch a broken wrapped layout too. Each fixture breaks one value of a
+// clean wrapped map the way a faulty pass would.
+static int RunWrappedNegativeFixtures()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[negative-wrap] the acceptance check catches a broken wrapped layout");
+
+    LayoutConfig cfg = LayoutConfig.Default.WithWrap(WrapMode.Auto);
+    LayoutResult Fresh() => LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg);
+    static LayoutWrap WidestWrap(LayoutResult r)
+    {
+        LayoutWrap widest = r.Wraps[0];
+        foreach (LayoutWrap wrap in r.Wraps)
+        {
+            if (wrap.RowSizes.Count > widest.RowSizes.Count)
+                widest = wrap;
+        }
+        return widest;
+    }
+    static List<LayoutEdge> Lanes(LayoutResult r, LayoutWrap wrap, int row)
+    {
+        var lanes = new List<LayoutEdge>();
+        foreach (LayoutEdge edge in FindNode(r.Tree, wrap.ParentId).Out)
+        {
+            if (edge.Class != EdgeClass.Ladder && edge.To.WrapRow == row)
+                lanes.Add(edge);
+        }
+        return lanes;
+    }
+
+    LayoutResult probe = Fresh();
+    fails += Check("the clamped giants wrap a fan into two rows or more", probe.Wraps.Count > 0);
+    if (probe.Wraps.Count == 0)
+        return fails;
+    Console.WriteLine($"  the widest wrap is '{WidestWrap(probe).ParentId}' with rows {string.Join("/", WidestWrap(probe).RowSizes)}");
+
+    fails += ExpectCaught("a moon of the lowest row moved one grid cell off its dV band", Fresh(), r =>
+    {
+        LayoutWrap wrap = WidestWrap(r);
+        Lanes(r, wrap, wrap.RowSizes.Count - 1)[0].To.Y += r.Config.GridPx;
+    });
+    fails += ExpectCaught("a lane in the middle of row 0 put into row 1", Fresh(), r =>
+    {
+        List<LayoutEdge> row0 = Lanes(r, WidestWrap(r), 0);
+        row0[row0.Count / 2].To.WrapRow = 1;
+    });
+    fails += ExpectCaught("the trunk moved into row 1", Fresh(), r =>
+    {
+        LayoutWrap wrap = WidestWrap(r);
+        wrap.TrunkX = Lanes(r, wrap, 1)[0].To.SnappedX;
+    });
+    fails += ExpectCaught("a lane of row 1 off the offset of its shelf", Fresh(), r =>
+    {
+        LayoutNode lane = Lanes(r, WidestWrap(r), 1)[0].To;
+        lane.WrapDy += r.Config.GridPx;
+        lane.Y += r.Config.GridPx;
+    });
+    fails += ExpectCaught("row 1 lifted into the height of row 0", Fresh(), r =>
+    {
+        LayoutWrap wrap = WidestWrap(r);
+        foreach (LayoutEdge edge in Lanes(r, wrap, 1))
+        {
+            foreach (LayoutNode node in LayoutTree.PreOrder(edge.To))
+                node.SnappedY -= wrap.RowDy[1];
+        }
+    });
+    fails += ExpectCaught("the dV part of a lane that does not start on the trunk", Fresh(), r =>
+    {
+        LayoutEdge edge = Lanes(r, WidestWrap(r), 1)[0];
+        var pts = new List<LayoutPoint>(edge.Polyline);
+        pts[edge.DvStart] = new LayoutPoint(pts[edge.DvStart].X + r.Config.GridPx, pts[edge.DvStart].Y);
+        edge.Polyline = pts;
+    });
+    fails += ExpectCaught("a dot on the trunk", Fresh(), r =>
+    {
+        LayoutWrap wrap = WidestWrap(r);
+        LayoutNode hub = FindNode(r.Tree, wrap.ParentId);
+        LayoutNode rung = hub.Out.First(e => e.Class == EdgeClass.Ladder).To;
+        rung.SnappedX = wrap.TrunkX;
+        rung.SnappedY = hub.SnappedY + wrap.RowDy[1] / 2.0;
+    });
     return fails;
 }
 

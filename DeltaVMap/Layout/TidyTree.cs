@@ -19,17 +19,25 @@ namespace DeltaVMap.Layout;
 // HubLink edges), lay out each bus node's non-HubLink spoke subtree on its own, and
 // pack those subtrees left to right into disjoint X intervals. The bus then reads as
 // a horizontal row of stations, each with its spokes hanging below.
+//
+// A wrapped fan is packed as one block. Each of its rows is its own forest, the rows start at
+// one left edge below the gutter that holds the trunk, and the hub sits over the middle of row
+// 0. The rows share the depths of the tree, so the Walker contour, which steps by depth, would
+// let a neighbour slide under a lower row. The hub's flex node therefore carries two chains of
+// contour-only nodes down to the deepest depth of the tree, one reaching the block's left edge
+// and one its right edge, and a neighbour at any depth keeps clear of the whole block. The real
+// row nodes stay outside the parent's Walker and move with the hub once it is placed.
 internal static class TidyTree
 {
-    public static void AssignX(LayoutTree tree, LayoutConfig cfg)
+    public static void AssignX(LayoutTree tree, LayoutConfig cfg, IReadOnlyList<LayoutWrap>? wraps = null, bool skipRevealed = false)
     {
         if (cfg.Mode == LayoutMode.GravityWell)
             AssignXColumns(tree, cfg);
         else
-            AssignXCumulative(tree, cfg);
+            AssignXCumulative(tree, cfg, Blocks.For(tree, wraps, skipRevealed));
     }
 
-    private static void AssignXCumulative(LayoutTree tree, LayoutConfig cfg)
+    private static void AssignXCumulative(LayoutTree tree, LayoutConfig cfg, Blocks? blocks)
     {
         var busNodes = new List<LayoutNode>();
         CollectBus(tree.Root, busNodes);
@@ -37,7 +45,7 @@ internal static class TidyTree
         double cursorX = 0.0;
         for (int i = 0; i < busNodes.Count; i++)
         {
-            List<LayoutNode> positioned = LayoutSubtree(busNodes[i], cfg);
+            List<LayoutNode> positioned = LayoutSubtree(busNodes[i], cfg, blocks);
 
             // Pack this bus node's whole subtree into the next free horizontal slot.
             // Using width-aware extents keeps the gap between subtrees honest even
@@ -49,6 +57,8 @@ internal static class TidyTree
                 min = Math.Min(min, n.X - n.Width / 2.0);
                 max = Math.Max(max, n.X + n.Width / 2.0);
             }
+            if (blocks != null)
+                min = Math.Min(min, blocks.GutterLeft(positioned));
 
             double offset = cursorX - min;
             foreach (LayoutNode n in positioned)
@@ -77,9 +87,9 @@ internal static class TidyTree
     // Run the tidy-tree on one bus node and its spoke subtree (its non-HubLink
     // descendants), centring the bus node at X = 0. Returns every node it positioned
     // so the caller can offset the block during bus packing.
-    private static List<LayoutNode> LayoutSubtree(LayoutNode busNode, LayoutConfig cfg)
+    private static List<LayoutNode> LayoutSubtree(LayoutNode busNode, LayoutConfig cfg, Blocks? blocks)
     {
-        FlexNode root = Build(busNode, parent: null, number: 1);
+        FlexNode root = Build(busNode, parent: null, number: 1, cfg, blocks);
         FirstWalk(root, cfg);
         SecondWalk(root, -root.Prelim);
 
@@ -88,24 +98,114 @@ internal static class TidyTree
         return positioned;
     }
 
-    private static FlexNode Build(LayoutNode node, FlexNode? parent, int number)
+    private static FlexNode Build(LayoutNode node, FlexNode? parent, int number, LayoutConfig cfg, Blocks? blocks)
     {
+        if (blocks != null && blocks.Wraps.TryGetValue(node.Id, out LayoutWrap? wrap))
+            return BuildBlock(node, parent, number, wrap, cfg, blocks);
+
         var flex = new FlexNode(node, parent, number, node.Width);
         int childNumber = 1;
         foreach (LayoutEdge edge in node.Out)
         {
             // Spoke subtree only. HubLink children are other bus nodes, laid out
             // separately as their own blocks, so they are excluded here.
-            if (edge.IsHubLink)
+            if (edge.IsHubLink || Skipped(edge.To, blocks))
                 continue;
-            flex.Children.Add(Build(edge.To, flex, childNumber++));
+            flex.Children.Add(Build(edge.To, flex, childNumber++, cfg, blocks));
         }
         return flex;
     }
 
+    private static bool Skipped(LayoutNode child, Blocks? blocks)
+    {
+        return blocks != null && blocks.SkipRevealed && child.IsRevealed;
+    }
+
+    // Lay out the rows of a wrapped hub and return the hub's flex node for its parent's Walker.
+    // Row 0 is laid out under the hub itself, so the hub lands over the middle of its rungs and
+    // its first lanes as an unwrapped hub does. Every lower row is laid out under a virtual parent
+    // and moved so that it starts where row 0 starts. The offsets of all row nodes from the hub
+    // are kept, and SecondWalk applies them once the hub has its X.
+    private static FlexNode BuildBlock(LayoutNode hub, FlexNode? parent, int number, LayoutWrap wrap, LayoutConfig cfg, Blocks blocks)
+    {
+        int rowCount = wrap.RowSizes.Count;
+        var rowChildren = new List<LayoutNode>[rowCount];
+        for (int r = 0; r < rowCount; r++)
+            rowChildren[r] = new List<LayoutNode>();
+        foreach (LayoutEdge edge in hub.Out)
+        {
+            if (edge.IsHubLink || Skipped(edge.To, blocks))
+                continue;
+            rowChildren[Math.Clamp(edge.To.WrapRow, 0, rowCount - 1)].Add(edge.To);
+        }
+
+        var block = new Block();
+        double rowStart = 0.0;
+        double right = double.NegativeInfinity;
+        for (int r = 0; r < rowCount; r++)
+        {
+            var rowRoot = new FlexNode(r == 0 ? hub : null, null, 1, r == 0 ? hub.Width : 0.0);
+            int childNumber = 1;
+            foreach (LayoutNode child in rowChildren[r])
+                rowRoot.Children.Add(Build(child, rowRoot, childNumber++, cfg, blocks));
+            FirstWalk(rowRoot, cfg);
+            SecondWalk(rowRoot, -rowRoot.Prelim);
+
+            var rowNodes = new List<LayoutNode>();
+            foreach (FlexNode child in rowRoot.Children)
+                Collect(child, rowNodes);
+            double left = double.PositiveInfinity;
+            foreach (LayoutNode n in rowNodes)
+                left = Math.Min(left, n.X - n.Width / 2.0);
+            if (r == 0)
+                rowStart = left;
+            double shift = rowStart - left;
+            foreach (LayoutNode n in rowNodes)
+            {
+                block.Members.Add((n, n.X + shift));
+                right = Math.Max(right, n.X + shift + n.Width / 2.0);
+            }
+        }
+
+        // The left chain reaches over the gutter to the block's left edge, the right chain to its
+        // right edge. Their distance is zero, so the hub stays centred between them, and only
+        // their outer sides form the contour a neighbour sees.
+        double leftReach = Math.Max(hub.Width / 2.0, wrap.GutterPx - rowStart);
+        double rightReach = Math.Max(hub.Width / 2.0, right);
+        blocks.LeftReach[hub] = leftReach;
+
+        var flex = new FlexNode(hub, parent, number, hub.Width)
+        {
+            LeftReach = leftReach,
+            RightReach = hub.Width / 2.0,
+            Block = block
+        };
+        FlexNode leftChain = flex;
+        FlexNode rightChain = flex;
+        for (int depth = hub.Depth + 1; depth <= blocks.MaxDepth; depth++)
+        {
+            bool first = depth == hub.Depth + 1;
+            var l = new FlexNode(null, leftChain, 1, 0.0) { LeftReach = leftReach, RightReach = 0.0, Contour = block };
+            var r = new FlexNode(null, rightChain, first ? 2 : 1, 0.0) { LeftReach = 0.0, RightReach = rightReach, Contour = block };
+            leftChain.Children.Add(l);
+            rightChain.Children.Add(r);
+            leftChain = l;
+            rightChain = r;
+        }
+        return flex;
+    }
+
+    // A block hub stands for every node of its rows, and its contour chains stand for nothing.
     private static void Collect(FlexNode flex, List<LayoutNode> into)
     {
-        into.Add(flex.Node);
+        if (flex.Node != null)
+            into.Add(flex.Node);
+        if (flex.Block != null)
+        {
+            foreach ((LayoutNode node, double _) in flex.Block.Members)
+                into.Add(node);
+            return;
+        }
         foreach (FlexNode child in flex.Children)
             Collect(child, into);
     }
@@ -143,7 +243,15 @@ internal static class TidyTree
 
     private static void SecondWalk(FlexNode v, double modSum)
     {
-        v.Node.X = v.Prelim + modSum;
+        double x = v.Prelim + modSum;
+        if (v.Node != null)
+            v.Node.X = x;
+        if (v.Block != null)
+        {
+            foreach ((LayoutNode node, double offset) in v.Block.Members)
+                node.X = x + offset;
+            return;
+        }
         foreach (FlexNode child in v.Children)
             SecondWalk(child, modSum + v.Mod);
     }
@@ -241,10 +349,23 @@ internal static class TidyTree
 
     // The required centre-to-centre separation between two nodes that sit side by side
     // at the same level: half of each width plus the sibling gap. This is the single
-    // place node widths enter the algorithm.
+    // place node widths enter the algorithm. A block hub and its contour chains reach
+    // further to one side than to the other, and the two halves of one chain level sit on
+    // the same X.
     private static double Distance(FlexNode left, FlexNode right, LayoutConfig cfg)
     {
-        return (left.Width + right.Width) / 2.0 + cfg.SiblingGapPx;
+        if (left.Contour != null && left.Contour == right.Contour)
+            return 0.0;
+        if (left.LeftReach < 0.0 && right.LeftReach < 0.0)
+            return (left.Width + right.Width) / 2.0 + cfg.SiblingGapPx;
+        return Reach(left, right: true) + Reach(right, right: false) + cfg.SiblingGapPx;
+    }
+
+    private static double Reach(FlexNode v, bool right)
+    {
+        if (v.LeftReach < 0.0)
+            return v.Width / 2.0;
+        return right ? v.RightReach : v.LeftReach;
     }
 
     private static FlexNode? NextLeft(FlexNode v)
@@ -265,10 +386,11 @@ internal static class TidyTree
     }
 
     // Per-node scratch for one tidy-tree run. Number is the 1-based index among
-    // siblings; Ancestor starts as the node itself.
+    // siblings; Ancestor starts as the node itself. Node is null for a contour node of a
+    // block and for the virtual parent of a lower row.
     private sealed class FlexNode
     {
-        public readonly LayoutNode Node;
+        public readonly LayoutNode? Node;
         public readonly double Width;
         public readonly FlexNode? Parent;
         public readonly int Number;
@@ -281,16 +403,70 @@ internal static class TidyTree
         public FlexNode? Thread;
         public FlexNode Ancestor;
 
+        // How far the node reaches left and right of its X when that is not half its width,
+        // which holds only for a block hub and its contour nodes. Negative means half the width.
+        public double LeftReach { get; init; } = -1.0;
+        public double RightReach { get; init; } = -1.0;
+
+        // Block is set on the hub of a wrapped fan, Contour on the contour nodes below it.
+        public Block? Block { get; init; }
+        public Block? Contour { get; init; }
+
         // Width is passed explicitly: the cumulative pass uses the node's own box width,
         // the column pass uses the widest box in the column (so a column is wide enough
         // for its longest rung label).
-        public FlexNode(LayoutNode node, FlexNode? parent, int number, double width)
+        public FlexNode(LayoutNode? node, FlexNode? parent, int number, double width)
         {
             Node = node;
             Width = width;
             Parent = parent;
             Number = number;
             Ancestor = this;
+        }
+    }
+
+    // The nodes of one wrapped fan's rows with their X offsets from the hub.
+    private sealed class Block
+    {
+        public readonly List<(LayoutNode Node, double Offset)> Members = new();
+    }
+
+    // The wrapped fans of one X pass, keyed by hub, the deepest depth of the tree, which the
+    // contour chains reach down to, and how far each block reaches left of its hub, gutter
+    // included. SkipRevealed leaves the revealed lanes out, for scoring a row plan without them.
+    private sealed class Blocks
+    {
+        public required Dictionary<string, LayoutWrap> Wraps { get; init; }
+        public required int MaxDepth { get; init; }
+        public required bool SkipRevealed { get; init; }
+        public readonly Dictionary<LayoutNode, double> LeftReach = new();
+
+        public static Blocks? For(LayoutTree tree, IReadOnlyList<LayoutWrap>? wraps, bool skipRevealed)
+        {
+            if ((wraps == null || wraps.Count == 0) && !skipRevealed)
+                return null;
+            var byHub = new Dictionary<string, LayoutWrap>();
+            if (wraps != null)
+            {
+                foreach (LayoutWrap wrap in wraps)
+                    byHub[wrap.ParentId] = wrap;
+            }
+            int maxDepth = 0;
+            foreach (LayoutNode node in tree.Nodes)
+                maxDepth = Math.Max(maxDepth, node.Depth);
+            return new Blocks { Wraps = byHub, MaxDepth = maxDepth, SkipRevealed = skipRevealed };
+        }
+
+        // The left end of the gutter of the leftmost block among the placed nodes.
+        public double GutterLeft(List<LayoutNode> positioned)
+        {
+            double min = double.PositiveInfinity;
+            foreach (LayoutNode node in positioned)
+            {
+                if (LeftReach.TryGetValue(node, out double reach))
+                    min = Math.Min(min, node.X - reach);
+            }
+            return min;
         }
     }
 

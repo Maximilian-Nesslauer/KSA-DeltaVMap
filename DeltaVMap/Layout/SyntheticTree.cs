@@ -287,6 +287,13 @@ internal static class SyntheticTree
     // opposed to the staircase of the dense-moons tree.
     public static LayoutTree BuildClampedGiants()
     {
+        return BuildClampedGiants(reveal: null);
+    }
+
+    // The same map with one minor moon revealed, as a search or a pick from a group list reveals
+    // it. reveal names the moon by its id without the rung suffix, for example "S2010_S_05".
+    public static LayoutTree BuildClampedGiants(string? reveal)
+    {
         LayoutNode root = Node("Earth.LO", "Earth Low Orbit", LayoutKind.LowOrbit, rank: 1);
         root.IsRoot = true;
         Ladder(root, "Earth", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3210);
@@ -330,7 +337,7 @@ internal static class SyntheticTree
             LayoutNode lo = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
             Transfer(sol, lo, depart: 6300 + i * 700, arrive: 8100 + i * 900);
             LadderEdge(lo, Node(name + ".SoiEdge", name + " SOI Edge", LayoutKind.SoiEdge, rank: 1), 4000 + i * 100);
-            AttachFoldedMoons(lo, name, soiKm, major, inner, outer, clamped: true);
+            AttachFoldedMoons(lo, name, soiKm, major, inner, outer, clamped: true, reveal);
         }
 
         LayoutNode pluto = Node("Pluto.LO", "Pluto Low Orbit", LayoutKind.LowOrbit, rank: 1);
@@ -396,12 +403,54 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-many-moons", root);
     }
 
+    // A wide clamped fan next to a planet whose moons nest five deep, each at the band clamp below the
+    // last, so the deep lanes sit centred under their planet at the heights of the fan's lower
+    // rows. When the fan wraps, the X pass must keep the deep subtree clear of the whole block of
+    // rows, not only of the depths the fan itself reaches.
+    public static LayoutTree BuildOpaqueBlock()
+    {
+        LayoutNode root = Node("Earth.LO", "Earth Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        Ladder(root, "Earth", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3210);
+
+        LayoutNode sol = Node("Sol.Hub", "Sol", LayoutKind.Hub, rank: 0);
+        HubLink(root, sol);
+
+        LayoutNode giant = Node("Giant.LO", "Giant Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        Transfer(sol, giant, depart: 6300, arrive: 8100);
+        LadderEdge(giant, Node("Giant.SoiEdge", "Giant SOI Edge", LayoutKind.SoiEdge, rank: 1), 4000);
+        for (int i = 0; i < 26; i++)
+        {
+            string name = ProvisionalName("Giant", i);
+            LayoutNode moon = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 2);
+            Transfer(giant, moon, depart: 6000 + i * 120, arrive: 2000 + i * 40);
+            if (i % 4 == 0)
+                LadderEdge(moon, Node(name + ".Surface", name + " Surface", LayoutKind.Surface, rank: 2), 1500 + i * 20);
+        }
+
+        LayoutNode deep = Node("Deep.LO", "Deep Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        Transfer(sol, deep, depart: 7000, arrive: 6000);
+        LayoutNode parent = deep;
+        for (int level = 0; level < 5; level++)
+        {
+            string id = "Deep" + level.ToString(Inv);
+            LayoutNode moon = Node(id + ".LO", id + " Low Orbit", LayoutKind.LowOrbit, rank: 2);
+            Transfer(parent, moon, depart: 1200, arrive: 400);
+            LadderEdge(moon, Node(id + ".Surface", id + " Surface", LayoutKind.Surface, rank: 2), 120);
+            parent = moon;
+        }
+
+        return LayoutTree.FromRoot("synthetic-opaque-block", root);
+    }
+
     // The moons of one giant, folded by the real MinorFold rules: the major moons, the inner minor
     // moons (below a tenth of the SOI) and the outer swarm (between a fifth and a half of the SOI,
     // as captured moons sit). Unclamped lanes cost a few hundred m/s that grow with the orbit, so
     // the fan is a staircase of bands, each moon with a cheap surface rung. Clamped lanes cost
-    // several km/s and all reach MaxBandStep, and only the major moons carry a surface rung.
-    private static void AttachFoldedMoons(LayoutNode lo, string name, double soiKm, int major, int inner, int outer, bool clamped)
+    // several km/s and all reach MaxBandStep, and only the major moons carry a surface rung. A
+    // revealed moon is a lane, and the lane is marked revealed when the reveal alone gives it,
+    // the way VisualTree marks it.
+    private static void AttachFoldedMoons(LayoutNode lo, string name, double soiKm, int major, int inner, int outer, bool clamped, string? reveal = null)
     {
         var moons = new List<(string Id, FoldChild Child, int Rank)>();
         for (int m = 0; m < major; m++)
@@ -413,9 +462,14 @@ internal static class SyntheticTree
         moons.Sort((a, b) => a.Child.OrbitRadius.CompareTo(b.Child.OrbitRadius));
 
         var children = new List<FoldChild>(moons.Count);
+        var plain = new List<FoldChild>(moons.Count);
         foreach (var moon in moons)
-            children.Add(moon.Child);
+        {
+            plain.Add(moon.Child);
+            children.Add(moon.Child with { Revealed = moon.Id == reveal });
+        }
         FoldSlot[] slots = MinorFold.Plan(children, BuildOptions.DefaultMinorGroupThreshold, soiKm * 1e3);
+        FoldSlot[] plainSlots = MinorFold.Plan(plain, BuildOptions.DefaultMinorGroupThreshold, soiKm * 1e3);
 
         int inGroup = 0;
         int outGroup = 0;
@@ -427,7 +481,7 @@ internal static class SyntheticTree
                 outGroup++;
             else if (slots[m] == FoldSlot.Lane)
             {
-                LayoutNode moon = Node(moons[m].Id + ".LO", moons[m].Id + " Low Orbit", LayoutKind.LowOrbit, moons[m].Rank);
+                LayoutNode moon = Node(moons[m].Id + ".LO", moons[m].Id + " Low Orbit", LayoutKind.LowOrbit, moons[m].Rank, revealed: plainSlots[m] != FoldSlot.Lane);
                 LayoutNode surface = Node(moons[m].Id + ".Surface", moons[m].Id + " Surface", LayoutKind.Surface, moons[m].Rank);
                 if (!clamped)
                 {
@@ -772,10 +826,10 @@ internal static class SyntheticTree
 
     // The overview label and body key are the label without its rung, as the adapter gives
     // them in game, so a check at fit zoom sees the labels the map really shows.
-    private static LayoutNode Node(string id, string label, LayoutKind kind, int rank)
+    private static LayoutNode Node(string id, string label, LayoutKind kind, int rank, bool revealed = false)
     {
         string body = BodyName(label);
-        return new LayoutNode { Id = id, Label = label, ShortLabel = body, BodyId = body, Kind = kind, Rank = rank };
+        return new LayoutNode { Id = id, Label = label, ShortLabel = body, BodyId = body, Kind = kind, Rank = rank, IsRevealed = revealed };
     }
 
     private static readonly string[] Rungs = { " Low Orbit", " Parking Orbit", " Orbit", " Surface", " Stationary", " SOI Edge", " Intercept" };

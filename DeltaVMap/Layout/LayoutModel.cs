@@ -298,6 +298,11 @@ internal sealed record LayoutWrap
     // planet shelves split whole planet systems by width instead, so their rows may differ in
     // lane count and may hold a single wide system.
     public bool Balanced { get; init; } = true;
+
+    // The width of the gutter left of the rows, in layout pixels. The X pass keeps it free of
+    // every other subtree, and the trunk runs down its middle. It grows when the map is small on
+    // screen, so the trunk keeps its screen clearance from the dots at the nominal fit zoom.
+    public double GutterPx { get; init; }
     public double TrunkX { get; set; }
     public IReadOnlyList<LayoutPoint> Trunk { get; set; } = System.Array.Empty<LayoutPoint>();
 }

@@ -36,8 +36,23 @@ internal static class LayoutEngine
     // character-count estimate, which is enough to verify topology and overlap logic.
     public static LayoutResult Run(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText = null)
     {
+        return Run(tree, cfg, measureText, rowCap: null);
+    }
+
+    // The same run with the row cap of the wrap forced instead of chosen, for tests that compare
+    // the full layouts of the caps the chooser scored.
+    public static LayoutResult RunWithRowCap(LayoutTree tree, LayoutConfig cfg, int rowCap)
+    {
+        return Run(tree, cfg, null, rowCap);
+    }
+
+    // The row plan needs the measured widths and the bands, and its shelf offsets join Y before
+    // the spread and the snap, so a wrapped row lands on the grid like any other node.
+    private static LayoutResult Run(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText, int? rowCap)
+    {
         cfg.Validate();
         MeasureNodes(tree, cfg, measureText);
+        IReadOnlyList<LayoutWrap> wraps = Array.Empty<LayoutWrap>();
         if (cfg.Mode == LayoutMode.Spring)
         {
             // Force-directed sets both axes at once; the tidy tree and band passes do not run.
@@ -49,13 +64,19 @@ internal static class LayoutEngine
                 WellLayout.Assign(tree, cfg);
             else
                 BandLayout.AssignBands(tree, cfg);
-            TidyTree.AssignX(tree, cfg);
+            wraps = RowWrap.Plan(tree, cfg, rowCap);
+            TidyTree.AssignX(tree, cfg, wraps);
+            foreach (LayoutNode node in tree.Nodes)
+            {
+                if (node.WrapDy != 0.0)
+                    node.Y += node.WrapDy;
+            }
         }
         Spread(tree, cfg);
         GridSnap.Snap(tree, cfg);
-        EdgeRouter.Route(tree, cfg);
+        EdgeRouter.Route(tree, cfg, wraps);
         LabelPlacer.Result labels = LabelPlacer.Place(tree, cfg);
-        return BuildResult(tree, cfg, labels);
+        return BuildResult(tree, cfg, labels, wraps);
     }
 
     // Stretch the pre-snap positions by LayoutConfig.SpreadX about the root. Scaling keeps
@@ -118,7 +139,8 @@ internal static class LayoutEngine
         };
     }
 
-    private static LayoutResult BuildResult(LayoutTree tree, LayoutConfig cfg, LabelPlacer.Result labels)
+    // The bounds hold every dot, every placed label plate and the trunk of every wrapped fan.
+    private static LayoutResult BuildResult(LayoutTree tree, LayoutConfig cfg, LabelPlacer.Result labels, IReadOnlyList<LayoutWrap> wraps)
     {
         double minX = double.PositiveInfinity;
         double minY = double.PositiveInfinity;
@@ -137,6 +159,11 @@ internal static class LayoutEngine
                 Extend(ref minX, ref minY, ref maxX, ref maxY, node.LabelX + node.Width, node.LabelY + node.Height);
             }
         }
+        foreach (LayoutWrap wrap in wraps)
+        {
+            foreach (LayoutPoint p in wrap.Trunk)
+                Extend(ref minX, ref minY, ref maxX, ref maxY, p.X, p.Y);
+        }
 
         return new LayoutResult
         {
@@ -146,7 +173,8 @@ internal static class LayoutEngine
             MinX = minX,
             MinY = minY,
             MaxX = maxX,
-            MaxY = maxY
+            MaxY = maxY,
+            Wraps = wraps
         };
     }
 

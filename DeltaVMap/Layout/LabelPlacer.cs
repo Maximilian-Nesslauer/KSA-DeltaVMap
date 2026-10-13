@@ -30,6 +30,26 @@ internal static class LabelPlacer
             hash.Insert(new Rect(node.SnappedX - r, node.SnappedY - r, 2 * r, 2 * r));
         }
 
+        // So is the layout-only prefix of an edge into a lower row, the hub's run to the trunk and
+        // the trunk itself, so no label hides where a row break runs. The prefix is axis-aligned,
+        // and its box grows by the line clearance plus a pixel, because a plate that only touches
+        // the grown box would sit exactly at the clearance.
+        double clear = OverlapCheck.WrapLineClearPx + 1.0;
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            foreach (LayoutEdge edge in node.Out)
+            {
+                for (int i = 0; i < edge.DvStart && i + 1 < edge.Polyline.Count; i++)
+                {
+                    LayoutPoint a = edge.Polyline[i];
+                    LayoutPoint b = edge.Polyline[i + 1];
+                    double x0 = Math.Min(a.X, b.X) - clear;
+                    double y0 = Math.Min(a.Y, b.Y) - clear;
+                    hash.Insert(new Rect(x0, y0, Math.Max(a.X, b.X) + clear - x0, Math.Max(a.Y, b.Y) + clear - y0));
+                }
+            }
+        }
+
         var ordered = new List<LayoutNode>(tree.Nodes);
         ordered.Sort(static (a, b) =>
         {
