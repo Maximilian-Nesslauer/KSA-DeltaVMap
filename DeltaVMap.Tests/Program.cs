@@ -58,9 +58,9 @@ failures += RunCase(SyntheticTree.BuildArrivalDemo(), LayoutConfig.Default, "def
 // deeper local hub. Exercises the synthetic MinorGroup node's layout in all three modes.
 failures += RunCase(SyntheticTree.BuildDenseAggregated(), LayoutConfig.Default, "default", outDir, minNodes: 0);
 
-// GravityWell mode (the in-game default): the same dense trees must stay overlap-free
-// with the spine / well / bus assertions holding, on a fresh tree instance each time
-// since the layout pass mutates node positions.
+// GravityWell mode, the alternative to the Cumulative-down default: the same dense trees must
+// stay overlap-free with the spine / well / bus assertions holding, on a fresh tree instance
+// each time since the layout pass mutates node positions.
 var gravityWell = new LayoutConfig { Mode = LayoutMode.GravityWell };
 failures += RunCase(SyntheticTree.BuildLargeMoonRoot(), gravityWell, "gravitywell", outDir, minNodes: 100);
 failures += RunCase(SyntheticTree.BuildWideFan(), gravityWell, "gravitywell", outDir, minNodes: 0);
@@ -120,6 +120,7 @@ failures += RunCruiseSpeedChecks();
 failures += RunSceneChecks(outDir);
 failures += RunFormatChecks();
 failures += RunRouteTotalsChecks();
+failures += RunEdgeGeometryChecks();
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
@@ -1475,6 +1476,53 @@ static int RunMinorFoldChecks()
         list.Insert(0, first);
         return list;
     }
+}
+
+// The badge and aerobrake anchors on laid-out trees in every mode. A ladder edge reads on its
+// last segment, a GravityWell transfer on its first, and the aerobrake chord runs from the
+// first polyline point to the last.
+static int RunEdgeGeometryChecks()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[edge-geometry] badge segment and aerobrake chord");
+
+    foreach (LayoutMode mode in new[] { LayoutMode.CumulativeDown, LayoutMode.GravityWell, LayoutMode.Spring })
+    {
+        var cfg = new LayoutConfig { Mode = mode };
+        int edges = 0;
+        int segmentFails = 0;
+        int chordFails = 0;
+        foreach (Func<LayoutTree> build in new Func<LayoutTree>[] { SyntheticTree.BuildStockLikePlanetRoot, SyntheticTree.BuildCruiseRootArrival, SyntheticTree.BuildDenseMoons })
+        {
+            LayoutResult result = LayoutEngine.Run(build(), cfg);
+            foreach (LayoutNode node in result.Tree.Nodes)
+            {
+                foreach (LayoutEdge edge in node.Out)
+                {
+                    IReadOnlyList<LayoutPoint> pts = edge.Polyline;
+                    if (edge.IsHubLink || pts.Count < 2)
+                        continue;
+                    edges++;
+                    int expected = mode == LayoutMode.GravityWell && edge.Class == EdgeClass.Transfer ? 0 : pts.Count - 2;
+                    int segment = EdgeGeometry.DvSegment(edge, mode);
+                    LayoutPoint mid = EdgeGeometry.DvSegmentMidpoint(edge, mode);
+                    bool midOk = mid.X == (pts[expected].X + pts[expected + 1].X) / 2.0
+                        && mid.Y == (pts[expected].Y + pts[expected + 1].Y) / 2.0;
+                    if (segment != expected || !midOk)
+                        segmentFails++;
+                    (LayoutPoint from, LayoutPoint to) = EdgeGeometry.DvChord(edge);
+                    if (from != pts[0] || to != pts[pts.Count - 1])
+                        chordFails++;
+                }
+            }
+        }
+        Console.WriteLine($"  {mode}: {edges} edges checked");
+        fails += Check($"{mode} edges exist", edges > 0);
+        fails += Check($"{mode} badge sits on the metric segment", segmentFails == 0);
+        fails += Check($"{mode} aerobrake chord runs from the first point to the last", chordFails == 0);
+    }
+    return fails;
 }
 
 static int Check(string name, bool ok)

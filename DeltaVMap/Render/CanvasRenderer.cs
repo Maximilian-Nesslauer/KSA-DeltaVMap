@@ -631,9 +631,9 @@ internal sealed class CanvasRenderer
     // (from the loose ellipse down into low orbit), in the destination's lightened color.
     private void DrawAerobrake(ImDrawListPtr dl, LayoutEdge edge, in CanvasTransform t, double alpha)
     {
-        IReadOnlyList<LayoutPoint> pts = edge.Polyline;
-        float2 a = t.ToScreen(pts[0].X, pts[0].Y);
-        float2 b = t.ToScreen(pts[pts.Count - 1].X, pts[pts.Count - 1].Y);
+        (LayoutPoint from, LayoutPoint to) = EdgeGeometry.DvChord(edge);
+        float2 a = t.ToScreen(from.X, from.Y);
+        float2 b = t.ToScreen(to.X, to.Y);
         float dx = b.X - a.X;
         float dy = b.Y - a.Y;
         float len = MathF.Sqrt(dx * dx + dy * dy);
@@ -1182,26 +1182,10 @@ internal sealed class CanvasRenderer
         }
     }
 
-    // Where the badge anchors on the edge. The badge sits on the segment that carries the
-    // metric in that mode: the vertical ladder drop for ladder edges in either mode, but
-    // for a GravityWell transfer the metric is the horizontal spine run (the transfer is a
-    // horizontal hop between wells), so the badge rides the first segment there.
     private static float2 BadgeAnchorScreen(LayoutEdge edge, in CanvasTransform t, LayoutMode mode)
     {
-        IReadOnlyList<LayoutPoint> pts = edge.Polyline;
-        LayoutPoint a, b;
-        if (mode == LayoutMode.GravityWell && edge.Class == EdgeClass.Transfer)
-        {
-            a = pts[0];
-            b = pts[1];
-        }
-        else
-        {
-            int n = pts.Count;
-            a = pts[n - 2];
-            b = pts[n - 1];
-        }
-        return t.ToScreen((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0);
+        LayoutPoint mid = EdgeGeometry.DvSegmentMidpoint(edge, mode);
+        return t.ToScreen(mid.X, mid.Y);
     }
 
     private static void DrawLabelItem(ImDrawListPtr dl, in DrawItem item, LayoutNode node)

@@ -30,7 +30,7 @@ internal static class LayoutDumpFormat
         sb.Append(Inv, $"<text x=\"8\" y=\"18\" fill=\"#8aa0b4\">{Escape(tree.Name)}  ({tree.Nodes.Count} nodes, {result.Labels.Placed}/{result.Labels.Total} labels)</text>\n");
 
         DrawBandGuides(sb, result, tx, ty, w);
-        DrawEdges(sb, tree.Nodes, tx, ty);
+        DrawEdges(sb, tree.Nodes, result.Config.Mode, tx, ty);
         DrawNodes(sb, tree.Nodes, tx, ty);
         DrawLabels(sb, tree.Nodes, tx, ty);
 
@@ -60,7 +60,7 @@ internal static class LayoutDumpFormat
                 pts.Append(Inv, $"{Fmt(p.X + tx)},{Fmt(p.Y + ty)} ");
             sb.Append(Inv, $"<polyline points=\"{pts.ToString().Trim()}\" fill=\"none\" stroke=\"#be96ff\" stroke-width=\"2.2\" stroke-dasharray=\"7 5\"/>\n");
         }
-        DrawEdges(sb, scene.Nodes, tx, ty);
+        DrawEdges(sb, scene.Nodes, scene.Config.Mode, tx, ty);
         DrawNodes(sb, scene.Nodes, tx, ty);
         DrawLabels(sb, scene.Nodes, tx, ty);
 
@@ -255,7 +255,7 @@ internal static class LayoutDumpFormat
         }
     }
 
-    private static void DrawEdges(StringBuilder sb, IReadOnlyList<LayoutNode> nodes, double tx, double ty)
+    private static void DrawEdges(StringBuilder sb, IReadOnlyList<LayoutNode> nodes, LayoutMode mode, double tx, double ty)
     {
         foreach (LayoutNode node in nodes)
         {
@@ -272,22 +272,21 @@ internal static class LayoutDumpFormat
                     pts.Append(Inv, $"{Fmt(p.X + tx)},{Fmt(p.Y + ty)} ");
                 sb.Append(Inv, $"<polyline points=\"{pts.ToString().Trim()}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{Fmt(width)}\"/>\n");
 
-                AppendEdgeBadge(sb, edge, tx, ty);
+                AppendEdgeBadge(sb, edge, mode, tx, ty);
             }
         }
     }
 
-    // Put the dV value near the middle of the edge's first (metric) segment so the
-    // band spacing can be sanity-checked against the numbers.
-    private static void AppendEdgeBadge(StringBuilder sb, LayoutEdge edge, double tx, double ty)
+    // Put the dV value at the middle of the segment the canvas anchors its badge on, so the
+    // band spacing can be sanity-checked against the numbers where the map shows them.
+    private static void AppendEdgeBadge(StringBuilder sb, LayoutEdge edge, LayoutMode mode, double tx, double ty)
     {
         if (edge.IsHubLink || edge.Polyline.Count < 2)
             return;
 
-        LayoutPoint a = edge.Polyline[0];
-        LayoutPoint b = edge.Polyline[1];
-        double mx = (a.X + b.X) / 2 + tx + 3;
-        double my = (a.Y + b.Y) / 2 + ty;
+        LayoutPoint mid = EdgeGeometry.DvSegmentMidpoint(edge, mode);
+        double mx = mid.X + tx + 3;
+        double my = mid.Y + ty;
         string prefix = edge.IsApproximate ? "~" : "";
         sb.Append(Inv, $"<text x=\"{Fmt(mx)}\" y=\"{Fmt(my)}\" fill=\"#5d6b78\" font-size=\"9\">{prefix}{Fmt0(edge.Dv)}</text>\n");
     }
