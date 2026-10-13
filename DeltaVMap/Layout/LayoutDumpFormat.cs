@@ -340,6 +340,13 @@ internal static class LayoutDumpFormat
         var sb = new StringBuilder();
         LayoutTree tree = result.Tree;
         sb.Append(Inv, $"Layout '{tree.Name}': {tree.Nodes.Count} nodes, bounds {Fmt0(result.Width)}x{Fmt0(result.Height)} px, labels {result.Labels.Placed}/{result.Labels.Total} placed\n");
+        foreach (LayoutWrap wrap in result.Wraps)
+        {
+            sb.Append(Inv, $"Wrap '{wrap.ParentId}' rows {string.Join("/", wrap.RowSizes)}, offsets");
+            foreach (double dy in wrap.RowDy)
+                sb.Append(Inv, $" {Fmt0(dy)}");
+            sb.Append(Inv, $", trunk x {Fmt0(wrap.TrunkX)}\n");
+        }
         AppendTextNode(sb, tree.Root, null, 0);
         return sb.ToString();
     }
@@ -349,7 +356,11 @@ internal static class LayoutDumpFormat
         string indent = new string(' ', depth * 2);
         string edge = incoming == null ? "(root)" : DescribeEdge(incoming);
         string here = node.IsYouAreHere ? " <YOU ARE HERE>" : "";
-        sb.Append(Inv, $"{indent}{edge} {node.Label} [{node.Kind} b{node.Band} cell({node.Col},{node.Row}) xy({Fmt0(node.SnappedX)},{Fmt0(node.SnappedY)})]{(node.LabelPlaced ? "" : " label:dropped")}{here}\n");
+        // The wrap fields show only on a lane in a lower row, so an unwrapped dump stays as it is.
+        string wrap = node.WrapRow > 0
+            ? string.Create(Inv, $" w{node.WrapRow} s{node.Shelf} dy{Fmt0(node.WrapDy)}")
+            : "";
+        sb.Append(Inv, $"{indent}{edge} {node.Label} [{node.Kind} b{node.Band}{wrap} cell({node.Col},{node.Row}) xy({Fmt0(node.SnappedX)},{Fmt0(node.SnappedY)})]{(node.LabelPlaced ? "" : " label:dropped")}{here}\n");
         foreach (LayoutEdge child in node.Out)
             AppendTextNode(sb, child.To, child, depth + 1);
     }

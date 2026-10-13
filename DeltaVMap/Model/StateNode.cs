@@ -46,6 +46,11 @@ internal sealed class StateNode
     // real node.
     public IReadOnlyList<PhysicalNode>? GroupMembers { get; init; }
 
+    // Set on the node a hub's lane enters when the lane exists only because a searched or picked
+    // body was revealed, so without the reveal the body would sit in a "+N" group or be hidden.
+    // The layout keeps such a lane out of the counts that size the rows of a wide fan.
+    public bool IsRevealed { get; set; }
+
     // Human-facing label, e.g. "Earth Low Orbit". The layout pass measures it for
     // node widths; for now it just drives the debug dump.
     public required string Label { get; init; }

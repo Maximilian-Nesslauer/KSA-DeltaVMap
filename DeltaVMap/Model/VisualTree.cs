@@ -120,13 +120,15 @@ internal sealed class VisualTree
         // root and spine ancestors are never passed here, so they are never hidden.
         private bool Include(PhysicalNode body)
         {
-            Astronomical a = body.Astro;
-
             // A revealed (searched) body is always shown, ahead of every hide rule, so a
             // chosen asteroid stays visible under isolate and is pulled out of its group.
-            if (IsRevealed(body.Id))
-                return true;
+            return IsRevealed(body.Id) || IncludeUnrevealed(body);
+        }
 
+        // The hide rules alone, as if no body were revealed.
+        private bool IncludeUnrevealed(PhysicalNode body)
+        {
+            Astronomical a = body.Astro;
             bool minor = body.IsMinor;
             // Isolate keeps only the spine, the major bodies and revealed bodies, so it hides
             // every un-revealed minor body (asteroids and comets alike).
@@ -367,6 +369,7 @@ internal sealed class VisualTree
             }
 
             FoldSlot[] slots = MinorFold.Plan(fold, _options.MinorGroupThreshold, bandSoi);
+            bool[]? revealedLanes = RevealedLanes(children, fold, slots, bandSoi);
 
             List<PhysicalNode>? group = null;
             List<PhysicalNode>? inner = null;
@@ -376,7 +379,13 @@ internal sealed class VisualTree
                 switch (slots[i])
                 {
                     case FoldSlot.Lane:
+                        int before = hub.Out.Count;
                         buildChild(children[i]);
+                        if (revealedLanes != null && revealedLanes[i])
+                        {
+                            for (int e = before; e < hub.Out.Count; e++)
+                                hub.Out[e].To.IsRevealed = true;
+                        }
                         break;
                     case FoldSlot.Group:
                         (group ??= new List<PhysicalNode>()).Add(children[i]);
@@ -396,6 +405,29 @@ internal sealed class VisualTree
                 AddMinorGroup(hub, FoldSlot.InnerGroup, inner);
             if (outer != null)
                 AddMinorGroup(hub, FoldSlot.OuterGroup, outer);
+        }
+
+        // Which lanes of a hub exist only because of a reveal, which are the children that get
+        // a lane now but would not get one if nothing were revealed. A lane that a revealed body
+        // already had before its reveal stays unmarked, so the marked lanes are exactly the ones
+        // the reveal added. Null when no child of the hub is revealed.
+        private bool[]? RevealedLanes(IReadOnlyList<PhysicalNode> children, FoldChild[] fold, FoldSlot[] slots, double? bandSoi)
+        {
+            bool any = false;
+            foreach (FoldChild c in fold)
+                any |= c.Revealed;
+            if (!any)
+                return null;
+
+            var plain = new FoldChild[fold.Length];
+            for (int i = 0; i < fold.Length; i++)
+                plain[i] = fold[i] with { Included = IncludeUnrevealed(children[i]), Revealed = false };
+            FoldSlot[] plainSlots = MinorFold.Plan(plain, _options.MinorGroupThreshold, bandSoi);
+
+            var revealed = new bool[fold.Length];
+            for (int i = 0; i < fold.Length; i++)
+                revealed[i] = slots[i] == FoldSlot.Lane && plainSlots[i] != FoldSlot.Lane;
+            return revealed;
         }
 
         private static MinorKind KindOf(Astronomical astro)

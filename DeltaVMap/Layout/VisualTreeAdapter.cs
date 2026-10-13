@@ -155,6 +155,7 @@ internal static class VisualTreeAdapter
             HubRole = source.Kind == StateKind.Hub ? HubRoleOf(source.Body, graph) : HubRole.None,
             IsSystemStub = stub,
             Summary = summary,
+            IsRevealed = source.IsRevealed,
             // Mirrored so the GravityWell pass can sign a "you are here" node's well offset
             // (a medium orbit above or below low orbit) by its radius. The column key is
             // assigned structurally in LayoutTree.FromRoot, so it is not set here.

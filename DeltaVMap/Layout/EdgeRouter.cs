@@ -27,7 +27,10 @@ internal static class EdgeRouter
             {
                 LayoutEdge edge = node.Out[i];
                 edge.Lane = i;
-                edge.Polyline = straight ? StraightLine(edge) : BuildPolyline(edge, cfg.EdgeDiagonalPx);
+                edge.DvStart = 0;
+                edge.Polyline = straight
+                    ? StraightLine(edge)
+                    : BuildPolyline(new LayoutPoint(edge.From.SnappedX, edge.From.SnappedY), new LayoutPoint(edge.To.SnappedX, edge.To.SnappedY), cfg.EdgeDiagonalPx);
             }
         }
     }
@@ -41,12 +44,14 @@ internal static class EdgeRouter
         };
     }
 
-    private static IReadOnlyList<LayoutPoint> BuildPolyline(LayoutEdge edge, double diagonalPx)
+    // The run, diagonal and drop from one snapped point to another. The acceptance check calls
+    // it too, to confirm that the dV part of a wrapped edge has the shape of an unwrapped one.
+    internal static IReadOnlyList<LayoutPoint> BuildPolyline(LayoutPoint from, LayoutPoint to, double diagonalPx)
     {
-        double fromX = edge.From.SnappedX;
-        double fromY = edge.From.SnappedY;
-        double toX = edge.To.SnappedX;
-        double toY = edge.To.SnappedY;
+        double fromX = from.X;
+        double fromY = from.Y;
+        double toX = to.X;
+        double toY = to.Y;
 
         double dx = toX - fromX;
         double dy = toY - fromY;

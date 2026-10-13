@@ -159,6 +159,7 @@ static int RunCase(LayoutTree tree, LayoutConfig cfg, string variant, string out
     PrintIssues("label", report.LabelOverlaps);
     PrintIssues("band", report.BandViolations);
     PrintIssues("bus", report.BusViolations);
+    PrintIssues("wrap", report.WrapViolations);
 
     File.WriteAllText(Path.Combine(outDir, tag + ".svg"), LayoutDumpFormat.ToSvg(result));
     File.WriteAllText(Path.Combine(outDir, tag + ".txt"), LayoutDumpFormat.ToText(result));
@@ -241,8 +242,65 @@ static int RunNegativeFixtures()
         LayoutResult result = LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg);
         fails += ExpectCaught($"{cfg.Mode}: a moon moved one grid cell off its dV band", result,
             r => FindNode(r.Tree, "SaturnMajor3.LO").Y += r.Config.GridPx);
+
+        // On a map with no wrapped fan, a stray row, a stray offset that keeps Y on its band, and
+        // a stray layout prefix must each fail the wrap rules.
+        fails += ExpectCaught($"{cfg.Mode}: a lane in row 1 under a hub that is not wrapped",
+            LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg),
+            r => FindNode(r.Tree, "SaturnMajor3.LO").WrapRow = 1);
+        fails += ExpectCaught($"{cfg.Mode}: a row offset with no wrapped fan",
+            LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg),
+            r =>
+            {
+                LayoutNode moon = FindNode(r.Tree, "SaturnMajor3.LO");
+                moon.WrapDy = r.Config.GridPx;
+                moon.Y += r.Config.GridPx;
+            });
+        fails += ExpectCaught($"{cfg.Mode}: a layout prefix on an edge that enters no lower row",
+            LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg),
+            r => FindNode(r.Tree, "SaturnMajor3.LO").ParentEdge!.DvStart = 1);
+
+        // A wrap record that does not match its rows. The fan of Sol keeps every lane in row 0,
+        // so a record of two rows finds an empty row.
+        fails += ExpectCaughtCopy($"{cfg.Mode}: a wrap record whose rows are not in the layout",
+            LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg),
+            r =>
+            {
+                foreach (LayoutEdge edge in FindNode(r.Tree, "Sol.Hub").Out)
+                    edge.To.WrapRow = 0;
+                return WithWraps(r, new LayoutWrap { ParentId = "Sol.Hub", Mode = r.Config.Mode, RowSizes = new[] { 4, 5 }, RowDy = new[] { 0.0, 4 * r.Config.GridPx } });
+            });
     }
+
+    LayoutResult well = LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), new LayoutConfig { Mode = LayoutMode.GravityWell });
+    fails += ExpectCaught("GravityWell: a moon placed left of its planet", well,
+        r =>
+        {
+            LayoutNode moon = FindNode(r.Tree, "SaturnMajor3.LO");
+            moon.X = moon.Parent!.X - r.Config.GridPx;
+        });
+
+    fails += ExpectCaughtCopy("Spring: a wrapped fan",
+        LayoutEngine.Run(SyntheticTree.BuildStockLikePlanetRoot(), new LayoutConfig { Mode = LayoutMode.Spring }),
+        r => WithWraps(r, new LayoutWrap { ParentId = "Sol.Hub", Mode = LayoutMode.Spring, RowSizes = new[] { 4, 4 }, RowDy = new[] { 0.0, 4 * r.Config.GridPx } }));
     return fails;
+}
+
+// A copy of a layout result that carries the given wrap records, for the fixtures that hand the
+// check a wrap the layout never made.
+static LayoutResult WithWraps(LayoutResult result, params LayoutWrap[] wraps)
+{
+    return new LayoutResult
+    {
+        Tree = result.Tree,
+        Config = result.Config,
+        Labels = result.Labels,
+        MinX = result.MinX,
+        MinY = result.MinY,
+        MaxX = result.MaxX,
+        MaxY = result.MaxY,
+        Wraps = wraps
+    };
 }
 
 // Runs the acceptance check on a clean layout, applies corrupt to it, and runs the check again.
@@ -257,6 +315,22 @@ static int ExpectCaught(string name, LayoutResult result, Action<LayoutResult> c
     PrintIssues("caught label", report.LabelOverlaps);
     PrintIssues("caught band", report.BandViolations);
     PrintIssues("caught bus", report.BusViolations);
+    PrintIssues("caught wrap", report.WrapViolations);
+    return Check($"{name} is caught", cleanOk && !report.Ok);
+}
+
+// The same for a fault the layout result itself carries, such as a wrap record. Here corrupt
+// returns the broken copy of the clean result.
+static int ExpectCaughtCopy(string name, LayoutResult result, Func<LayoutResult, LayoutResult> corrupt)
+{
+    bool cleanOk = OverlapCheck.Run(result).Ok;
+    OverlapReport report = OverlapCheck.Run(corrupt(result));
+    PrintIssues("caught node", report.NodeOverlaps);
+    PrintIssues("caught subtree", report.SubtreeOverlaps);
+    PrintIssues("caught label", report.LabelOverlaps);
+    PrintIssues("caught band", report.BandViolations);
+    PrintIssues("caught bus", report.BusViolations);
+    PrintIssues("caught wrap", report.WrapViolations);
     return Check($"{name} is caught", cleanOk && !report.Ok);
 }
 
@@ -983,6 +1057,7 @@ static LayoutPart ScenePart(Func<LayoutTree> build, LayoutResult ego, string roo
     PrintIssues("label", report.LabelOverlaps);
     PrintIssues("band", report.BandViolations);
     PrintIssues("bus", report.BusViolations);
+    PrintIssues("wrap", report.WrapViolations);
     fails += Check($"{variant}: part {tree.Name} lays out cleanly", report.Ok);
     return new LayoutPart { RootId = rootId, Result = result, Expanded = expanded };
 }
@@ -1633,6 +1708,33 @@ static int RunEdgeGeometryChecks()
         fails += Check($"{mode} badge sits on the metric segment", segmentFails == 0);
         fails += Check($"{mode} aerobrake chord runs from the first point to the last", chordFails == 0);
     }
+
+    // An edge into a lower row of a wrapped fan runs from its hub over to the trunk, down the
+    // trunk to the row, then along the run and the drop of its dV part. The badge and the chord
+    // must stay on the dV part in every mode.
+    var hub = new LayoutNode { Id = "Hub", Label = "Hub", Kind = LayoutKind.LowOrbit };
+    var moon = new LayoutNode { Id = "Moon", Label = "Moon", Kind = LayoutKind.LowOrbit };
+    var wrapped = new LayoutEdge
+    {
+        From = hub,
+        To = moon,
+        Class = EdgeClass.Transfer,
+        Polyline = new[]
+        {
+            new LayoutPoint(0, 0), new LayoutPoint(-70, 0), new LayoutPoint(-70, 420),
+            new LayoutPoint(210, 420), new LayoutPoint(210, 840)
+        },
+        DvStart = 2
+    };
+    foreach (LayoutMode mode in new[] { LayoutMode.CumulativeDown, LayoutMode.GravityWell, LayoutMode.Spring })
+    {
+        int segment = EdgeGeometry.DvSegment(wrapped, mode);
+        int expected = mode == LayoutMode.GravityWell ? 2 : 3;
+        fails += Check($"{mode}: the badge of a wrapped edge sits on its dV part", segment == expected && segment >= wrapped.DvStart);
+    }
+    (LayoutPoint chordFrom, LayoutPoint chordTo) = EdgeGeometry.DvChord(wrapped);
+    fails += Check("the aerobrake chord of a wrapped edge starts where its dV part starts",
+        chordFrom == new LayoutPoint(-70, 420) && chordTo == new LayoutPoint(210, 840));
     return fails;
 }
 

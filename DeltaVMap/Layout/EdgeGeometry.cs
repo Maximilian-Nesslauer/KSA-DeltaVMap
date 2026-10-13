@@ -11,12 +11,14 @@ internal static class EdgeGeometry
     // The index i of the segment Polyline[i] to Polyline[i + 1] that carries the edge's
     // metric, which is where the dV badge sits. A ladder edge reads on its last segment, the
     // vertical drop into the rung, in every mode. A GravityWell transfer is a horizontal hop
-    // between wells, so its metric is the spine run on the first segment. Cumulative-down and
-    // Spring transfers end on their drop like a ladder edge.
+    // between wells, so its metric is the spine run on the first segment of its dV part, which
+    // starts after the layout-only prefix of a wrapped row. Cumulative-down and Spring transfers
+    // end on their drop like a ladder edge. The index is never below DvStart, because the router
+    // always leaves at least one dV segment after the prefix.
     public static int DvSegment(LayoutEdge edge, LayoutMode mode)
     {
         if (mode == LayoutMode.GravityWell && edge.Class == EdgeClass.Transfer)
-            return 0;
+            return edge.DvStart;
         return edge.Polyline.Count - 2;
     }
 
@@ -27,11 +29,12 @@ internal static class EdgeGeometry
         return new LayoutPoint((pts[i].X + pts[i + 1].X) / 2.0, (pts[i].Y + pts[i + 1].Y) / 2.0);
     }
 
-    // The straight chord the aerobrake marker sits on and points along, from where the edge
-    // leaves its origin to the node it arrives at.
+    // The straight chord the aerobrake marker sits on and points along, from where the dV part
+    // of the edge starts to the node it arrives at. Without a wrap prefix that start is the
+    // edge's origin.
     public static (LayoutPoint From, LayoutPoint To) DvChord(LayoutEdge edge)
     {
         IReadOnlyList<LayoutPoint> pts = edge.Polyline;
-        return (pts[0], pts[pts.Count - 1]);
+        return (pts[edge.DvStart], pts[pts.Count - 1]);
     }
 }

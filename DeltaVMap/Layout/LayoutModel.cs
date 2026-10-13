@@ -96,6 +96,12 @@ internal sealed class LayoutEdge
     // Octilinear one-bend polyline in snapped layout space, filled by the EdgeRouter.
     public IReadOnlyList<LayoutPoint> Polyline { get; set; } = System.Array.Empty<LayoutPoint>();
 
+    // The index of the polyline point where the delta-v part of the edge starts. An edge into a
+    // lower row of a wrapped fan first runs from its hub to the trunk and down to the row, a
+    // prefix that only carries the layout and no delta-v, and the dV part from Polyline[DvStart]
+    // on has exactly the shape the edge would have without the wrap. Zero means no prefix.
+    public int DvStart { get; set; }
+
     public bool IsHubLink => Class == EdgeClass.HubLink;
 }
 
@@ -187,6 +193,21 @@ internal sealed class LayoutNode
     public double X { get; set; }
     public double Y { get; set; }
 
+    // The row of a wide fan this node starts, set only on the direct children of a wrapped hub
+    // (0 is the hub's own row, which also holds its ladder rungs) and -1 on every other node.
+    public int WrapRow { get; set; } = -1;
+
+    // The shelf the node sits on and the layout offset that shelf adds to Y, so the pre-snap Y
+    // is Band times the band height plus WrapDy. WrapDy is a whole number of grid cells and
+    // states no delta-v. Both are zero when no wrap applies above the node.
+    public int Shelf { get; set; }
+    public double WrapDy { get; set; }
+
+    // A lane that exists only because a searched or picked body was pulled out of its "+N"
+    // group. The wrap does not count it when it sizes the rows, so a reveal never moves another
+    // lane to a different row.
+    public bool IsRevealed { get; init; }
+
     // Grid-snapped result.
     public int Col { get; set; }
     public int Row { get; set; }
@@ -258,6 +279,27 @@ internal sealed class LayoutTree
             AssignDepth(edge.To, depth + 1, nodes);
         }
     }
+}
+
+// One wide fan that continues in rows below its hub. ParentId is the hub, and RowSizes holds
+// the lane count of each row in the hub's Out order (ladder rungs are no lanes and stay in row
+// 0). RowDy is the layout offset of each row below the hub's own WrapDy, 0 for row 0. TrunkX is
+// the X of the vertical trunk in the gutter that joins the rows, and Trunk is that shared line
+// from the hub over to the gutter and down to the last row, both in snapped layout space and
+// filled by the EdgeRouter.
+internal sealed record LayoutWrap
+{
+    public required string ParentId { get; init; }
+    public required LayoutMode Mode { get; init; }
+    public required IReadOnlyList<int> RowSizes { get; init; }
+    public required IReadOnlyList<double> RowDy { get; init; }
+
+    // Whether the rows split the lanes evenly by count, as a fan of moons does. The GravityWell
+    // planet shelves split whole planet systems by width instead, so their rows may differ in
+    // lane count and may hold a single wide system.
+    public bool Balanced { get; init; } = true;
+    public double TrunkX { get; set; }
+    public IReadOnlyList<LayoutPoint> Trunk { get; set; } = System.Array.Empty<LayoutPoint>();
 }
 
 // One separately laid-out part of the scene: another star system, collapsed to its root hub

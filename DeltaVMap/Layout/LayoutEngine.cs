@@ -15,6 +15,10 @@ internal sealed class LayoutResult
     public double MaxX { get; init; }
     public double MaxY { get; init; }
 
+    // Every wrapped fan of the tree. Empty when no wrap applies, which is always the case for a
+    // destination part, so a part that SceneComposer translates carries no wrap geometry.
+    public IReadOnlyList<LayoutWrap> Wraps { get; init; } = Array.Empty<LayoutWrap>();
+
     public double Width => MaxX - MinX;
     public double Height => MaxY - MinY;
 }

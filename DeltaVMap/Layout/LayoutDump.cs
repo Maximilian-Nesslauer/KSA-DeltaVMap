@@ -195,6 +195,7 @@ internal static class LayoutDump
         LogIssues("label", report.LabelOverlaps);
         LogIssues("band", report.BandViolations);
         LogIssues("bus", report.BusViolations);
+        LogIssues("wrap", report.WrapViolations);
     }
 
     private static void LogIssues(string kind, System.Collections.Generic.List<string> issues)
