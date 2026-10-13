@@ -17,6 +17,15 @@ internal enum LayoutMode
     Spring
 }
 
+// Whether a wide fan of a tree layout continues in rows below its parent. Off keeps one row per
+// fan. Auto lets the layout pick the rows from the fit on the nominal canvas. Spring ignores it,
+// because its web is already about square.
+internal enum WrapMode
+{
+    Off,
+    Auto
+}
+
 // Tunable layout constants, all in pixels at 100% zoom unless noted. These are
 // starting values; the interactive layout recomputes widths from real ImGui text
 // metrics and tunes the spacing against the rendered map, so treat these numbers as
@@ -27,6 +36,10 @@ internal sealed class LayoutConfig
     // that does not pick a mode (and the existing offline cases) keep their verified
     // output unchanged; the map window picks the mode explicitly (currently CumulativeDown).
     public LayoutMode Mode { get; init; } = LayoutMode.CumulativeDown;
+
+    // Row wrapping of wide fans. Off by default, so a caller that does not ask for it gets
+    // one row per fan. The map window builds its config through ForMap, which sets it.
+    public WrapMode Wrap { get; init; } = WrapMode.Off;
     // Square snap grid. Must be at least the sum of the two largest dot radii so that
     // two dots in orthogonally adjacent cells never overlap; the overlap check relies
     // on it. Validate() enforces this.
@@ -116,11 +129,59 @@ internal sealed class LayoutConfig
     public double MoonDotRadius { get; init; } = 11.0;
     public double MinorDotRadius { get; init; } = 9.0;
 
+    // Row wrapping, used only when Wrap is Auto. A fan wraps when it has more lanes than the
+    // minimum (children that are not ladder rungs). Each row holds about Kmax lanes, and a fan
+    // has at most MaxRows rows. CumulativeDown and GravityWell have their own values, because a
+    // CumulativeDown row adds a drop that is not delta-v while a GravityWell row costs only its
+    // local well height. These are tunables for calibration.
+    public int WrapMinLanesCd { get; init; } = 12;
+    public int WrapKmaxCd { get; init; } = 10;
+    public int WrapMaxRowsCd { get; init; } = 3;
+    public int WrapMinLanesGw { get; init; } = 8;
+    public int WrapKmaxGw { get; init; } = 7;
+    public int WrapMaxRowsGw { get; init; } = 6;
+
+    // One more row is taken only when it improves the fit zoom on the nominal canvas by at least
+    // this fraction, so a row that gains almost nothing does not cost a layout-only drop.
+    public double WrapMinGain { get; init; } = 0.10;
+
+    // The horizontal gutter left of a wrapped block, which holds the trunk that joins its rows.
+    // A whole multiple of GridPx, so the trunk lands on a grid column. Validate() enforces it.
+    public double WrapGutterPx { get; init; } = 70.0;
+
+    // The clear space in screen pixels a shelf of rows keeps from the shelf above it, at the
+    // nominal fit zoom. It is a moon dot (2 * MoonDotRadius), a label line (LineHeightPx) and
+    // the line clearance of the scene checks. The layout divides it by the zoom and snaps the
+    // result up to GridPx, so this value itself is not on the grid.
+    public double ShelfClearScreenPx { get; init; } = 44.0;
+
+    // Width over height of the nominal canvas the wrap scores against. ForMap sets 1.6, or 2.4
+    // when other star systems need the strip below the map, so a wrapped map stays wide enough
+    // for the strip to stay below it.
+    public double WrapTargetAspect { get; init; } = 1.6;
+
     public static LayoutConfig Default => new();
+
+    // The config of the interactive map, which the game and the harness tests both use, so a
+    // test checks the same config the player sees. hasSeveralSystems picks the wider target
+    // aspect, because the other star systems then take a strip below the map.
+    public static LayoutConfig ForMap(LayoutMode mode, bool hasSeveralSystems, WrapMode wrap)
+    {
+        return new LayoutConfig
+        {
+            Mode = mode,
+            Wrap = wrap,
+            WrapTargetAspect = hasSeveralSystems ? SeveralSystemsAspect : OneSystemAspect
+        };
+    }
+
+    private const double OneSystemAspect = 1.6;
+    private const double SeveralSystemsAspect = 2.4;
 
     // A copy with another structure spread and band step range, for laying out another star
     // system beside a map laid out with this config. maxBandStep caps the cumulative and the
-    // gravity-well step alike.
+    // gravity-well step alike. The copy does not take Wrap or its tunables, so it is always Off,
+    // because a destination system never wraps.
     public LayoutConfig WithSpread(double spreadX, int minBandStep, int maxBandStep)
     {
         return new LayoutConfig
@@ -153,6 +214,12 @@ internal sealed class LayoutConfig
             MoonDotRadius = MoonDotRadius,
             MinorDotRadius = MinorDotRadius
         };
+    }
+
+    // An exact copy with Wrap Off, for laying out a destination system from the ego config.
+    public LayoutConfig WithoutWrap()
+    {
+        return WithSpread(SpreadX, MinBandStep, System.Math.Max(MaxBandStep, WellMaxBandStep));
     }
 
     // Enforce the spacing invariants the comments above promise, so a misconfigured
@@ -189,5 +256,31 @@ internal sealed class LayoutConfig
         if (SpreadX < 1.0 || SpreadX > 4.0)
             throw new System.ArgumentException(
                 $"SpreadX ({SpreadX}) must be between 1 and 4.");
+
+        if (WrapMinLanesCd < 1 || WrapMinLanesGw < 1)
+            throw new System.ArgumentException(
+                $"WrapMinLanesCd ({WrapMinLanesCd}) and WrapMinLanesGw ({WrapMinLanesGw}) must be at least 1.");
+        if (WrapKmaxCd < 2 || WrapKmaxGw < 2)
+            throw new System.ArgumentException(
+                $"WrapKmaxCd ({WrapKmaxCd}) and WrapKmaxGw ({WrapKmaxGw}) must be at least 2, because no row holds a single lane.");
+        if (WrapMaxRowsCd < 1 || WrapMaxRowsGw < 1)
+            throw new System.ArgumentException(
+                $"WrapMaxRowsCd ({WrapMaxRowsCd}) and WrapMaxRowsGw ({WrapMaxRowsGw}) must be at least 1.");
+        if (WrapMinGain < 0.0)
+            throw new System.ArgumentException(
+                $"WrapMinGain ({WrapMinGain}) must not be negative.");
+        if (WrapGutterPx <= 0.0)
+            throw new System.ArgumentException(
+                $"WrapGutterPx ({WrapGutterPx}) must be positive.");
+        double gutterCols = WrapGutterPx / GridPx;
+        if (System.Math.Abs(gutterCols - System.Math.Round(gutterCols)) > 1e-9)
+            throw new System.ArgumentException(
+                $"WrapGutterPx ({WrapGutterPx}) must be a whole multiple of GridPx ({GridPx}).");
+        if (ShelfClearScreenPx <= 0.0)
+            throw new System.ArgumentException(
+                $"ShelfClearScreenPx ({ShelfClearScreenPx}) must be positive.");
+        if (WrapTargetAspect <= 0.0)
+            throw new System.ArgumentException(
+                $"WrapTargetAspect ({WrapTargetAspect}) must be positive.");
     }
 }

@@ -100,10 +100,11 @@ internal static class SceneComposer
     // While it would grow across the strip past its share, the tree modes lower the cap on a
     // single delta-v step first, then the minimum step. When no tree layout fits, the flattest
     // one tried is used, since it comes nearest. A Spring part that fits with no spread keeps
-    // the plain layout.
+    // the plain layout. Every run has Wrap Off, the plain one included, because a destination
+    // system never wraps even when the ego map does.
     public static LayoutResult LayOutPart(Func<LayoutTree> build, LayoutResult ego, Func<string, double>? measureText)
     {
-        LayoutConfig cfg = ego.Config;
+        LayoutConfig cfg = ego.Config.WithoutWrap();
         Func<string, double>? measure = measureText != null ? Memoize(measureText) : null;
         LayoutResult plain = LayoutEngine.Run(build(), cfg, measure);
         bool spring = cfg.Mode == LayoutMode.Spring;

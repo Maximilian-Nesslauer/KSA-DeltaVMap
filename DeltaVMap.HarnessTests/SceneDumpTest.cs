@@ -48,7 +48,7 @@ public sealed class SceneDumpTest : IHarnessTest
             foreach ((string name, LayoutMode mode) in new[] { ("default", LayoutMode.CumulativeDown), ("gravitywell", LayoutMode.GravityWell), ("spring", LayoutMode.Spring) })
             {
                 VisualTree visual = VisualTree.Build(graph, new DvCache(), home, egoState: null, BuildOptions.Default);
-                LayoutResult ego = LayoutEngine.Run(VisualTreeAdapter.ToLayoutTree(visual, graph), new LayoutConfig { Mode = mode });
+                LayoutResult ego = LayoutEngine.Run(VisualTreeAdapter.ToLayoutTree(visual, graph), LayoutConfig.ForMap(mode, graph.HasSeveralSystems, WrapMode.Off));
                 LayoutNode? hub = null;
                 foreach (LayoutNode node in ego.Tree.Nodes)
                 {

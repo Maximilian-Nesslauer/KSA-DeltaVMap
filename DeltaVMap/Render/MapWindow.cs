@@ -2210,7 +2210,7 @@ internal sealed class MapWindow : ImGuiWindow
             }
 
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual, _graph);
-            var cfg = new LayoutConfig { Mode = _layoutMode };
+            LayoutConfig cfg = LayoutConfig.ForMap(_layoutMode, _graph.HasSeveralSystems, WrapMode.Off);
             LayoutResult result;
             {
 #if DEBUG

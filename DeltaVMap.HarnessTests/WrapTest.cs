@@ -37,7 +37,7 @@ public sealed class WrapTest : IHarnessTest
             }
 
             VisualTree visual = VisualTree.Build(graph, new DvCache(), home, egoState: null, BuildOptions.Default);
-            var cfg = new LayoutConfig { Mode = LayoutMode.CumulativeDown };
+            LayoutConfig cfg = LayoutConfig.ForMap(LayoutMode.CumulativeDown, graph.HasSeveralSystems, WrapMode.Off);
             LayoutResult result = LayoutEngine.Run(VisualTreeAdapter.ToLayoutTree(visual, graph), cfg);
             HarnessLog.Line($"{Tag} system '{system.Id}', root {home.Id}: {result.Tree.Nodes.Count} nodes, quantum {cfg.BandQuantumDv:F0} m/s, max band step {cfg.MaxBandStep}");
 

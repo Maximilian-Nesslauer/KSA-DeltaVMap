@@ -137,6 +137,7 @@ failures += RunSceneChecks(outDir);
 failures += RunFormatChecks();
 failures += RunRouteTotalsChecks();
 failures += RunEdgeGeometryChecks();
+failures += RunWrapConfigChecks();
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
@@ -1632,6 +1633,53 @@ static int RunEdgeGeometryChecks()
         fails += Check($"{mode} badge sits on the metric segment", segmentFails == 0);
         fails += Check($"{mode} aerobrake chord runs from the first point to the last", chordFails == 0);
     }
+    return fails;
+}
+
+// The map config comes from ForMap, which must lay out exactly like a plain config of the same
+// mode while the wrap is Off, and a destination system must never inherit the wrap of the ego map.
+static int RunWrapConfigChecks()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[wrap-config] map config factory and destination parts");
+
+    foreach (LayoutMode mode in new[] { LayoutMode.CumulativeDown, LayoutMode.GravityWell, LayoutMode.Spring })
+    {
+        LayoutConfig one = LayoutConfig.ForMap(mode, hasSeveralSystems: false, WrapMode.Auto);
+        LayoutConfig several = LayoutConfig.ForMap(mode, hasSeveralSystems: true, WrapMode.Off);
+        fails += Check($"{mode}: ForMap keeps the mode and the wrap", one.Mode == mode && one.Wrap == WrapMode.Auto
+            && several.Mode == mode && several.Wrap == WrapMode.Off);
+        fails += Check($"{mode}: ForMap targets 1.6 for one system and 2.4 for several", one.WrapTargetAspect == 1.6 && several.WrapTargetAspect == 2.4);
+
+        LayoutResult plain = LayoutEngine.Run(SyntheticTree.BuildStockLikePlanetRoot(), new LayoutConfig { Mode = mode });
+        LayoutResult map = LayoutEngine.Run(SyntheticTree.BuildStockLikePlanetRoot(), several);
+        fails += Check($"{mode}: ForMap with the wrap Off lays out as a plain config", Snapshot(map.Tree.Nodes) == Snapshot(plain.Tree.Nodes));
+
+        LayoutConfig spread = one.WithSpread(2.0, 2, 4);
+        LayoutConfig copy = one.WithoutWrap();
+        fails += Check($"{mode}: WithSpread leaves the wrap Off", spread.Wrap == WrapMode.Off);
+        fails += Check($"{mode}: WithoutWrap is an exact copy with the wrap Off", copy.Wrap == WrapMode.Off && copy.Mode == mode
+            && copy.SpreadX == one.SpreadX && copy.MinBandStep == one.MinBandStep
+            && copy.MaxBandStep == one.MaxBandStep && copy.WellMaxBandStep == one.WellMaxBandStep);
+
+        LayoutResult ego = LayoutEngine.Run(SyntheticTree.BuildStockLikePlanetRoot(), LayoutConfig.ForMap(mode, hasSeveralSystems: true, WrapMode.Auto));
+        LayoutResult part = SceneComposer.LayOutPart(() => SyntheticTree.BuildSystemStub("AlphaCentauri", true, "4.344 ly", "3 stars, 2 planets"), ego, null);
+        fails += Check($"{mode}: a destination part has the wrap Off under a wrapping ego map", ego.Config.Wrap == WrapMode.Auto && part.Config.Wrap == WrapMode.Off);
+    }
+
+    bool offGrid = false;
+    try
+    {
+        new LayoutConfig { WrapGutterPx = 50.0 }.Validate();
+    }
+    catch (ArgumentException)
+    {
+        offGrid = true;
+    }
+    fails += Check("Validate rejects a wrap gutter that is not a whole multiple of GridPx", offGrid);
+
+    Console.WriteLine(fails == 0 ? "  wrap-config: OK" : $"  wrap-config: {fails} FAIL");
     return fails;
 }
 
