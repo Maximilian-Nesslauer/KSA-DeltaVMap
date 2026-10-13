@@ -97,6 +97,22 @@ failures += RunCase(SyntheticTree.BuildDenseMoons(), spring, "spring", outDir, m
 failures += RunCase(SyntheticTree.BuildBarycenterRoot(), spring, "spring", outDir, minNodes: 0);
 failures += RunCase(SyntheticTree.BuildOrbitingStarRoot(), spring, "spring", outDir, minNodes: 0);
 
+// Fans at the band clamp, the shape real moon transfers give: flat fans of 12, 13, 26 and 60
+// lanes, the dense giants with every moon lane clamped, and one giant with 435 minor moons whose
+// layout must stay far below the map's node ceiling.
+const int MapNodeCeiling = 8000; // MapWindow.MaxLayoutNodes, which the offline tests do not compile
+foreach (int lanes in new[] { 12, 13, 26, 60 })
+{
+    failures += RunCase(SyntheticTree.BuildFlatFan(lanes), LayoutConfig.Default, "default", outDir, minNodes: 0);
+    failures += RunCase(SyntheticTree.BuildFlatFan(lanes), gravityWell, "gravitywell", outDir, minNodes: 0);
+}
+failures += RunCase(SyntheticTree.BuildClampedGiants(), LayoutConfig.Default, "default", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildClampedGiants(), gravityWell, "gravitywell", outDir, minNodes: 0);
+failures += RunCase(SyntheticTree.BuildManyMoons(), LayoutConfig.Default, "default", outDir, minNodes: 0, maxNodes: MapNodeCeiling, printTiming: true);
+failures += RunCase(SyntheticTree.BuildManyMoons(), gravityWell, "gravitywell", outDir, minNodes: 0, maxNodes: MapNodeCeiling, printTiming: true);
+failures += RunClampedFanChecks();
+failures += RunNegativeFixtures();
+
 // Large spring stress: exercises the Barnes-Hut repulsion and the iteration cap at a scale
 // (~1800 nodes) an all-pairs loop could not handle in a frame, and confirms the grid snap still
 // leaves it overlap-free. No timing assertion (it would be machine-dependent and flaky); the
@@ -126,9 +142,13 @@ Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
 return failures == 0 ? 0 : 1;
 
-static int RunCase(LayoutTree tree, LayoutConfig cfg, string variant, string outDir, int minNodes)
+// maxNodes is the node ceiling a case must stay below, and printTiming prints the node count and
+// the layout time on a line of its own, with no timing assertion because it is machine-dependent.
+static int RunCase(LayoutTree tree, LayoutConfig cfg, string variant, string outDir, int minNodes, int maxNodes = int.MaxValue, bool printTiming = false)
 {
+    var watch = System.Diagnostics.Stopwatch.StartNew();
     LayoutResult result = LayoutEngine.Run(tree, cfg);
+    watch.Stop();
     OverlapReport report = OverlapCheck.Run(result);
 
     string tag = variant == "default" ? tree.Name : tree.Name + "-" + variant;
@@ -142,11 +162,101 @@ static int RunCase(LayoutTree tree, LayoutConfig cfg, string variant, string out
     File.WriteAllText(Path.Combine(outDir, tag + ".svg"), LayoutDumpFormat.ToSvg(result));
     File.WriteAllText(Path.Combine(outDir, tag + ".txt"), LayoutDumpFormat.ToText(result));
 
+    if (printTiming)
+        Console.WriteLine(FormattableString.Invariant($"  {tree.Nodes.Count} nodes laid out in {watch.Elapsed.TotalMilliseconds:F1} ms"));
+
     bool nodeCountOk = tree.Nodes.Count >= minNodes;
     if (!nodeCountOk)
         Console.WriteLine($"  FAIL: {tree.Nodes.Count} nodes < required {minNodes}");
+    bool ceilingOk = tree.Nodes.Count < maxNodes;
+    if (!ceilingOk)
+        Console.WriteLine($"  FAIL: {tree.Nodes.Count} nodes >= ceiling {maxNodes}");
 
-    return report.Ok && nodeCountOk ? 0 : 1;
+    return report.Ok && nodeCountOk && ceilingOk ? 0 : 1;
+}
+
+// The fixtures that stand in for real moon systems must keep every transfer lane at the band
+// clamp, as the game gives it, or the fans they test are not the fans the map shows. A dV-free
+// group link is exempt, because it always takes the minimum step.
+static int RunClampedFanChecks()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[clamped-fans] transfer lanes sit at the band clamp");
+
+    var cfg = LayoutConfig.Default;
+    var trees = new List<LayoutTree> { SyntheticTree.BuildClampedGiants(), SyntheticTree.BuildManyMoons() };
+    foreach (int lanes in new[] { 12, 13, 26, 60 })
+        trees.Add(SyntheticTree.BuildFlatFan(lanes));
+    foreach (LayoutTree tree in trees)
+    {
+        LayoutEngine.Run(tree, cfg);
+        int transferLanes = 0;
+        int unclamped = 0;
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            foreach (LayoutEdge edge in node.Out)
+            {
+                if (edge.Class != EdgeClass.Transfer || edge.To.Kind == LayoutKind.MinorGroup)
+                    continue;
+                transferLanes++;
+                if (edge.To.Band - node.Band != cfg.MaxBandStep)
+                    unclamped++;
+            }
+        }
+        Console.WriteLine($"  {tree.Name}: {transferLanes} transfer lanes, {unclamped} below the clamp");
+        fails += Check($"{tree.Name}: every transfer lane steps {cfg.MaxBandStep} bands", transferLanes > 0 && unclamped == 0);
+    }
+
+    LayoutTree manyMoons = SyntheticTree.BuildManyMoons();
+    int widest = 0;
+    foreach (LayoutNode node in manyMoons.Nodes)
+    {
+        int lanes = 0;
+        foreach (LayoutEdge edge in node.Out)
+        {
+            if (edge.Class != EdgeClass.Ladder)
+                lanes++;
+        }
+        widest = Math.Max(widest, lanes);
+    }
+    // The 7 regular moons, the inner minor moons up to the fold threshold, and the two groups.
+    int expectedWidest = 7 + BuildOptions.DefaultMinorGroupThreshold + 2;
+    Console.WriteLine($"  {manyMoons.Name}: widest fan {widest} lanes");
+    fails += Check($"{manyMoons.Name}: the folded fan holds {expectedWidest} lanes", widest == expectedWidest);
+    return fails;
+}
+
+// The acceptance check must catch a broken layout, not only pass a sound one. Each fixture takes
+// a clean layout, breaks one value the way a faulty pass would, and expects the check to fail.
+static int RunNegativeFixtures()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[negative] the acceptance check catches a broken layout");
+
+    foreach (LayoutConfig cfg in new[] { LayoutConfig.Default, new LayoutConfig { Mode = LayoutMode.GravityWell } })
+    {
+        LayoutResult result = LayoutEngine.Run(SyntheticTree.BuildClampedGiants(), cfg);
+        fails += ExpectCaught($"{cfg.Mode}: a moon moved one grid cell off its dV band", result,
+            r => FindNode(r.Tree, "SaturnMajor3.LO").Y += r.Config.GridPx);
+    }
+    return fails;
+}
+
+// Runs the acceptance check on a clean layout, applies corrupt to it, and runs the check again.
+// The fixture passes only when the clean layout passes and the corrupted one fails.
+static int ExpectCaught(string name, LayoutResult result, Action<LayoutResult> corrupt)
+{
+    bool cleanOk = OverlapCheck.Run(result).Ok;
+    corrupt(result);
+    OverlapReport report = OverlapCheck.Run(result);
+    PrintIssues("caught node", report.NodeOverlaps);
+    PrintIssues("caught subtree", report.SubtreeOverlaps);
+    PrintIssues("caught label", report.LabelOverlaps);
+    PrintIssues("caught band", report.BandViolations);
+    PrintIssues("caught bus", report.BusViolations);
+    return Check($"{name} is caught", cleanOk && !report.Ok);
 }
 
 static void PrintIssues(string kind, List<string> issues)

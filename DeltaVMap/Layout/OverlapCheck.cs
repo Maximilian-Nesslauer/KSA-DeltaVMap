@@ -26,8 +26,9 @@ internal sealed class OverlapReport
     public List<string> LabelOverlaps { get; } = new();
 
     // Structural invariants beyond overlap. Band violations catch a child placed at or
-    // above its parent (Y leaking the wrong way); bus violations catch the hub spine
-    // collapsing onto one point instead of spreading horizontally.
+    // above its parent (Y leaking the wrong way) and a node whose Y left its dV band; bus
+    // violations catch the hub spine collapsing onto one point instead of spreading
+    // horizontally.
     public List<string> BandViolations { get; } = new();
     public List<string> BusViolations { get; } = new();
 
@@ -106,10 +107,12 @@ internal static class OverlapCheck
             case LayoutMode.CumulativeDown:
                 CheckSiblingSubtrees(tree, report);
                 CheckBands(tree, report);
+                CheckBandY(tree, result.Config.BandHeightPx, report);
                 CheckHubBus(tree, report, gravityWell: false);
                 break;
             case LayoutMode.GravityWell:
                 CheckWellBands(tree, report);
+                CheckBandY(tree, result.Config.WellBandHeightPx, report);
                 CheckHubBus(tree, report, gravityWell: true);
                 break;
             case LayoutMode.Spring:
@@ -151,6 +154,25 @@ internal static class OverlapCheck
                 {
                     report.AddBandViolation($"edge '{node.Id}' -> '{child.Id}' does not descend ({node.Band} -> {child.Band})");
                 }
+            }
+        }
+    }
+
+    // Y matches the dV band. The band is the quantized dV of a node (cumulative from the root,
+    // or the signed well offset in GravityWell), and the pre-snap Y must be exactly that band
+    // times the band height, so no pass after the band assignment moves a node off the height
+    // that states its dV. The band checks above read Band only, so without this rule a Y that
+    // drifted from its band would pass them unseen. The grid snap is free to round Y, which is
+    // why the check reads Y and not SnappedY.
+    private static void CheckBandY(LayoutTree tree, double bandHeightPx, OverlapReport report)
+    {
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            double expected = node.Band * bandHeightPx;
+            if (Math.Abs(node.Y - expected) > Epsilon)
+            {
+                report.AddBandViolation(string.Create(CultureInfo.InvariantCulture,
+                    $"'{node.Id}' Y={node.Y:F1} is off its dV band {node.Band} (expected {expected:F1})"));
             }
         }
     }

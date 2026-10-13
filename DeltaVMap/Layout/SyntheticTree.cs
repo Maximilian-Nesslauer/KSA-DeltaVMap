@@ -272,46 +272,180 @@ internal static class SyntheticTree
             LayoutNode lo = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
             Transfer(sol, lo, depart: 5000 + i * 500, arrive: 3000 + i * 400);
             LadderEdge(lo, Node(name + ".SoiEdge", name + " SOI Edge", LayoutKind.SoiEdge, rank: 1), 4000 + i * 100);
-
-            var moons = new List<(string Id, FoldChild Child, int Rank)>();
-            for (int m = 0; m < major; m++)
-                moons.Add((name + "Major" + m.ToString(Inv), new FoldChild(true, false, false, MinorKind.Other, (0.2 + m * 0.1) * 1e9), 2));
-            // The inner band ends at a tenth of the SOI; spread the inner moons below it and the
-            // outer ones between a fifth and a half of the SOI, as captured moons sit.
-            for (int m = 0; m < inner; m++)
-                moons.Add((ProvisionalName(name, m), new FoldChild(true, true, false, MinorKind.Other, soiKm * 1e3 * 0.09 * (m + 1) / inner), 3));
-            for (int m = 0; m < outer; m++)
-                moons.Add((ProvisionalName(name, inner + m), new FoldChild(true, true, false, MinorKind.Other, soiKm * 1e3 * (0.2 + 0.3 * m / outer)), 3));
-            moons.Sort((a, b) => a.Child.OrbitRadius.CompareTo(b.Child.OrbitRadius));
-
-            var children = new List<FoldChild>(moons.Count);
-            foreach (var moon in moons)
-                children.Add(moon.Child);
-            FoldSlot[] slots = MinorFold.Plan(children, BuildOptions.DefaultMinorGroupThreshold, soiKm * 1e3);
-
-            int inGroup = 0;
-            int outGroup = 0;
-            for (int m = 0; m < moons.Count; m++)
-            {
-                if (slots[m] == FoldSlot.InnerGroup)
-                    inGroup++;
-                else if (slots[m] == FoldSlot.OuterGroup)
-                    outGroup++;
-                else if (slots[m] == FoldSlot.Lane)
-                {
-                    LayoutNode moon = Node(moons[m].Id + ".LO", moons[m].Id + " Low Orbit", LayoutKind.LowOrbit, moons[m].Rank);
-                    Transfer(lo, moon, depart: 400 + m * 40, arrive: 150 + m * 10);
-                    LadderEdge(moon, Node(moons[m].Id + ".Surface", moons[m].Id + " Surface", LayoutKind.Surface, moons[m].Rank), 50 + m);
-                }
-            }
-            if (inGroup > 0)
-                GroupNode(lo, name + MinorFold.IdSuffix(FoldSlot.InnerGroup), MinorFold.Label(FoldSlot.InnerGroup, new MinorKind[inGroup]));
-            if (outGroup > 0)
-                GroupNode(lo, name + MinorFold.IdSuffix(FoldSlot.OuterGroup), MinorFold.Label(FoldSlot.OuterGroup, new MinorKind[outGroup]));
+            AttachFoldedMoons(lo, name, soiKm, major, inner, outer, clamped: false);
         }
         GroupNode(sol, "Sol" + MinorFold.IdSuffix(FoldSlot.Group), MinorFold.Label(FoldSlot.Group, new MinorKind[50]));
 
         return LayoutTree.FromRoot("synthetic-dense-moons", root);
+    }
+
+    // The giants of BuildDenseMoons with the band steps a real system gives. In game a transfer
+    // between a planet and its moon costs several km/s, so every moon lane hits the MaxBandStep
+    // clamp and a whole fan sits in one flat row six bands below its planet, while only the large
+    // regular moons carry a surface rung, six bands lower again. The planets, Pluto and the
+    // root's own moon clamp the same way. This is the shape a wide fan has on the real map, as
+    // opposed to the staircase of the dense-moons tree.
+    public static LayoutTree BuildClampedGiants()
+    {
+        LayoutNode root = Node("Earth.LO", "Earth Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        Ladder(root, "Earth", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3210);
+        LayoutNode luna = Node("Luna.LO", "Luna Low Orbit", LayoutKind.LowOrbit, rank: 2);
+        Transfer(root, luna, depart: 3100, arrive: 850);
+        Ladder(luna, "Luna", surfaceDv: 1870, stationaryDv: null, soiDv: 410);
+
+        LayoutNode sol = Node("Sol.Hub", "Sol", LayoutKind.Hub, rank: 0);
+        HubLink(root, sol);
+
+        (string Name, double SurfaceDv, string[] Moons)[] rocky =
+        {
+            ("Mercury", 3100, new string[0]),
+            ("Venus", 9900, new string[0]),
+            ("Mars", 4100, new[] { "Phobos", "Deimos" })
+        };
+        for (int i = 0; i < rocky.Length; i++)
+        {
+            (string name, double surfaceDv, string[] moons) = rocky[i];
+            LayoutNode lo = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+            Transfer(sol, lo, depart: 3500 + i * 400, arrive: 2500 + i * 300);
+            Ladder(lo, name, surfaceDv: surfaceDv, stationaryDv: 1100 + i * 100, soiDv: 1800 + i * 150);
+            for (int m = 0; m < moons.Length; m++)
+            {
+                LayoutNode moon = Node(moons[m] + ".LO", moons[m] + " Low Orbit", LayoutKind.LowOrbit, rank: 2);
+                Transfer(lo, moon, depart: 1700 + m * 150, arrive: 400 + m * 60);
+                LadderEdge(moon, Node(moons[m] + ".Surface", moons[m] + " Surface", LayoutKind.Surface, rank: 2), 1550 + m * 40);
+            }
+        }
+
+        (string Name, double SoiKm, int Major, int Inner, int Outer)[] giants =
+        {
+            ("Jupiter", 48.2e6, 4, 4, 89),
+            ("Saturn", 54.8e6, 14, 10, 290),
+            ("Uranus", 51.8e6, 0, 19, 9),
+            ("Neptune", 86.7e6, 1, 30, 20)
+        };
+        for (int i = 0; i < giants.Length; i++)
+        {
+            (string name, double soiKm, int major, int inner, int outer) = giants[i];
+            LayoutNode lo = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+            Transfer(sol, lo, depart: 6300 + i * 700, arrive: 8100 + i * 900);
+            LadderEdge(lo, Node(name + ".SoiEdge", name + " SOI Edge", LayoutKind.SoiEdge, rank: 1), 4000 + i * 100);
+            AttachFoldedMoons(lo, name, soiKm, major, inner, outer, clamped: true);
+        }
+
+        LayoutNode pluto = Node("Pluto.LO", "Pluto Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        Transfer(sol, pluto, depart: 11000, arrive: 6400);
+        Ladder(pluto, "Pluto", surfaceDv: 1600, stationaryDv: null, soiDv: 1650);
+        LayoutNode charon = Node("Charon.LO", "Charon Low Orbit", LayoutKind.LowOrbit, rank: 2);
+        Transfer(pluto, charon, depart: 1500, arrive: 300);
+        LadderEdge(charon, Node("Charon.Surface", "Charon Surface", LayoutKind.Surface, rank: 2), 1580);
+
+        GroupNode(sol, "Sol" + MinorFold.IdSuffix(FoldSlot.Group), MinorFold.Label(FoldSlot.Group, new MinorKind[50]));
+
+        return LayoutTree.FromRoot("synthetic-clamped-giants", root);
+    }
+
+    // One fan of a given number of moon lanes under a giant planet root, with every lane at the
+    // MaxBandStep clamp as real moon transfers are. The giant's own rungs are ladder members and
+    // not lanes, and every third moon carries a surface rung. Fans of 12 and 13 lanes bracket
+    // the size where a fan starts to be too wide for one row.
+    public static LayoutTree BuildFlatFan(int lanes)
+    {
+        if (lanes < 1)
+            throw new ArgumentOutOfRangeException(nameof(lanes), lanes, "a fan needs at least one lane");
+
+        LayoutNode root = Node("Giant.LO", "Giant Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        LadderEdge(root, Node("Giant.Stationary", "Giant Stationary", LayoutKind.Stationary, rank: 1), 900);
+        LadderEdge(root, Node("Giant.SoiEdge", "Giant SOI Edge", LayoutKind.SoiEdge, rank: 1), 3200);
+
+        for (int i = 0; i < lanes; i++)
+        {
+            string name = ProvisionalName("Giant", i);
+            LayoutNode moon = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 2);
+            Transfer(root, moon, depart: 1600 + i * 25, arrive: 300 + i * 10);
+            if (i % 3 == 0)
+                LadderEdge(moon, Node(name + ".Surface", name + " Surface", LayoutKind.Surface, rank: 2), 1600 + i * 10);
+        }
+
+        return LayoutTree.FromRoot("synthetic-flat-fan-" + lanes.ToString(Inv), root);
+    }
+
+    // A single giant with 435 minor moons, folded by the real MinorFold rules. Its 7 regular
+    // moons and the innermost minor moons up to the fold threshold keep their lanes, the other
+    // inner minor moons fold into an inner group and the outer swarm into an outer group, so the
+    // fan holds the most lanes MinorFold ever gives one hub. Moon lanes clamp as in
+    // BuildClampedGiants.
+    public static LayoutTree BuildManyMoons()
+    {
+        LayoutNode root = Node("Earth.LO", "Earth Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        root.IsRoot = true;
+        Ladder(root, "Earth", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3210);
+
+        LayoutNode sol = Node("Sol.Hub", "Sol", LayoutKind.Hub, rank: 0);
+        HubLink(root, sol);
+
+        LayoutNode lo = Node("Saturn.LO", "Saturn Low Orbit", LayoutKind.LowOrbit, rank: 1);
+        Transfer(sol, lo, depart: 7000, arrive: 9000);
+        LadderEdge(lo, Node("Saturn.Stationary", "Saturn Stationary", LayoutKind.Stationary, rank: 1), 9000);
+        LadderEdge(lo, Node("Saturn.SoiEdge", "Saturn SOI Edge", LayoutKind.SoiEdge, rank: 1), 4100);
+        AttachFoldedMoons(lo, "Saturn", 54.8e6, major: 7, inner: 40, outer: 395, clamped: true);
+
+        GroupNode(sol, "Sol" + MinorFold.IdSuffix(FoldSlot.Group), MinorFold.Label(FoldSlot.Group, new MinorKind[22]));
+
+        return LayoutTree.FromRoot("synthetic-many-moons", root);
+    }
+
+    // The moons of one giant, folded by the real MinorFold rules: the major moons, the inner minor
+    // moons (below a tenth of the SOI) and the outer swarm (between a fifth and a half of the SOI,
+    // as captured moons sit). Unclamped lanes cost a few hundred m/s that grow with the orbit, so
+    // the fan is a staircase of bands, each moon with a cheap surface rung. Clamped lanes cost
+    // several km/s and all reach MaxBandStep, and only the major moons carry a surface rung.
+    private static void AttachFoldedMoons(LayoutNode lo, string name, double soiKm, int major, int inner, int outer, bool clamped)
+    {
+        var moons = new List<(string Id, FoldChild Child, int Rank)>();
+        for (int m = 0; m < major; m++)
+            moons.Add((name + "Major" + m.ToString(Inv), new FoldChild(true, false, false, MinorKind.Other, (0.2 + m * 0.1) * 1e9), 2));
+        for (int m = 0; m < inner; m++)
+            moons.Add((ProvisionalName(name, m), new FoldChild(true, true, false, MinorKind.Other, soiKm * 1e3 * 0.09 * (m + 1) / inner), 3));
+        for (int m = 0; m < outer; m++)
+            moons.Add((ProvisionalName(name, inner + m), new FoldChild(true, true, false, MinorKind.Other, soiKm * 1e3 * (0.2 + 0.3 * m / outer)), 3));
+        moons.Sort((a, b) => a.Child.OrbitRadius.CompareTo(b.Child.OrbitRadius));
+
+        var children = new List<FoldChild>(moons.Count);
+        foreach (var moon in moons)
+            children.Add(moon.Child);
+        FoldSlot[] slots = MinorFold.Plan(children, BuildOptions.DefaultMinorGroupThreshold, soiKm * 1e3);
+
+        int inGroup = 0;
+        int outGroup = 0;
+        for (int m = 0; m < moons.Count; m++)
+        {
+            if (slots[m] == FoldSlot.InnerGroup)
+                inGroup++;
+            else if (slots[m] == FoldSlot.OuterGroup)
+                outGroup++;
+            else if (slots[m] == FoldSlot.Lane)
+            {
+                LayoutNode moon = Node(moons[m].Id + ".LO", moons[m].Id + " Low Orbit", LayoutKind.LowOrbit, moons[m].Rank);
+                LayoutNode surface = Node(moons[m].Id + ".Surface", moons[m].Id + " Surface", LayoutKind.Surface, moons[m].Rank);
+                if (!clamped)
+                {
+                    Transfer(lo, moon, depart: 400 + m * 40, arrive: 150 + m * 10);
+                    LadderEdge(moon, surface, 50 + m);
+                }
+                else
+                {
+                    Transfer(lo, moon, depart: 6000 + m * 120, arrive: 2000 + m * 40);
+                    if (!children[m].IsMinor)
+                        LadderEdge(moon, surface, 1500 + m * 20);
+                }
+            }
+        }
+        if (inGroup > 0)
+            GroupNode(lo, name + MinorFold.IdSuffix(FoldSlot.InnerGroup), MinorFold.Label(FoldSlot.InnerGroup, new MinorKind[inGroup]));
+        if (outGroup > 0)
+            GroupNode(lo, name + MinorFold.IdSuffix(FoldSlot.OuterGroup), MinorFold.Label(FoldSlot.OuterGroup, new MinorKind[outGroup]));
     }
 
     // A provisional designation as the long-tail moons carry ("S2004_S_07"), so label widths
