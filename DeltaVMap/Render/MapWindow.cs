@@ -360,7 +360,8 @@ internal sealed class MapWindow : ImGuiWindow
         {
             if (ImGui.BeginMenu("Layout"u8))
             {
-                // Two engine layouts as radio choices, plus a view-only "center view".
+                // The three layouts as radio choices, then the wrap, which relays out the map, and
+                // the view-only "center view".
                 if (ImGui.MenuItem("Cumulative-down"u8, default(ImString), _layoutMode == LayoutMode.CumulativeDown))
                     SetLayoutMode(LayoutMode.CumulativeDown);
                 if (ImGui.MenuItem("Gravity-well"u8, default(ImString), _layoutMode == LayoutMode.GravityWell))
@@ -368,6 +369,13 @@ internal sealed class MapWindow : ImGuiWindow
                 if (ImGui.MenuItem("Spring"u8, default(ImString), _layoutMode == LayoutMode.Spring))
                     SetLayoutMode(LayoutMode.Spring);
                 ImGui.Separator();
+                // Spring is already about square and never wraps, so the item is greyed out there.
+                if (ImGui.MenuItem("Wrap wide systems"u8, default(ImString), _view.WrapWideSystems, _layoutMode != LayoutMode.Spring))
+                {
+                    _view.WrapWideSystems = !_view.WrapWideSystems;
+                    if (_currentRootId != null)
+                        RebuildAt(_currentRootId);
+                }
                 if (ImGui.MenuItem("Center view on root"u8, default(ImString), _centerOnRoot))
                 {
                     _centerOnRoot = !_centerOnRoot;
@@ -1342,6 +1350,8 @@ internal sealed class MapWindow : ImGuiWindow
         {
             ImGui.BeginTooltip();
             ImGui.Text(LayoutModeTooltip(_layoutMode));
+            if (_layoutMode == LayoutMode.CumulativeDown)
+                ImGui.TextDisabled("Wide systems fit best in Gravity-well."u8);
             ImGui.EndTooltip();
         }
 
@@ -2212,7 +2222,8 @@ internal sealed class MapWindow : ImGuiWindow
             }
 
             LayoutTree tree = VisualTreeAdapter.ToLayoutTree(visual, _graph);
-            LayoutConfig cfg = LayoutConfig.ForMap(_layoutMode, _graph.HasSeveralSystems, WrapMode.Off);
+            LayoutConfig cfg = LayoutConfig.ForMap(_layoutMode, _graph.HasSeveralSystems,
+                _view.WrapWideSystems ? WrapMode.Auto : WrapMode.Off);
             LayoutResult result;
             {
 #if DEBUG

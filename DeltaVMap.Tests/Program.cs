@@ -1036,8 +1036,14 @@ static int RunSceneCase(string tag, LayoutConfig cfg, Func<LayoutTree> buildEgo,
 
     LayoutScene scene = SceneComposer.Compose(ego, hub, parts, cfg);
     fails += Check($"{tag}: the ego map is laid out as alone", Snapshot(ego.Tree.Nodes) == Snapshot(alone.Tree.Nodes));
-    fails += Check($"{tag}: the strip side follows the ego shape",
-        scene.Side == (cfg.Mode == LayoutMode.Spring ? StripSide.Right : StripSide.Below));
+    // The strip goes below a wide ego map and to the right of a tall one. In the tree modes the
+    // map of a universe with several systems is at least 1.5 times as wide as it is tall, so the
+    // strip stays below, wrapped or not.
+    double egoAspect = ego.Width / ego.Height;
+    Console.WriteLine(FormattableString.Invariant($"  {tag}: ego {ego.Width:F0}x{ego.Height:F0}, aspect {egoAspect:F2}, strip {scene.Side}, fans wrapped {ego.Wraps.Count}"));
+    fails += Check($"{tag}: the strip side follows the ego shape", scene.Side == SceneComposer.SideOf(ego));
+    if (cfg.Mode != LayoutMode.Spring)
+        fails += Check(FormattableString.Invariant($"{tag}: the ego map with several systems is at least 1.5 times as wide as tall ({egoAspect:F2})"), egoAspect >= 1.5);
     fails += Expect($"{tag}: the strip geometry holds", SceneChecks.Strip(scene));
     fails += CheckAtFit(tag, scene, aloneFit, minRatio: 0.85);
     fails += CheckStubSpacing(tag, scene, parts);

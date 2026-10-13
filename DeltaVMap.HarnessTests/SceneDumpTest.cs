@@ -1,6 +1,7 @@
 using DeltaVMap.Dv;
 using DeltaVMap.Layout;
 using DeltaVMap.Model;
+using DeltaVMap.Render;
 using HeadlessHarness.Core;
 using HeadlessHarness.Harness;
 using KSA;
@@ -45,10 +46,12 @@ public sealed class SceneDumpTest : IHarnessTest
             string outDir = Path.Combine(Path.GetTempPath(), "dvmap-scene");
             Directory.CreateDirectory(outDir);
             bool ok = true;
+            // The wrap the map window uses by default, so the scenes are the ones the game shows.
+            WrapMode wrap = new ViewOptions().WrapWideSystems ? WrapMode.Auto : WrapMode.Off;
             foreach ((string name, LayoutMode mode) in new[] { ("default", LayoutMode.CumulativeDown), ("gravitywell", LayoutMode.GravityWell), ("spring", LayoutMode.Spring) })
             {
                 VisualTree visual = VisualTree.Build(graph, new DvCache(), home, egoState: null, BuildOptions.Default);
-                LayoutResult ego = LayoutEngine.Run(VisualTreeAdapter.ToLayoutTree(visual, graph), LayoutConfig.ForMap(mode, graph.HasSeveralSystems, WrapMode.Off));
+                LayoutResult ego = LayoutEngine.Run(VisualTreeAdapter.ToLayoutTree(visual, graph), LayoutConfig.ForMap(mode, graph.HasSeveralSystems, wrap));
                 LayoutNode? hub = null;
                 foreach (LayoutNode node in ego.Tree.Nodes)
                 {

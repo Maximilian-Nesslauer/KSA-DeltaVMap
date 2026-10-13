@@ -2,7 +2,8 @@ namespace DeltaVMap.Render;
 
 // Display and visibility settings, separate from the route toggles (RouteOptions). These
 // fall into two groups by how they take effect. ShowMinorBodies / ShowComets change which
-// bodies the visual tree contains, so the panel triggers a rebuild when they change.
+// bodies the visual tree contains, so the panel triggers a rebuild when they change, and
+// WrapWideSystems changes the layout, so the Options menu relays out the map when it changes.
 // ShowTransferTimes, ShowBodyMarkers and PilotingMarginPercent are display-only: the
 // renderer and panel read them every frame, so changing them needs no rebuild and no
 // re-accumulate. All session-only (not persisted yet).
@@ -12,6 +13,10 @@ internal sealed class ViewOptions
     // comets are the subset of those. Off hides them as destinations (never the root/spine).
     public bool ShowMinorBodies = true;
     public bool ShowComets = true;
+
+    // Layout (rebuild on change). Wide moon fans and long planet rows continue in rows below,
+    // joined by a dashed line that carries no delta-v. Spring ignores it.
+    public bool WrapWideSystems = true;
 
     // Display-only. Transfer times ride under transfer dV badges; body markers are the ring
     // ellipse, the atmosphere/jet halo and the aerobrake arrow (named for what they draw, not
