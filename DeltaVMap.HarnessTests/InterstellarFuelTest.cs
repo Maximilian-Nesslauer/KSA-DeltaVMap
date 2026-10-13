@@ -144,18 +144,11 @@ public sealed class InterstellarFuelTest : IHarnessTest
     }
 
     // The drive inputs the panel uses come from InterstellarFuel.ReadPhase, which repeats the
-    // private TransferPlanner.MassAboard and TransferPlanner.TankSpace. Compare them bit for bit on
-    // a real vessel, for every substance phase it carries, so the fuel estimate above is fed the
-    // same numbers as the stock planner. The two methods are looked up first, so a run without a
-    // vehicle save still fails when a game update renames one of them.
+    // InterstellarSupply.MassAboard and InterstellarSupply.TankSpace, which the stock planner reads.
+    // Compare them bit for bit on a real vessel, for every substance phase it carries, so the fuel
+    // estimate above is fed the same numbers as the stock planner.
     private static bool CheckPropellantReads(HeadlessSession session)
     {
-        Type planner = typeof(TransferPlanner);
-        MethodInfo? massAboard = planner.GetMethod("MassAboard", BindingFlags.NonPublic | BindingFlags.Static);
-        MethodInfo? tankSpace = planner.GetMethod("TankSpace", BindingFlags.NonPublic | BindingFlags.Static);
-        if (massAboard == null || tankSpace == null)
-            return Check("TransferPlanner.MassAboard and TankSpace exist; re-verify the stock planner", false);
-
         string? saveId = Environment.GetEnvironmentVariable(TestSupport.VehicleEnvVar);
         if (string.IsNullOrEmpty(saveId))
         {
@@ -182,8 +175,8 @@ public sealed class InterstellarFuelTest : IHarnessTest
             foreach (string phase in phases)
             {
                 InterstellarFuel.ReadPhase(vehicle, phase, out double mass, out double space);
-                double stockMass = (double)massAboard.Invoke(null, new object[] { vehicle, phase })!;
-                double stockSpace = (double)tankSpace.Invoke(null, new object[] { vehicle, phase })!;
+                double stockMass = InterstellarSupply.MassAboard(vehicle, phase);
+                double stockSpace = InterstellarSupply.TankSpace(vehicle, phase);
                 ok &= Check($"mass of {phase} matches stock", mass == stockMass);
                 ok &= Check($"tank space for {phase} matches stock", space == stockSpace);
             }

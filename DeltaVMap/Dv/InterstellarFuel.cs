@@ -92,7 +92,7 @@ internal static class InterstellarFuel
     }
 
     // The mass of one substance phase aboard and the free tank room for it, the same sums as the
-    // game planner's private TransferPlanner.MassAboard and TransferPlanner.TankSpace. The free
+    // game's InterstellarSupply.MassAboard and InterstellarSupply.TankSpace that the planner reads. The free
     // room is the mass a container would hold full minus the mass in it now, evaluated in float
     // as stock does, so the drive inputs equal the stock planner's to the last bit.
     public static void ReadPhase(Vehicle vehicle, string phaseName, out double mass, out double space)
