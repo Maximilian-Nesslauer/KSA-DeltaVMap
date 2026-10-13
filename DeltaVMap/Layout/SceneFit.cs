@@ -18,20 +18,28 @@ internal static class SceneFit
     // of a stock map, so the fit preview judges the canvas at this floor too.
     public const double MinZoom = 0.02;
 
-    // The collapsed transfer-window footer the canvas draws at its bottom left.
+    // The collapsed transfer-window footer the canvas draws at its bottom left, at the default
+    // font size. The offline checks fit with it, and the map window passes the footer it drew.
     public const double FooterW = 480.0;
     public const double FooterH = 56.0;
 
     public static double Fit(LayoutScene scene, double canvasW, double canvasH, double minZoom, double maxZoom, out double panX, out double panY)
     {
+        return Fit(scene, canvasW, canvasH, minZoom, maxZoom, FooterW, FooterH, out panX, out panY);
+    }
+
+    // The same fit for a footer of the given size in pixels, measured from the bottom-left corner
+    // of the canvas. A footer of no width or no height keeps nothing free.
+    public static double Fit(LayoutScene scene, double canvasW, double canvasH, double minZoom, double maxZoom, double footerW, double footerH, out double panX, out double panY)
+    {
         double zoom = Fit(scene, canvasW, canvasH, minZoom, maxZoom, 0.0, out panX, out panY);
-        if (UnderFooter(scene, zoom, panX, panY, canvasH))
-            zoom = Fit(scene, canvasW, canvasH, minZoom, maxZoom, FooterH, out panX, out panY);
+        if (footerW > 0.0 && footerH > 0.0 && UnderFooter(scene, zoom, panX, panY, canvasH, footerW, footerH))
+            zoom = Fit(scene, canvasW, canvasH, minZoom, maxZoom, footerH, out panX, out panY);
         return zoom;
     }
 
     // Whether the glyph, ring or title block of a destination root reaches into the footer.
-    private static bool UnderFooter(LayoutScene scene, double zoom, double panX, double panY, double canvasH)
+    private static bool UnderFooter(LayoutScene scene, double zoom, double panX, double panY, double canvasH, double footerW, double footerH)
     {
         foreach (LayoutPart part in scene.Parts)
         {
@@ -39,7 +47,7 @@ internal static class SceneFit
             double x = panX + (root.SnappedX - scene.MinX) * zoom;
             double y = panY + (root.SnappedY - scene.MinY) * zoom;
             double left = x - SceneComposer.GlyphRadiusPx(root) - SceneComposer.SystemRingPx;
-            if (left < FooterW && y + DownReachPx(root) > canvasH - FooterH)
+            if (left < footerW && y + DownReachPx(root) > canvasH - footerH)
                 return true;
         }
         return false;

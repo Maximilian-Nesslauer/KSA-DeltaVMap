@@ -349,11 +349,13 @@ internal sealed class VisualTree
         // the hub carries more of them than the threshold (MinorFold has the rules). buildChild
         // builds one real child's subtree and wires its incoming edge, and it runs for every lane
         // in the graph's deterministic (innermost-first) order, so a hub under the threshold
-        // keeps its exact lane layout (a stock-sized system is unchanged). Folded bodies are
-        // recorded on their group rather than built as thousands of lanes / subtrees; search /
-        // isolate / the group list surface a chosen member later, so the lanes are never built
-        // all at once (the member list itself is cheap). Visibility (Include) is applied first,
-        // so a hidden minor body counts toward neither the lanes nor a group.
+        // keeps its exact lane layout (a stock-sized system is unchanged). The one exception is
+        // the stand-in of a group that a reveal emptied, which is built where that group stood
+        // (MinorFold.Roles). Folded bodies are recorded on their group rather than built as
+        // thousands of lanes / subtrees; search / isolate / the group list surface a chosen
+        // member later, so the lanes are never built all at once (the member list itself is
+        // cheap). Visibility (Include) is applied first, so a hidden minor body counts toward
+        // neither the lanes nor a group.
         private void AddChildren(StateNode hub, PhysicalNode hubBody, IReadOnlyList<PhysicalNode> children, Action<PhysicalNode> buildChild)
         {
             // Only a planet or moon folds by band; a star or barycenter (even one orbiting a
@@ -369,7 +371,8 @@ internal sealed class VisualTree
             }
 
             FoldSlot[] slots = MinorFold.Plan(fold, _options.MinorGroupThreshold, bandSoi);
-            bool[]? revealedLanes = RevealedLanes(children, fold, slots, bandSoi);
+            FoldSlot[]? plainSlots = PlainSlots(children, fold, bandSoi);
+            LaneRole[]? roles = plainSlots == null ? null : MinorFold.Roles(Array.ConvertAll(fold, c => c.Revealed), slots, plainSlots);
 
             List<PhysicalNode>? group = null;
             List<PhysicalNode>? inner = null;
@@ -379,9 +382,11 @@ internal sealed class VisualTree
                 switch (slots[i])
                 {
                     case FoldSlot.Lane:
+                        if (roles != null && roles[i] == LaneRole.StandIn)
+                            break;
                         int before = hub.Out.Count;
                         buildChild(children[i]);
-                        if (revealedLanes != null && revealedLanes[i])
+                        if (roles != null && roles[i] == LaneRole.Revealed)
                         {
                             for (int e = before; e < hub.Out.Count; e++)
                                 hub.Out[e].To.IsRevealed = true;
@@ -399,19 +404,34 @@ internal sealed class VisualTree
                 }
             }
 
-            if (group != null)
-                AddMinorGroup(hub, FoldSlot.Group, group);
-            if (inner != null)
-                AddMinorGroup(hub, FoldSlot.InnerGroup, inner);
-            if (outer != null)
-                AddMinorGroup(hub, FoldSlot.OuterGroup, outer);
+            // A stand-in lane is built where its emptied group stood, so the reveal moves no
+            // other lane in the hub's order.
+            foreach (FoldSlot slot in MinorFold.GroupSlots)
+            {
+                List<PhysicalNode>? members = slot switch
+                {
+                    FoldSlot.Group => group,
+                    FoldSlot.InnerGroup => inner,
+                    _ => outer
+                };
+                if (members != null)
+                {
+                    AddMinorGroup(hub, slot, members);
+                    continue;
+                }
+                if (roles == null)
+                    continue;
+                for (int i = 0; i < children.Count; i++)
+                {
+                    if (roles[i] == LaneRole.StandIn && plainSlots![i] == slot)
+                        buildChild(children[i]);
+                }
+            }
         }
 
-        // Which lanes of a hub exist only because of a reveal, which are the children that get
-        // a lane now but would not get one if nothing were revealed. A lane that a revealed body
-        // already had before its reveal stays unmarked, so the marked lanes are exactly the ones
-        // the reveal added. Null when no child of the hub is revealed.
-        private bool[]? RevealedLanes(IReadOnlyList<PhysicalNode> children, FoldChild[] fold, FoldSlot[] slots, double? bandSoi)
+        // The fold of a hub's children as it would be with nothing revealed, with every revealed
+        // body under the plain hide rules. Null when no child of the hub is revealed.
+        private FoldSlot[]? PlainSlots(IReadOnlyList<PhysicalNode> children, FoldChild[] fold, double? bandSoi)
         {
             bool any = false;
             foreach (FoldChild c in fold)
@@ -422,12 +442,7 @@ internal sealed class VisualTree
             var plain = new FoldChild[fold.Length];
             for (int i = 0; i < fold.Length; i++)
                 plain[i] = fold[i] with { Included = IncludeUnrevealed(children[i]), Revealed = false };
-            FoldSlot[] plainSlots = MinorFold.Plan(plain, _options.MinorGroupThreshold, bandSoi);
-
-            var revealed = new bool[fold.Length];
-            for (int i = 0; i < fold.Length; i++)
-                revealed[i] = slots[i] == FoldSlot.Lane && plainSlots[i] != FoldSlot.Lane;
-            return revealed;
+            return MinorFold.Plan(plain, _options.MinorGroupThreshold, bandSoi);
         }
 
         private static MinorKind KindOf(Astronomical astro)

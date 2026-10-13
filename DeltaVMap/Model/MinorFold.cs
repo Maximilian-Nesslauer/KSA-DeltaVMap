@@ -28,6 +28,19 @@ internal enum FoldSlot
     OuterGroup
 }
 
+// How a lane of a hub relates to the plan of the same hub with nothing revealed. A Plain lane is a
+// lane in both plans. A Revealed lane exists only because of the reveal, so the row plan leaves it
+// out and it joins the row of the lane before it. A StandIn lane is the one member left of a "+N"
+// group that the reveal emptied, so it takes the place of that group in the hub's order and in
+// the row plan.
+internal enum LaneRole
+{
+    None,
+    Plain,
+    Revealed,
+    StandIn
+}
+
 // Which children of a hub get a lane of their own and which fold into a "+N" group. Pure, so the
 // rules are unit-tested offline.
 //
@@ -95,6 +108,38 @@ internal static class MinorFold
         return UnfoldSingles(slots);
     }
 
+    // The role of every child in the plan with the reveal. slots is that plan, plainSlots the plan
+    // of the same children with nothing revealed and every revealed body under the plain hide
+    // rules, and revealed tells which children are revealed. When a reveal empties a group, as
+    // revealing one member of a group of two does, the last other member that the empty group
+    // held is its stand-in, so the hub keeps as many lanes outside the reveal as it had before.
+    public static LaneRole[] Roles(IReadOnlyList<bool> revealed, FoldSlot[] slots, FoldSlot[] plainSlots)
+    {
+        var roles = new LaneRole[slots.Length];
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (slots[i] == FoldSlot.Lane)
+                roles[i] = plainSlots[i] == FoldSlot.Lane ? LaneRole.Plain : LaneRole.Revealed;
+        }
+        foreach (FoldSlot group in GroupSlots)
+        {
+            if (Array.IndexOf(slots, group) >= 0 || Array.IndexOf(plainSlots, group) < 0)
+                continue;
+            for (int i = slots.Length - 1; i >= 0; i--)
+            {
+                if (roles[i] == LaneRole.Revealed && !revealed[i] && plainSlots[i] == group)
+                {
+                    roles[i] = LaneRole.StandIn;
+                    break;
+                }
+            }
+        }
+        return roles;
+    }
+
+    // The group slots in the order their nodes follow the lanes of a hub.
+    public static readonly FoldSlot[] GroupSlots = { FoldSlot.Group, FoldSlot.InnerGroup, FoldSlot.OuterGroup };
+
     // The "+N" label, e.g. "+2892 asteroids" or "+249 outer moons". A group of only asteroids or
     // only comets names them; otherwise a band group names its band and the one group of a star
     // hub says "minor bodies". A group always holds at least two members, so the plural is right.
@@ -144,7 +189,7 @@ internal static class MinorFold
     // A group of one would read "+1", so its single member keeps its lane instead.
     private static FoldSlot[] UnfoldSingles(FoldSlot[] slots)
     {
-        foreach (FoldSlot group in new[] { FoldSlot.Group, FoldSlot.InnerGroup, FoldSlot.OuterGroup })
+        foreach (FoldSlot group in GroupSlots)
         {
             int last = -1;
             int count = 0;

@@ -151,6 +151,7 @@ failures += RunWrapParts();
 failures += RunOpaqueBlock(outDir);
 failures += RunTextWidthChecks();
 failures += RunRowBreakChecks();
+RunRebuildTiming();
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
@@ -1703,12 +1704,12 @@ static int RunMinorFoldChecks()
         return new FoldChild(included, true, revealed, kind, radius);
     }
 
-    static int Count(FoldSlot[] slots, FoldSlot slot)
+    static int Count<T>(T[] slots, T slot) where T : struct, Enum
     {
         int n = 0;
-        foreach (FoldSlot s in slots)
+        foreach (T s in slots)
         {
-            if (s == slot)
+            if (s.Equals(slot))
                 n++;
         }
         return n;
@@ -1770,6 +1771,23 @@ static int RunMinorFoldChecks()
     revealed[5] = Minor(revealed[5].OrbitRadius, revealed: true);
     FoldSlot[] revealedSlots = MinorFold.Plan(revealed, threshold, soi);
     fails += Check("a revealed body is a lane outside the group", revealedSlots[5] == FoldSlot.Lane && Count(revealedSlots, FoldSlot.OuterGroup) == 39);
+
+    List<FoldChild> pair = Many(threshold - 1, 0.1 * edge, 0.9 * edge);
+    pair.AddRange(Many(2, 2.0 * edge, 3.0 * edge));
+    FoldSlot[] pairSlots = MinorFold.Plan(pair, threshold, soi);
+    pair[threshold - 1] = pair[threshold - 1] with { Revealed = true };
+    FoldSlot[] pairRevealed = MinorFold.Plan(pair, threshold, soi);
+    LaneRole[] pairRoles = MinorFold.Roles(pair.ConvertAll(c => c.Revealed), pairRevealed, pairSlots);
+    fails += Check("revealing one member of a group of two empties the group", Count(pairSlots, FoldSlot.OuterGroup) == 2 && Count(pairRevealed, FoldSlot.OuterGroup) == 0);
+    fails += Check("the revealed member is a revealed lane and the other one stands in for the group",
+        pairRoles[threshold - 1] == LaneRole.Revealed && pairRoles[threshold] == LaneRole.StandIn && Count(pairRoles, LaneRole.Plain) == threshold - 1);
+
+    List<FoldChild> budget = Many(threshold + 3, 0.1 * edge, 0.9 * edge);
+    FoldSlot[] budgetSlots = MinorFold.Plan(budget, threshold, soi);
+    budget[0] = budget[0] with { Revealed = true };
+    LaneRole[] budgetRoles = MinorFold.Roles(budget.ConvertAll(c => c.Revealed), MinorFold.Plan(budget, threshold, soi), budgetSlots);
+    fails += Check("a reveal that frees a lane of the budget marks the lane it adds as revealed and keeps the group",
+        budgetRoles[0] == LaneRole.Plain && budgetRoles[threshold] == LaneRole.Revealed && Count(budgetRoles, LaneRole.StandIn) == 0);
 
     List<FoldChild> single = Many(threshold, 0.1 * edge, 0.9 * edge);
     single.Add(Minor(2.0 * edge));
@@ -2319,6 +2337,48 @@ static int RunWrapStabilityIn(LayoutConfig cfg)
             same &= wraps[i].ParentId == once.Wraps[i].ParentId && wraps[i].RowSizes.SequenceEqual(once.Wraps[i].RowSizes) && wraps[i].RowDy.SequenceEqual(once.Wraps[i].RowDy);
     }
     fails += Check($"{at}three runs give the same rows, shelves and offsets", same && planned == first);
+
+    fails += RunPairGroupReveal(cfg, at, "S2023_S_01", "S2000_S_02");
+    fails += RunPairGroupReveal(cfg, at, "S2000_S_02", "S2023_S_01");
+    return fails;
+}
+
+// Revealing one member of a group of two empties the group, and its other member becomes the
+// stand-in that takes the group's place. That lane counts like the group did, so no other node
+// changes row or shelf, and the stand-in sits in the row and the shelf the group had.
+static int RunPairGroupReveal(LayoutConfig cfg, string at, string revealedMoon, string standInMoon)
+{
+    int fails = 0;
+    const string groupId = "Saturn.MinorGroup.Outer";
+    LayoutResult plain = LayoutEngine.Run(SyntheticTree.BuildPairGroup(null), cfg);
+    LayoutResult revealed = LayoutEngine.Run(SyntheticTree.BuildPairGroup(revealedMoon), cfg);
+    LayoutNode group = FindNode(plain.Tree, groupId);
+    LayoutNode lane = FindNode(revealed.Tree, revealedMoon + ".LO");
+    LayoutNode standIn = FindNode(revealed.Tree, standInMoon + ".LO");
+    fails += Check($"{at}the pair group wraps Saturn with the group of two in the last row",
+        plain.Wraps.Any(w => w.ParentId == "Saturn.LO") && group.Label == "+2 outer moons" && group.WrapRow >= 1);
+    fails += Check($"{at}revealing {revealedMoon} empties the group and leaves {standInMoon} as an unrevealed lane",
+        revealed.Tree.Nodes.All(n => n.Id != groupId) && lane.IsRevealed && !standIn.IsRevealed && standIn.Parent!.Id == "Saturn.LO");
+
+    IEnumerable<string> plainOrder = FindNode(plain.Tree, "Saturn.LO").Out.Select(e => e.To.Id);
+    IEnumerable<string> revealedOrder = standIn.Parent!.Out.Where(e => e.To != lane).Select(e => e.To == standIn ? groupId : e.To.Id);
+    fails += Check($"{at}the stand-in {standInMoon} takes the place of the group in Saturn's order", revealedOrder.SequenceEqual(plainOrder));
+
+    var before = new Dictionary<string, (int Row, int Shelf)>();
+    foreach (LayoutNode node in plain.Tree.Nodes)
+        before[node.Id] = (node.WrapRow, node.Shelf);
+    int moved = 0;
+    foreach (LayoutNode node in revealed.Tree.Nodes)
+    {
+        if (before.TryGetValue(node.Id, out (int Row, int Shelf) was) && was != (node.WrapRow, node.Shelf))
+        {
+            moved++;
+            Console.WriteLine($"  moved: {node.Id} from row {was.Row} shelf {was.Shelf} to row {node.WrapRow} shelf {node.Shelf}");
+        }
+    }
+    Console.WriteLine($"  {at}revealing {revealedMoon} of a group of two: {moved} other nodes changed row or shelf, the stand-in is in row {standIn.WrapRow} shelf {standIn.Shelf}");
+    fails += Check($"{at}revealing {revealedMoon} of a group of two moves no other node to another row or shelf", moved == 0);
+    fails += Check($"{at}the stand-in {standInMoon} takes the row and the shelf of the group", (standIn.WrapRow, standIn.Shelf) == (group.WrapRow, group.Shelf));
     return fails;
 }
 
@@ -2802,6 +2862,116 @@ static int RunRowBreakChecks()
     return fails;
 }
 
+// Prints how long a map rebuild takes, which is the ego layout, the three destination systems
+// laid out as parts and the scene composed from them, once with all of them collapsed and once
+// with the first one opened, and how much the ego layout and the collapsed compose allocate. It
+// asserts nothing, because the time depends on the machine. Every case runs a while untimed
+// first, so the JIT has optimized the code before any run is timed, and each time is the median
+// of the timed runs.
+static void RunRebuildTiming()
+{
+    const int Warmup = 25;
+    const int Runs = 15;
+    Console.WriteLine();
+    Console.WriteLine(FormattableString.Invariant($"[rebuild-timing] median of {Runs} runs in ms, ego layout, part layouts, compose"));
+
+    var cases = new List<(string Name, LayoutConfig Cfg, Func<LayoutTree> Build)>();
+    foreach ((string modeName, LayoutMode mode) in new[] { ("GW", LayoutMode.GravityWell), ("CD", LayoutMode.CumulativeDown) })
+    {
+        LayoutConfig cfg = LayoutConfig.ForMap(mode, hasSeveralSystems: true, WrapMode.Auto);
+        foreach ((string egoName, Func<LayoutTree> buildEgo) in new (string, Func<LayoutTree>)[]
+        {
+            ("realsol", SyntheticTree.BuildRealLikeSolRoot),
+            ("planet-root", SyntheticTree.BuildStockLikePlanetRoot),
+            ("dense", SyntheticTree.BuildDenseMoons),
+            ("clamped", SyntheticTree.BuildClampedGiants)
+        })
+        {
+            cases.Add((egoName + " " + modeName, cfg, buildEgo));
+        }
+    }
+
+    foreach ((string _, LayoutConfig cfg, Func<LayoutTree> buildEgo) in cases)
+    {
+        for (int run = 0; run < Warmup; run++)
+            TimeRebuild(cfg, buildEgo);
+    }
+    foreach ((string name, LayoutConfig cfg, Func<LayoutTree> buildEgo) in cases)
+    {
+        var runs = new List<RebuildTime>(Runs);
+        for (int run = 0; run < Runs; run++)
+            runs.Add(TimeRebuild(cfg, buildEgo));
+        RebuildTime last = runs[^1];
+        Console.WriteLine(FormattableString.Invariant(
+            $"  {name}: {last.Nodes} nodes, ego {Median(runs, r => r.Ego):F2} (row candidates {last.Candidates} scored in {Median(runs, r => r.CandidatesMs):F2}), collapsed parts {Median(runs, r => r.CollapsedParts):F2} + compose {Median(runs, r => r.CollapsedCompose):F2}, opened parts {Median(runs, r => r.OpenedParts):F2} + compose {Median(runs, r => r.OpenedCompose):F2}, allocated ego {last.EgoBytes / 1024} KB, compose {last.ComposeBytes / 1024} KB"));
+    }
+
+    static double Median(List<RebuildTime> runs, Func<RebuildTime, double> value)
+    {
+        var values = new List<double>(runs.Count);
+        foreach (RebuildTime r in runs)
+            values.Add(value(r));
+        values.Sort();
+        return values[values.Count / 2];
+    }
+}
+
+// One rebuild of the timing run, in milliseconds and bytes, with the row candidates scored on a
+// tree of its own.
+static RebuildTime TimeRebuild(LayoutConfig cfg, Func<LayoutTree> buildEgo)
+{
+    LayoutTree tree = buildEgo();
+    long bytes = GC.GetAllocatedBytesForCurrentThread();
+    var watch = System.Diagnostics.Stopwatch.StartNew();
+    LayoutResult ego = LayoutEngine.Run(tree, cfg);
+    double egoTime = watch.Elapsed.TotalMilliseconds;
+    long egoBytes = GC.GetAllocatedBytesForCurrentThread() - bytes;
+
+    LayoutTree probe = buildEgo();
+    LayoutEngine.Run(probe, cfg.WithWrap(WrapMode.Off));
+    watch.Restart();
+    int candidates = RowWrap.Candidates(probe, cfg).Count;
+    double candidatesTime = watch.Elapsed.TotalMilliseconds;
+
+    LayoutNode hub = FindNode(ego.Tree, "Sol.Hub");
+    var partTimes = new double[2];
+    var composeTimes = new double[2];
+    long composeBytes = 0;
+    for (int opened = 0; opened < 2; opened++)
+    {
+        watch.Restart();
+        var parts = new List<LayoutPart>
+        {
+            new()
+            {
+                RootId = "AlphaCentauri.Hub",
+                Expanded = opened == 1,
+                Result = SceneComposer.LayOutPart(opened == 1
+                    ? () => SyntheticTree.BuildBarycenterSystem("AlphaCentauri", "4.344 ly", "3 stars, 2 planets")
+                    : () => SyntheticTree.BuildSystemStub("AlphaCentauri", true, "4.344 ly", "3 stars, 2 planets"), ego, null, opened == 1)
+            },
+            new()
+            {
+                RootId = "BarnardsStar.Hub",
+                Result = SceneComposer.LayOutPart(() => SyntheticTree.BuildSystemStub("BarnardsStar", false, "5.963 ly", "1 star, 4 planets"), ego, null, false)
+            },
+            new()
+            {
+                RootId = "TauCeti.Hub",
+                Result = SceneComposer.LayOutPart(() => SyntheticTree.BuildSystemStub("TauCeti", false, "11.91 ly", "1 star, 4 planets"), ego, null, false)
+            }
+        };
+        partTimes[opened] = watch.Elapsed.TotalMilliseconds;
+        bytes = GC.GetAllocatedBytesForCurrentThread();
+        watch.Restart();
+        SceneComposer.Compose(ego, hub, parts, cfg);
+        composeTimes[opened] = watch.Elapsed.TotalMilliseconds;
+        if (opened == 0)
+            composeBytes = GC.GetAllocatedBytesForCurrentThread() - bytes;
+    }
+    return new RebuildTime(tree.Nodes.Count, egoTime, egoBytes, candidates, candidatesTime, partTimes[0], composeTimes[0], partTimes[1], composeTimes[1], composeBytes);
+}
+
 // The points attribute the tree SVG dump writes for a polyline from point start on.
 static string SvgPoints(IReadOnlyList<LayoutPoint> line, int start, LayoutResult result)
 {
@@ -2830,3 +3000,7 @@ static int Check(string name, bool ok)
     Console.WriteLine($"  FAIL {name}");
     return 1;
 }
+
+// The times of one rebuild in milliseconds, with the node count, the row candidates and the bytes
+// the ego layout and the collapsed compose allocate.
+readonly record struct RebuildTime(int Nodes, double Ego, long EgoBytes, int Candidates, double CandidatesMs, double CollapsedParts, double CollapsedCompose, double OpenedParts, double OpenedCompose, long ComposeBytes);

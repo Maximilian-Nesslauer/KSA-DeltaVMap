@@ -20,7 +20,7 @@ internal static class LabelPlacer
     // The gap between a dot and the near edge of its label plate.
     internal const double LabelPadPx = 4.0;
 
-    public static Result Place(LayoutTree tree, LayoutConfig cfg)
+    public static Result Place(LayoutTree tree, LayoutConfig cfg, IReadOnlyList<LayoutWrap>? wraps = null)
     {
         const double pad = LabelPadPx;
         double bucket = Math.Max(cfg.GridPx, cfg.MinNodeWidthPx);
@@ -36,19 +36,32 @@ internal static class LabelPlacer
         // So is the layout-only prefix of an edge into a lower row, the hub's run to the trunk and
         // the trunk itself, so no label hides where a row break runs. The prefix is axis-aligned,
         // and its box grows by the line clearance plus a pixel, because a plate that only touches
-        // the grown box would sit exactly at the clearance.
+        // the grown box would sit exactly at the clearance. Every lane of a lower row shares the
+        // run and the trunk down to its row, and the trunk of the wrap reaches the last row, so
+        // its boxes hold every shared part. They go in once per wrap, and an edge adds only the
+        // part of its prefix that is not on its hub's trunk.
         double clear = OverlapCheck.WrapLineClearPx + 1.0;
+        var trunks = new Dictionary<string, IReadOnlyList<LayoutPoint>>();
+        if (wraps != null)
+        {
+            foreach (LayoutWrap wrap in wraps)
+            {
+                trunks[wrap.ParentId] = wrap.Trunk;
+                for (int i = 0; i + 1 < wrap.Trunk.Count; i++)
+                    hash.Insert(LineBox(wrap.Trunk[i], wrap.Trunk[i + 1], clear));
+            }
+        }
         foreach (LayoutNode node in tree.Nodes)
         {
+            trunks.TryGetValue(node.Id, out IReadOnlyList<LayoutPoint>? trunk);
             foreach (LayoutEdge edge in node.Out)
             {
                 for (int i = 0; i < edge.DvStart && i + 1 < edge.Polyline.Count; i++)
                 {
                     LayoutPoint a = edge.Polyline[i];
                     LayoutPoint b = edge.Polyline[i + 1];
-                    double x0 = Math.Min(a.X, b.X) - clear;
-                    double y0 = Math.Min(a.Y, b.Y) - clear;
-                    hash.Insert(new Rect(x0, y0, Math.Max(a.X, b.X) + clear - x0, Math.Max(a.Y, b.Y) + clear - y0));
+                    if (trunk == null || !OnLine(a, b, trunk))
+                        hash.Insert(LineBox(a, b, clear));
                 }
             }
         }
@@ -102,6 +115,37 @@ internal static class LabelPlacer
         }
 
         return new Result(placed, tree.Nodes.Count);
+    }
+
+    // The box of an axis-aligned segment grown by clear on every side.
+    private static Rect LineBox(LayoutPoint a, LayoutPoint b, double clear)
+    {
+        double x0 = Math.Min(a.X, b.X) - clear;
+        double y0 = Math.Min(a.Y, b.Y) - clear;
+        return new Rect(x0, y0, Math.Max(a.X, b.X) + clear - x0, Math.Max(a.Y, b.Y) + clear - y0);
+    }
+
+    // Whether the axis-aligned segment from a to b lies within one segment of the polyline, so the
+    // box of that segment already holds the box of this one.
+    private static bool OnLine(LayoutPoint a, LayoutPoint b, IReadOnlyList<LayoutPoint> line)
+    {
+        for (int i = 0; i + 1 < line.Count; i++)
+        {
+            LayoutPoint p = line[i];
+            LayoutPoint q = line[i + 1];
+            bool vertical = a.X == b.X && p.X == q.X && a.X == p.X;
+            bool horizontal = a.Y == b.Y && p.Y == q.Y && a.Y == p.Y;
+            if (vertical && Within(a.Y, p.Y, q.Y) && Within(b.Y, p.Y, q.Y))
+                return true;
+            if (horizontal && Within(a.X, p.X, q.X) && Within(b.X, p.X, q.X))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool Within(double v, double a, double b)
+    {
+        return v >= Math.Min(a, b) && v <= Math.Max(a, b);
     }
 
     internal readonly record struct Rect(double X, double Y, double W, double H)

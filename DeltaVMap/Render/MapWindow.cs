@@ -102,10 +102,10 @@ internal sealed class MapWindow : ImGuiWindow
     private readonly List<LayoutPart> _shownParts = new();
     private readonly Dictionary<string, LayoutNode> _sceneById = new();
 
-    // The left end of each row of every wrapped fan in the composed scene, by hub Id. The hover
-    // keeps the gutter between the trunk and a row free of lanes with it, and the legend shows
-    // the row break only while it holds a fan.
-    private readonly Dictionary<string, double[]> _rowLeftByHub = new();
+    // The trunk X and the left end of each row of every wrapped fan in the composed scene, by hub
+    // Id. The hover keeps the gutter between the trunk and a row free of lanes with them, and the
+    // legend shows the row break only while it holds a fan.
+    private readonly Dictionary<string, (double TrunkX, double[] RowLeft)> _rowLeftByHub = new();
     private string? _expandedA;
     private string? _expandedB;
 
@@ -223,6 +223,12 @@ internal sealed class MapWindow : ImGuiWindow
     // list above it can stop short of it. Infinite while that overlay draws nothing.
     private float _windowsPanelTop = float.PositiveInfinity;
     private float _windowsPanelRight = float.NegativeInfinity;
+    // The width and height of the toggle row of the transfer-window list panel, measured from the
+    // bottom-left corner of the canvas when the overlay last drew, which the fit keeps free. Only
+    // that row counts, because the expanded list and clock are opened on demand and keeping all of
+    // them free would squeeze the map into a strip. Zero while the overlay draws nothing, and
+    // null until its first frame, when the fit takes the default footer of SceneFit.
+    private (float W, float H)? _footerSize;
     // Whether the inline transfer-window markers are drawn on the map (off by default; the toggle
     // lives in the list panel). Dense roots are why it defaults off.
     private bool _showWindowMarkers;
@@ -379,11 +385,13 @@ internal sealed class MapWindow : ImGuiWindow
                     SetLayoutMode(LayoutMode.Spring);
                 ImGui.Separator();
                 // Spring is already about square and never wraps, so the item is greyed out there.
+                // The wrap keeps every body, so the selected route and the systems it opens stay,
+                // while the map is fitted again because its shape changes.
                 if (ImGui.MenuItem("Wrap wide systems"u8, default(ImString), _view.WrapWideSystems, _layoutMode != LayoutMode.Spring))
                 {
                     _view.WrapWideSystems = !_view.WrapWideSystems;
                     if (_currentRootId != null)
-                        RebuildAt(_currentRootId);
+                        RebuildPreservingSelection(_currentRootId, keepView: false);
                 }
                 if (ImGui.MenuItem("Center view on root"u8, default(ImString), _centerOnRoot))
                 {
@@ -570,6 +578,7 @@ internal sealed class MapWindow : ImGuiWindow
         string? emphasisHint = _windowsHoverBodyId ?? _routeSiblingId;
         _windowsPanelTop = float.PositiveInfinity;
         _windowsPanelRight = float.NegativeInfinity;
+        _footerSize = (0f, 0f);
 
         const float margin = 8f;
         const float gap = 6f;
@@ -646,6 +655,7 @@ internal sealed class MapWindow : ImGuiWindow
 
         _windowsPanelTop = clockPos is float2 top ? Math.Min(listPos.Y, top.Y) : listPos.Y;
         _windowsPanelRight = clockPos is float2 right ? Math.Max(listPos.X + width, right.X + clockSide) : listPos.X + width;
+        _footerSize = (margin + width, margin + collapsedH);
 
         ImGui.SetCursorScreenPos(listPos);
         ImGui.PushStyleColor(ImGuiCol.ChildBg, TransferOverlayBg);
@@ -1836,16 +1846,17 @@ internal sealed class MapWindow : ImGuiWindow
 
     // An edge into a lower row of a wrapped fan runs along the shared trunk to the ghost point
     // at its row's height, where every lane of that row leaves the trunk. The hover measures only
-    // the part right of where the row starts, so a mouse on the trunk or in the gutter between
-    // the trunk and the row picks no lane, while the lane's own run and drop still pick it.
+    // the part right of where the row starts. A mouse on the trunk, left of it, or in the gutter
+    // more than EdgeHoverPx left of the row start picks no lane, and nearer than that the lane's
+    // own run and drop pick it by their distance, the same on both sides of the drop.
     private double DistanceSqToLowerRowEdge(float2 mouse, LayoutEdge edge, in CanvasTransform transform)
     {
         IReadOnlyList<LayoutPoint> line = edge.Polyline;
         int row = edge.To.WrapRow;
-        if (!_rowLeftByHub.TryGetValue(edge.From.Id, out double[]? rowLeft) || row < 0 || row >= rowLeft.Length)
+        if (!_rowLeftByHub.TryGetValue(edge.From.Id, out (double TrunkX, double[] RowLeft) wrap) || row < 0 || row >= wrap.RowLeft.Length)
             return double.MaxValue;
-        double cut = rowLeft[row];
-        if (mouse.X < transform.ToScreen(cut, 0.0).X)
+        double cut = wrap.RowLeft[row];
+        if (mouse.X <= transform.ToScreen(wrap.TrunkX, 0.0).X || mouse.X < transform.ToScreen(cut, 0.0).X - EdgeHoverPx)
             return double.MaxValue;
 
         double best = double.MaxValue;
@@ -2129,14 +2140,16 @@ internal sealed class MapWindow : ImGuiWindow
     // Instead capture where the root sits on screen now and solve pan after the rebuild to
     // keep it on that same point, so the root stays put and only the rest reflows around it.
     // (screen = origin + (layout - min) * zoom + pan; origin is constant here, so it cancels.)
-    private void RebuildPreservingSelection(string rootId)
+    // With keepView false the view is not anchored, and the map is fitted again as after any
+    // rebuild.
+    private void RebuildPreservingSelection(string rootId, bool keepView = true)
     {
         string? selected = _selectedId;
         double zoom = _zoom;
 
         double anchorX = 0.0;
         double anchorY = 0.0;
-        bool haveAnchor = _scene != null;
+        bool haveAnchor = keepView && _scene != null;
         if (haveAnchor)
         {
             LayoutNode oldRoot = _scene!.Root;
@@ -2153,6 +2166,8 @@ internal sealed class MapWindow : ImGuiWindow
             UpdateScene(anchorNodeId: null);
         }
 
+        if (!keepView)
+            return;
         _zoom = zoom;
         if (haveAnchor && _scene != null)
         {
@@ -2458,7 +2473,7 @@ internal sealed class MapWindow : ImGuiWindow
             var left = new double[boxes.Length];
             for (int r = 0; r < boxes.Length; r++)
                 left[r] = Math.Max(boxes[r].MinX, wrap.TrunkX + wrap.GutterPx / 2.0);
-            _rowLeftByHub[wrapHub.Id] = left;
+            _rowLeftByHub[wrapHub.Id] = (wrap.TrunkX, left);
         }
     }
 
@@ -2490,11 +2505,13 @@ internal sealed class MapWindow : ImGuiWindow
     }
 
     // With other star systems shown the fit also keeps the screen-fixed titles and labels at the
-    // right edge on the canvas (SceneFit); with the ego map alone it is the plain bounds fit.
+    // right edge on the canvas, and keeps the toggle row of the transfer-window overlay free when
+    // a system would sit under it (SceneFit). With the ego map alone it is the plain bounds fit.
     private void FitToView(float2 size)
     {
         LayoutScene layout = _scene!;
-        _zoom = SceneFit.Fit(layout, size.X, size.Y, MinZoom, MaxZoom, out double panX, out double panY);
+        (double footerW, double footerH) = _footerSize ?? (SceneFit.FooterW, SceneFit.FooterH);
+        _zoom = SceneFit.Fit(layout, size.X, size.Y, MinZoom, MaxZoom, footerW, footerH, out double panX, out double panY);
 
         if (_centerOnRoot)
         {

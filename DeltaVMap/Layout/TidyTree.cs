@@ -493,6 +493,8 @@ internal static class TidyTree
         public required string Key { get; init; }
         public readonly List<LayoutNode> Members = new();
         public double Width;
+        public int MinBand = int.MaxValue;
+        public int MaxBand = int.MinValue;
         public readonly List<Link> Spokes = new();      // child columns via Transfer
         public readonly List<Link> BusChildren = new(); // child columns via HubLink
     }
@@ -517,14 +519,21 @@ internal static class TidyTree
     // The block sizes and row offsets of one row plan. Top and Bottom are the highest and the
     // lowest dot of the whole map relative to the root's spine, RowDy holds the offset of every
     // row of each wrapped hub below the hub's spine, and BlockWidth the width of the block each
-    // edge leads to.
+    // edge leads to, when the measure keeps them.
     internal sealed class WellMeasure
     {
+        public WellMeasure(int edges, bool blockWidths)
+        {
+            HasBlockWidths = blockWidths;
+            BlockWidth = new Dictionary<LayoutEdge, double>(blockWidths ? edges : 0);
+        }
+
         public double Width { get; set; }
         public double Top { get; set; }
         public double Bottom { get; set; }
+        public bool HasBlockWidths { get; }
         public Dictionary<string, double[]> RowDy { get; } = new();
-        public Dictionary<LayoutEdge, double> BlockWidth { get; } = new();
+        public Dictionary<LayoutEdge, double> BlockWidth { get; }
     }
 
     // The columns of one GravityWell tree and how they nest. The row plan builds them once and
@@ -535,18 +544,59 @@ internal static class TidyTree
         private readonly Dictionary<LayoutEdge, Link> _links;
         private readonly Column _root;
 
-        private WellColumns(Dictionary<string, Column> columns, Dictionary<LayoutEdge, Link> links, Column root)
+        // The lanes of every node that has one, in the node's order, and for every node Id the
+        // columns that hold such a node with its place among their members. A plan names its
+        // wrapped hubs by Id, and these find their columns without testing every member.
+        private readonly Dictionary<LayoutNode, List<Link>> _lanes;
+        private readonly Dictionary<string, List<(Column Col, int Index)>> _byId;
+        private static readonly List<Link> NoLanes = new();
+
+        private WellColumns(Dictionary<string, Column> columns, Dictionary<LayoutEdge, Link> links, Column root,
+            Dictionary<LayoutNode, List<Link>> lanes, Dictionary<string, List<(Column Col, int Index)>> byId)
         {
             _columns = columns;
             _links = links;
             _root = root;
+            _lanes = lanes;
+            _byId = byId;
         }
 
         public static WellColumns Build(LayoutTree tree)
         {
             var links = new Dictionary<LayoutEdge, Link>();
             Dictionary<string, Column> columns = BuildColumns(tree, links);
-            return new WellColumns(columns, links, columns[tree.Root.Column]);
+
+            var lanes = new Dictionary<LayoutNode, List<Link>>();
+            foreach (LayoutNode node in tree.Nodes)
+            {
+                foreach (LayoutEdge edge in node.Out)
+                {
+                    if (edge.Class == EdgeClass.Ladder)
+                        continue;
+                    if (!lanes.TryGetValue(node, out List<Link>? list))
+                    {
+                        list = new List<Link>();
+                        lanes[node] = list;
+                    }
+                    list.Add(links[edge]);
+                }
+            }
+
+            var byId = new Dictionary<string, List<(Column Col, int Index)>>();
+            foreach (Column col in columns.Values)
+            {
+                for (int i = 0; i < col.Members.Count; i++)
+                {
+                    string id = col.Members[i].Id;
+                    if (!byId.TryGetValue(id, out List<(Column Col, int Index)>? places))
+                    {
+                        places = new List<(Column Col, int Index)>();
+                        byId[id] = places;
+                    }
+                    places.Add((col, i));
+                }
+            }
+            return new WellColumns(columns, links, columns[tree.Root.Column], lanes, byId);
         }
 
         // Sets X on every node. skipRevealed leaves the revealed lanes and their blocks out and
@@ -554,17 +604,18 @@ internal static class TidyTree
         public void Place(LayoutConfig cfg, IReadOnlyDictionary<string, LayoutWrap>? wrapsByHub, bool skipRevealed = false)
         {
             double cursorX = 0.0;
-            PlaceColumn(_root, ref cursorX, cfg, wrapsByHub, skipRevealed);
+            PlaceColumn(_root, ref cursorX, cfg, wrapsByHub, HubsOf(wrapsByHub), skipRevealed);
         }
 
         // Sizes every block bottom up without placing it. wrapped holds the row count and the
         // gutter of each wrapped hub, whose lanes carry their rows in WrapRow. A row sits gapPx
         // below the lowest dot of the row above it, rounded down onto the grid. skipRevealed
-        // leaves out the revealed lanes and their blocks, for scoring a plan without them.
-        public WellMeasure Measure(LayoutConfig cfg, IReadOnlyDictionary<string, (int Rows, double Gutter)> wrapped, double gapPx, bool skipRevealed)
+        // leaves out the revealed lanes and their blocks, for scoring a plan without them, and
+        // blockWidths keeps the width of every block, which only a split into shelves reads.
+        public WellMeasure Measure(LayoutConfig cfg, IReadOnlyDictionary<string, (int Rows, double Gutter)> wrapped, double gapPx, bool skipRevealed, bool blockWidths = true)
         {
-            var result = new WellMeasure();
-            Box box = MeasureColumn(_root, cfg, wrapped, gapPx, skipRevealed, result);
+            var result = new WellMeasure(_links.Count, blockWidths);
+            Box box = MeasureColumn(_root, cfg, wrapped, HubsOf(wrapped), gapPx, skipRevealed, result);
             result.Width = box.Width;
             result.Top = box.Top;
             result.Bottom = box.Bottom;
@@ -588,11 +639,34 @@ internal static class TidyTree
             return reach;
         }
 
+        // The wrapped hub of every column that holds one, which is the first of its members that
+        // the plan names.
+        private Dictionary<Column, LayoutNode>? HubsOf<T>(IReadOnlyDictionary<string, T>? wrapped)
+        {
+            if (wrapped == null || wrapped.Count == 0)
+                return null;
+            var first = new Dictionary<Column, int>();
+            foreach (string id in wrapped.Keys)
+            {
+                if (!_byId.TryGetValue(id, out List<(Column Col, int Index)>? places))
+                    continue;
+                foreach ((Column col, int index) in places)
+                {
+                    if (!first.TryGetValue(col, out int current) || index < current)
+                        first[col] = index;
+                }
+            }
+            var hubs = new Dictionary<Column, LayoutNode>(first.Count);
+            foreach ((Column col, int index) in first)
+                hubs[col] = col.Members[index];
+            return hubs;
+        }
+
         // Place a column at the cursor, then walk its children left to right, a body's own
         // moons (Transfer spokes) first so they cluster beside it, then the hub-bus branch. A
         // wrapped hub puts its lanes into rows that start one gutter right of its column, and
         // its other children follow the widest row on its own spine.
-        private void PlaceColumn(Column col, ref double cursorX, LayoutConfig cfg, IReadOnlyDictionary<string, LayoutWrap>? wrapsByHub, bool skipRevealed)
+        private void PlaceColumn(Column col, ref double cursorX, LayoutConfig cfg, IReadOnlyDictionary<string, LayoutWrap>? wrapsByHub, Dictionary<Column, LayoutNode>? hubs, bool skipRevealed)
         {
             double half = col.Width / 2.0;
             double x = cursorX + half;
@@ -600,31 +674,32 @@ internal static class TidyTree
                 m.X = x;
             cursorX = x + half;
 
-            LayoutNode? hub = WrappedHub(col, wrapsByHub);
-            if (hub != null)
+            if (hubs != null && hubs.TryGetValue(col, out LayoutNode? hub))
             {
+                // Each row places its lanes in the hub's order. The rungs stay in the hub's column,
+                // and a hub link that carries the bus on past the hub has no row.
                 LayoutWrap wrap = wrapsByHub![hub.Id];
                 double rowStart = cursorX + wrap.GutterPx;
                 double end = cursorX;
-                foreach (List<Link> row in LaneRows(hub, wrap.RowSizes.Count, skipRevealed))
+                List<Link> lanes = LanesOf(hub);
+                for (int r = 0; r < wrap.RowSizes.Count; r++)
                 {
                     double c = rowStart;
-                    for (int i = 0; i < row.Count; i++)
+                    bool first = true;
+                    foreach (Link link in lanes)
                     {
-                        if (i > 0)
-                            c += GapBefore(row[i], cfg);
-                        PlaceColumn(row[i].Child, ref c, cfg, wrapsByHub, skipRevealed);
+                        if (link.Edge.To.WrapRow != r || (skipRevealed && link.Edge.To.IsRevealed))
+                            continue;
+                        if (!first)
+                            c += GapBefore(link, cfg);
+                        first = false;
+                        PlaceColumn(link.Child, ref c, cfg, wrapsByHub, hubs, skipRevealed);
                     }
                     end = Math.Max(end, c);
                 }
                 cursorX = end;
-                foreach (Link link in Rest(col, hub))
-                {
-                    if (skipRevealed && link.Edge.To.IsRevealed)
-                        continue;
-                    cursorX += GapBefore(link, cfg);
-                    PlaceColumn(link.Child, ref cursorX, cfg, wrapsByHub, skipRevealed);
-                }
+                PlaceRest(col.Spokes, hub, ref cursorX, cfg, wrapsByHub, hubs, skipRevealed);
+                PlaceRest(col.BusChildren, hub, ref cursorX, cfg, wrapsByHub, hubs, skipRevealed);
                 return;
             }
 
@@ -633,135 +708,117 @@ internal static class TidyTree
                 if (skipRevealed && spoke.Edge.To.IsRevealed)
                     continue;
                 cursorX += cfg.SiblingGapPx;
-                PlaceColumn(spoke.Child, ref cursorX, cfg, wrapsByHub, skipRevealed);
+                PlaceColumn(spoke.Child, ref cursorX, cfg, wrapsByHub, hubs, skipRevealed);
             }
             foreach (Link bus in col.BusChildren)
             {
                 if (skipRevealed && bus.Edge.To.IsRevealed)
                     continue;
                 cursorX += cfg.BusGapPx;
-                PlaceColumn(bus.Child, ref cursorX, cfg, wrapsByHub, skipRevealed);
+                PlaceColumn(bus.Child, ref cursorX, cfg, wrapsByHub, hubs, skipRevealed);
             }
         }
 
-        private Box MeasureColumn(Column col, LayoutConfig cfg, IReadOnlyDictionary<string, (int Rows, double Gutter)> wrapped, double gapPx, bool skipRevealed, WellMeasure result)
+        // Places the children of a wrapped hub's column that are no lane of it, in the unwrapped
+        // order, which is the spokes first and then the bus children.
+        private void PlaceRest(List<Link> links, LayoutNode hub, ref double cursorX, LayoutConfig cfg, IReadOnlyDictionary<string, LayoutWrap>? wrapsByHub, Dictionary<Column, LayoutNode>? hubs, bool skipRevealed)
         {
-            double h = cfg.WellBandHeightPx;
-            double top = double.PositiveInfinity;
-            double bottom = double.NegativeInfinity;
-            LayoutNode? hub = null;
-            foreach (LayoutNode m in col.Members)
+            foreach (Link link in links)
             {
-                top = Math.Min(top, m.Band * h);
-                bottom = Math.Max(bottom, m.Band * h);
-                if (hub == null && wrapped.ContainsKey(m.Id))
-                    hub = m;
+                if (!IsRest(link, hub) || (skipRevealed && link.Edge.To.IsRevealed))
+                    continue;
+                cursorX += GapBefore(link, cfg);
+                PlaceColumn(link.Child, ref cursorX, cfg, wrapsByHub, hubs, skipRevealed);
             }
+        }
+
+        private Box MeasureColumn(Column col, LayoutConfig cfg, IReadOnlyDictionary<string, (int Rows, double Gutter)> wrapped, Dictionary<Column, LayoutNode>? hubs, double gapPx, bool skipRevealed, WellMeasure result)
+        {
+            // A band times the height grows or falls with the band, so the extreme bands give
+            // the highest and the lowest dot of the column.
+            double h = cfg.WellBandHeightPx;
+            double top = Math.Min(col.MinBand * h, col.MaxBand * h);
+            double bottom = Math.Max(col.MinBand * h, col.MaxBand * h);
             double width = col.Width;
 
-            if (hub != null)
+            if (hubs != null && hubs.TryGetValue(col, out LayoutNode? hub))
             {
+                // Each row adds up its lanes in the hub's order, which is the order the rows
+                // place them in.
                 (int rowCount, double gutter) = wrapped[hub.Id];
                 var rowDy = new double[rowCount];
+                var rowWidth = new double[rowCount];
+                var rowTop = new double[rowCount];
+                var rowBottom = new double[rowCount];
+                var rowLanes = new int[rowCount];
+                foreach (Link link in LanesOf(hub))
+                {
+                    int row = link.Edge.To.WrapRow;
+                    if (row < 0 || row >= rowCount || (skipRevealed && link.Edge.To.IsRevealed))
+                        continue;
+                    Box box = MeasureColumn(link.Child, cfg, wrapped, hubs, gapPx, skipRevealed, result);
+                    if (result.HasBlockWidths)
+                        result.BlockWidth[link.Edge] = box.Width;
+                    if (rowLanes[row] > 0)
+                        rowWidth[row] += GapBefore(link, cfg);
+                    rowWidth[row] += box.Width;
+                    rowTop[row] = rowLanes[row] == 0 ? box.Top : Math.Min(rowTop[row], box.Top);
+                    rowBottom[row] = rowLanes[row] == 0 ? box.Bottom : Math.Max(rowBottom[row], box.Bottom);
+                    rowLanes[row]++;
+                }
+
                 double widest = 0.0;
                 double bottomAbove = 0.0;
-                List<Link>[] rows = LaneRows(hub, rowCount, skipRevealed);
                 for (int r = 0; r < rowCount; r++)
                 {
-                    double rowWidth = 0.0;
-                    double rowTop = 0.0;
-                    double rowBottom = 0.0;
-                    for (int i = 0; i < rows[r].Count; i++)
-                    {
-                        Link link = rows[r][i];
-                        Box box = MeasureColumn(link.Child, cfg, wrapped, gapPx, skipRevealed, result);
-                        result.BlockWidth[link.Edge] = box.Width;
-                        if (i > 0)
-                            rowWidth += GapBefore(link, cfg);
-                        rowWidth += box.Width;
-                        rowTop = i == 0 ? box.Top : Math.Min(rowTop, box.Top);
-                        rowBottom = i == 0 ? box.Bottom : Math.Max(rowBottom, box.Bottom);
-                    }
                     if (r > 0)
-                        rowDy[r] = SnapUp(rowDy[r - 1] + bottomAbove - rowTop + gapPx, cfg.GridPx);
-                    bottomAbove = rowBottom;
-                    widest = Math.Max(widest, rowWidth);
-                    top = Math.Min(top, rowDy[r] + rowTop);
-                    bottom = Math.Max(bottom, rowDy[r] + rowBottom);
+                        rowDy[r] = SnapUp(rowDy[r - 1] + bottomAbove - rowTop[r] + gapPx, cfg.GridPx);
+                    bottomAbove = rowBottom[r];
+                    widest = Math.Max(widest, rowWidth[r]);
+                    top = Math.Min(top, rowDy[r] + rowTop[r]);
+                    bottom = Math.Max(bottom, rowDy[r] + rowBottom[r]);
                 }
                 result.RowDy[hub.Id] = rowDy;
                 width = col.Width + gutter + widest;
-                foreach (Link link in Rest(col, hub))
-                {
-                    if (skipRevealed && link.Edge.To.IsRevealed)
-                        continue;
-                    Box box = MeasureColumn(link.Child, cfg, wrapped, gapPx, skipRevealed, result);
-                    result.BlockWidth[link.Edge] = box.Width;
-                    width += GapBefore(link, cfg) + box.Width;
-                    top = Math.Min(top, box.Top);
-                    bottom = Math.Max(bottom, box.Bottom);
-                }
+                MeasureRest(col.Spokes, hub, ref width, ref top, ref bottom, cfg, wrapped, hubs, gapPx, skipRevealed, result);
+                MeasureRest(col.BusChildren, hub, ref width, ref top, ref bottom, cfg, wrapped, hubs, gapPx, skipRevealed, result);
                 return new Box(width, top, bottom);
             }
 
-            foreach (List<Link> links in new[] { col.Spokes, col.BusChildren })
-            {
-                foreach (Link link in links)
-                {
-                    if (skipRevealed && link.Edge.To.IsRevealed)
-                        continue;
-                    Box box = MeasureColumn(link.Child, cfg, wrapped, gapPx, skipRevealed, result);
-                    result.BlockWidth[link.Edge] = box.Width;
-                    width += GapBefore(link, cfg) + box.Width;
-                    top = Math.Min(top, box.Top);
-                    bottom = Math.Max(bottom, box.Bottom);
-                }
-            }
+            MeasureRest(col.Spokes, null, ref width, ref top, ref bottom, cfg, wrapped, hubs, gapPx, skipRevealed, result);
+            MeasureRest(col.BusChildren, null, ref width, ref top, ref bottom, cfg, wrapped, hubs, gapPx, skipRevealed, result);
             return new Box(width, top, bottom);
         }
 
-        // The lanes of a wrapped hub by row, each row in the hub's order. The rungs stay in the
-        // hub's column, and a hub link that carries the bus on past the hub has no row.
-        private List<Link>[] LaneRows(LayoutNode hub, int rowCount, bool skipRevealed)
+        // Adds the blocks of the given child links beside a column, leaving out the lanes of its
+        // wrapped hub when it has one.
+        private void MeasureRest(List<Link> links, LayoutNode? hub, ref double width, ref double top, ref double bottom, LayoutConfig cfg,
+            IReadOnlyDictionary<string, (int Rows, double Gutter)> wrapped, Dictionary<Column, LayoutNode>? hubs, double gapPx, bool skipRevealed, WellMeasure result)
         {
-            var rows = new List<Link>[rowCount];
-            for (int r = 0; r < rowCount; r++)
-                rows[r] = new List<Link>();
-            foreach (LayoutEdge edge in hub.Out)
+            foreach (Link link in links)
             {
-                int row = edge.To.WrapRow;
-                if (edge.Class == EdgeClass.Ladder || row < 0 || row >= rowCount || (skipRevealed && edge.To.IsRevealed))
+                if ((hub != null && !IsRest(link, hub)) || (skipRevealed && link.Edge.To.IsRevealed))
                     continue;
-                rows[row].Add(_links[edge]);
+                Box box = MeasureColumn(link.Child, cfg, wrapped, hubs, gapPx, skipRevealed, result);
+                if (result.HasBlockWidths)
+                    result.BlockWidth[link.Edge] = box.Width;
+                width += GapBefore(link, cfg) + box.Width;
+                top = Math.Min(top, box.Top);
+                bottom = Math.Max(bottom, box.Bottom);
             }
-            return rows;
         }
 
-        // The children of a wrapped hub's column that are no lane of it, in the unwrapped order.
-        private static List<Link> Rest(Column col, LayoutNode hub)
+        // The lanes of a node in its order. The rungs stay in the node's column, so they are no
+        // lanes.
+        private List<Link> LanesOf(LayoutNode node)
         {
-            var rest = new List<Link>();
-            foreach (List<Link> links in new[] { col.Spokes, col.BusChildren })
-            {
-                foreach (Link link in links)
-                {
-                    if (link.Edge.From != hub || link.Edge.To.WrapRow < 0)
-                        rest.Add(link);
-                }
-            }
-            return rest;
+            return _lanes.TryGetValue(node, out List<Link>? lanes) ? lanes : NoLanes;
         }
 
-        private static LayoutNode? WrappedHub(Column col, IReadOnlyDictionary<string, LayoutWrap>? wrapsByHub)
+        // Whether a child of a wrapped hub's column is no lane of that hub.
+        private static bool IsRest(Link link, LayoutNode hub)
         {
-            if (wrapsByHub == null)
-                return null;
-            foreach (LayoutNode m in col.Members)
-            {
-                if (wrapsByHub.ContainsKey(m.Id))
-                    return m;
-            }
-            return null;
+            return link.Edge.From != hub || link.Edge.To.WrapRow < 0;
         }
 
         private static double GapBefore(Link link, LayoutConfig cfg)
@@ -794,6 +851,8 @@ internal static class TidyTree
             Column col = Get(node.Column);
             col.Members.Add(node);
             col.Width = Math.Max(col.Width, node.Width);
+            col.MinBand = Math.Min(col.MinBand, node.Band);
+            col.MaxBand = Math.Max(col.MaxBand, node.Band);
         }
 
         foreach (LayoutNode node in tree.Nodes)

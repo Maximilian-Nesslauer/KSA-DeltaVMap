@@ -294,6 +294,20 @@ internal static class SyntheticTree
     // it. reveal names the moon by its id without the rung suffix, for example "S2010_S_05".
     public static LayoutTree BuildClampedGiants(string? reveal)
     {
+        return BuildClampedGiants(reveal, saturnInner: 10, saturnOuter: 290, "synthetic-clamped-giants");
+    }
+
+    // The clamped giants with a Saturn of 23 inner and 2 outer minor moons. That is one minor moon
+    // over the fold threshold, so every inner moon keeps its lane and the outer group holds just
+    // two members, and revealing one of them empties the group. reveal is as in
+    // BuildClampedGiants.
+    public static LayoutTree BuildPairGroup(string? reveal)
+    {
+        return BuildClampedGiants(reveal, saturnInner: 23, saturnOuter: 2, "synthetic-pair-group");
+    }
+
+    private static LayoutTree BuildClampedGiants(string? reveal, int saturnInner, int saturnOuter, string treeName)
+    {
         LayoutNode root = Node("Earth.LO", "Earth Low Orbit", LayoutKind.LowOrbit, rank: 1);
         root.IsRoot = true;
         Ladder(root, "Earth", surfaceDv: 9400, stationaryDv: 1490, soiDv: 3210);
@@ -327,17 +341,17 @@ internal static class SyntheticTree
         (string Name, double SoiKm, int Major, int Inner, int Outer)[] giants =
         {
             ("Jupiter", 48.2e6, 4, 4, 89),
-            ("Saturn", 54.8e6, 14, 10, 290),
+            ("Saturn", 54.8e6, 14, saturnInner, saturnOuter),
             ("Uranus", 51.8e6, 0, 19, 9),
             ("Neptune", 86.7e6, 1, 30, 20)
         };
         for (int i = 0; i < giants.Length; i++)
         {
-            (string name, double soiKm, int major, int inner, int outer) = giants[i];
-            LayoutNode lo = Node(name + ".LO", name + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
+            (string giant, double soiKm, int major, int inner, int outer) = giants[i];
+            LayoutNode lo = Node(giant + ".LO", giant + " Low Orbit", LayoutKind.LowOrbit, rank: 1);
             Transfer(sol, lo, depart: 6300 + i * 700, arrive: 8100 + i * 900);
-            LadderEdge(lo, Node(name + ".SoiEdge", name + " SOI Edge", LayoutKind.SoiEdge, rank: 1), 4000 + i * 100);
-            AttachFoldedMoons(lo, name, soiKm, major, inner, outer, clamped: true, reveal);
+            LadderEdge(lo, Node(giant + ".SoiEdge", giant + " SOI Edge", LayoutKind.SoiEdge, rank: 1), 4000 + i * 100);
+            AttachFoldedMoons(lo, giant, soiKm, major, inner, outer, clamped: true, reveal);
         }
 
         LayoutNode pluto = Node("Pluto.LO", "Pluto Low Orbit", LayoutKind.LowOrbit, rank: 1);
@@ -349,7 +363,7 @@ internal static class SyntheticTree
 
         GroupNode(sol, "Sol" + MinorFold.IdSuffix(FoldSlot.Group), MinorFold.Label(FoldSlot.Group, new MinorKind[50]));
 
-        return LayoutTree.FromRoot("synthetic-clamped-giants", root);
+        return LayoutTree.FromRoot(treeName, root);
     }
 
     // One fan of a given number of moon lanes under a giant planet root, with every lane at the
@@ -443,13 +457,15 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-opaque-block", root);
     }
 
-    // The moons of one giant, folded by the real MinorFold rules into the major moons, the inner minor
-    // moons (below a tenth of the SOI) and the outer swarm (between a fifth and a half of the SOI,
-    // as captured moons sit). Unclamped lanes cost a few hundred m/s that grow with the orbit, so
-    // the fan is a staircase of bands, each moon with a cheap surface rung. Clamped lanes cost
-    // several km/s and all reach MaxBandStep, and only the major moons carry a surface rung. A
-    // revealed moon is a lane, and the lane is marked revealed when the reveal alone gives it,
-    // the way VisualTree marks it.
+    // The moons of one giant under the real MinorFold rules. The major moons stay lanes, the inner
+    // minor moons (below a tenth of the SOI) become lanes up to the fold threshold and fold into an
+    // inner group beyond it, and the outer swarm (between a fifth and a half of the SOI, as
+    // captured moons sit) folds into an outer group. Unclamped lanes cost a few hundred m/s that
+    // grow with the orbit, so the fan is a staircase of bands, each moon with a cheap surface rung.
+    // Clamped lanes cost several km/s and all reach MaxBandStep, and only the major moons carry a
+    // surface rung. A revealed moon is a lane, and the lanes take the roles MinorFold.Roles gives
+    // them in the order VisualTree builds them, so a lane that only the reveal gives is marked
+    // revealed and the stand-in of an emptied group sits where that group stood.
     private static void AttachFoldedMoons(LayoutNode lo, string name, double soiKm, int major, int inner, int outer, bool clamped, string? reveal = null)
     {
         var moons = new List<(string Id, FoldChild Child, int Rank)>();
@@ -470,6 +486,24 @@ internal static class SyntheticTree
         }
         FoldSlot[] slots = MinorFold.Plan(children, BuildOptions.DefaultMinorGroupThreshold, soiKm * 1e3);
         FoldSlot[] plainSlots = MinorFold.Plan(plain, BuildOptions.DefaultMinorGroupThreshold, soiKm * 1e3);
+        LaneRole[] roles = MinorFold.Roles(children.ConvertAll(c => c.Revealed), slots, plainSlots);
+
+        void AddLane(int m)
+        {
+            LayoutNode moon = Node(moons[m].Id + ".LO", moons[m].Id + " Low Orbit", LayoutKind.LowOrbit, moons[m].Rank, revealed: roles[m] == LaneRole.Revealed);
+            LayoutNode surface = Node(moons[m].Id + ".Surface", moons[m].Id + " Surface", LayoutKind.Surface, moons[m].Rank);
+            if (!clamped)
+            {
+                Transfer(lo, moon, depart: 400 + m * 40, arrive: 150 + m * 10);
+                LadderEdge(moon, surface, 50 + m);
+            }
+            else
+            {
+                Transfer(lo, moon, depart: 6000 + m * 120, arrive: 2000 + m * 40);
+                if (!children[m].IsMinor)
+                    LadderEdge(moon, surface, 1500 + m * 20);
+            }
+        }
 
         int inGroup = 0;
         int outGroup = 0;
@@ -479,27 +513,22 @@ internal static class SyntheticTree
                 inGroup++;
             else if (slots[m] == FoldSlot.OuterGroup)
                 outGroup++;
-            else if (slots[m] == FoldSlot.Lane)
+            else if (slots[m] == FoldSlot.Lane && roles[m] != LaneRole.StandIn)
+                AddLane(m);
+        }
+        foreach ((FoldSlot slot, int count) in new[] { (FoldSlot.InnerGroup, inGroup), (FoldSlot.OuterGroup, outGroup) })
+        {
+            if (count > 0)
             {
-                LayoutNode moon = Node(moons[m].Id + ".LO", moons[m].Id + " Low Orbit", LayoutKind.LowOrbit, moons[m].Rank, revealed: plainSlots[m] != FoldSlot.Lane);
-                LayoutNode surface = Node(moons[m].Id + ".Surface", moons[m].Id + " Surface", LayoutKind.Surface, moons[m].Rank);
-                if (!clamped)
-                {
-                    Transfer(lo, moon, depart: 400 + m * 40, arrive: 150 + m * 10);
-                    LadderEdge(moon, surface, 50 + m);
-                }
-                else
-                {
-                    Transfer(lo, moon, depart: 6000 + m * 120, arrive: 2000 + m * 40);
-                    if (!children[m].IsMinor)
-                        LadderEdge(moon, surface, 1500 + m * 20);
-                }
+                GroupNode(lo, name + MinorFold.IdSuffix(slot), MinorFold.Label(slot, new MinorKind[count]));
+                continue;
+            }
+            for (int m = 0; m < moons.Count; m++)
+            {
+                if (roles[m] == LaneRole.StandIn && plainSlots[m] == slot)
+                    AddLane(m);
             }
         }
-        if (inGroup > 0)
-            GroupNode(lo, name + MinorFold.IdSuffix(FoldSlot.InnerGroup), MinorFold.Label(FoldSlot.InnerGroup, new MinorKind[inGroup]));
-        if (outGroup > 0)
-            GroupNode(lo, name + MinorFold.IdSuffix(FoldSlot.OuterGroup), MinorFold.Label(FoldSlot.OuterGroup, new MinorKind[outGroup]));
     }
 
     // A provisional designation as the long-tail moons carry ("S2004_S_07"), so label widths

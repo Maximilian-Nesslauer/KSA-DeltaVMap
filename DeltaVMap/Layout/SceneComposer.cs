@@ -113,9 +113,11 @@ internal static class SceneComposer
     // one tried is used, since it comes nearest. A Spring part that fits with no spread keeps
     // the plain layout. An opened GravityWell system wraps by the rules of the ego map, the plain
     // run and every spread run alike, with the gaps between its rows sized for the zoom that fits
-    // the ego map. A collapsed stub and every Cumulative-down system have Wrap Off, because a
-    // Cumulative-down row costs a drop that states no delta-v. The ego map does not depend on any
-    // part, so opening or closing one never re-flows it.
+    // the ego map. The rows depend on the bands but not on the spread, which stretches the
+    // layout only after they are set, so a band range tried again at a smaller spread takes the
+    // rows its first run chose. A collapsed stub and every Cumulative-down system have Wrap Off,
+    // because a Cumulative-down row costs a drop that states no delta-v. The ego map does not
+    // depend on any part, so opening or closing one never re-flows it.
     public static LayoutResult LayOutPart(Func<LayoutTree> build, LayoutResult ego, Func<string, double>? measureText, bool expanded)
     {
         WrapMode wrap = expanded && ego.Config.Mode == LayoutMode.GravityWell ? ego.Config.Wrap : WrapMode.Off;
@@ -145,6 +147,18 @@ internal static class SceneComposer
             return plain;
         }
 
+        var rowsByBands = new Dictionary<(int MinBand, int MaxBand), RowWrap.Choice>();
+        LayoutResult RunTree(int spread, int minBand, int maxBand)
+        {
+            LayoutConfig spreadCfg = cfg.WithSpread(spread, minBand, maxBand).WithWrap(wrap);
+            if (rowsByBands.TryGetValue((minBand, maxBand), out RowWrap.Choice rows))
+                return LayoutEngine.Run(build(), spreadCfg, measure, rows);
+            LayoutResult result = LayoutEngine.Run(build(), spreadCfg, measure);
+            if (result.Rows is RowWrap.Choice chosen)
+                rowsByBands[(minBand, maxBand)] = chosen;
+            return result;
+        }
+
         LayoutResult flattest = plain;
         for (int spread = (int)k; spread >= 1; spread--)
         {
@@ -152,7 +166,7 @@ internal static class SceneComposer
             {
                 // The flattest band range for this minimum. The spread axis does not depend on
                 // the bands, so a part too long here is too long for every band range.
-                LayoutResult flat = LayoutEngine.Run(build(), cfg.WithSpread(spread, minBand, minBand).WithWrap(wrap), measure);
+                LayoutResult flat = RunTree(spread, minBand, minBand);
                 if (spread > 1 && Along(flat) > maxAlong)
                     break;
                 flattest = flat;
@@ -166,7 +180,7 @@ internal static class SceneComposer
                 while (lo < hi)
                 {
                     int mid = (lo + hi + 1) / 2;
-                    LayoutResult r = LayoutEngine.Run(build(), cfg.WithSpread(spread, minBand, mid).WithWrap(wrap), measure);
+                    LayoutResult r = RunTree(spread, minBand, mid);
                     if (Across(r) <= maxAcross)
                     {
                         lo = mid;
@@ -843,13 +857,14 @@ internal static class SceneComposer
         List<LayoutPoint>? best = null;
         double bestCost = double.PositiveInfinity;
         double crossing = anyAngle ? 12.0 * g : 1e6;
+        var obstacles = new Obstacles(nodes, s, zFit);
         void Consider(List<LayoutPoint> route)
         {
             int dots = 0;
             int others = 0;
             for (int leg = 0; leg + 1 < route.Count; leg++)
             {
-                Crossings c = Hits(nodes, leg == 0 ? hub : null, route[leg], route[leg + 1], null, s, zFit);
+                Crossings c = Hits(obstacles, leg == 0 ? hub : null, route[leg], route[leg + 1], null, s);
                 dots += c.Dots;
                 others += c.Labels + c.Edges;
             }
@@ -951,10 +966,11 @@ internal static class SceneComposer
         double titleX = root.SnappedX + (GlyphRadiusPx(root) + TitleGapPx - TitlePadX) * s;
         var title = new Box(titleX, root.SnappedY + ty0 * s, root.SnappedX + tx1 * s, root.SnappedY + ty1 * s);
         (int X, int Y)[] order = below ? BelowEntries : RightEntries;
+        var obstacles = new Obstacles(part.Result.Tree.Nodes, s, zFit);
         for (int i = 0; i < order.Length; i++)
         {
             LayoutPoint end = RayToBox(start, order[i].X, order[i].Y, box);
-            if (Hits(part.Result.Tree.Nodes, root, start, end, title, s, zFit).Total == 0)
+            if (Hits(obstacles, root, start, end, title, s).Total == 0)
                 return end;
         }
         return RayToBox(start, order[0].X, order[0].Y, box);
@@ -976,12 +992,75 @@ internal static class SceneComposer
         public int Total => Dots + Labels + Edges;
     }
 
+    // The dots, label boxes and edge segments a connector keeps clear of, at the lowest fit zoom
+    // (s layout units per pixel) and with the line clearance already added. A label box is the
+    // box the fit shows it in (and zoom 1 shows it in). The route search tests many segments
+    // against the same nodes, so they are found once.
+    private sealed class Obstacles
+    {
+        public readonly LayoutNode[] Nodes;
+        public readonly LayoutPoint[] Dots;
+        public readonly double[] DotReach;
+        public readonly bool[] HasLabel;
+        public readonly Box[] Labels;
+        public readonly LayoutPoint[] EdgeFrom;
+        public readonly LayoutPoint[] EdgeTo;
+        public readonly double Clearance;
+
+        public Obstacles(IReadOnlyList<LayoutNode> nodes, double s, double zFit)
+        {
+            double clearance = LineClearPx * s;
+            Clearance = clearance;
+            Nodes = new LayoutNode[nodes.Count];
+            Dots = new LayoutPoint[nodes.Count];
+            DotReach = new double[nodes.Count];
+            HasLabel = new bool[nodes.Count];
+            Labels = new Box[nodes.Count];
+            var from = new List<LayoutPoint>();
+            var to = new List<LayoutPoint>();
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                LayoutNode node = nodes[i];
+                Nodes[i] = node;
+                Dots[i] = new LayoutPoint(node.SnappedX, node.SnappedY);
+                DotReach[i] = DotReachPx(node) * s + clearance;
+                if (node.LabelPlaced && !node.IsSystemRoot)
+                {
+                    bool fit = LabelLod.RankShows(node, zFit);
+                    double w = Math.Max(node.Width, fit ? node.ShortLabelTextW * s : 0.0);
+                    double h = Math.Max(node.Height, fit ? TitleLinePx * s : 0.0);
+                    HasLabel[i] = true;
+                    Labels[i] = new Box(node.LabelX - clearance, node.LabelY - clearance, node.LabelX + w + clearance, node.LabelY + h + clearance);
+                }
+                for (int k = 0; k < node.Out.Count; k++)
+                {
+                    IReadOnlyList<LayoutPoint> line = node.Out[k].Polyline;
+                    for (int p = 0; p + 1 < line.Count; p++)
+                    {
+                        from.Add(line[p]);
+                        to.Add(line[p + 1]);
+                    }
+                }
+            }
+            EdgeFrom = from.ToArray();
+            EdgeTo = to.ToArray();
+        }
+    }
+
+    // How much farther than its reach a box must lie from a segment's box to count as far. It is
+    // far above the rounding of the distance and crossing tests at any layout coordinate.
+    private const double FarSlack = 1e-3;
+
     // What the segment from a to e passes closer than LineClearPx screen pixels to, at the
     // lowest fit zoom (s layout units per pixel). It counts the dots (with the extra box), the
-    // label boxes as the fit shows them (and as zoom 1 shows them), and the edge segments. When the
-    // segment leaves the dot of from, the stretch inside that dot and its clearance is skipped,
-    // so the edges that leave that node do not count.
-    private static Crossings Hits(IReadOnlyList<LayoutNode> nodes, LayoutNode? from, LayoutPoint a, LayoutPoint e, Box? extra, double s, double zFit)
+    // label boxes and the edge segments. When the segment leaves the dot of from, the stretch
+    // inside that dot and its clearance is skipped, so the edges that leave that node do not
+    // count. Every point of the segment lies in its bounding box, so an obstacle far from that
+    // box is farther than its reach from the segment. A far dot or label box is then missed. The
+    // crossing test cannot find a far axis-aligned side either, because the slack lies far above
+    // its rounding. A far edge segment may slope, so it still counts when the crossing test,
+    // which the distance test starts with, finds a crossing.
+    private static Crossings Hits(Obstacles obstacles, LayoutNode? from, LayoutPoint a, LayoutPoint e, Box? extra, double s)
     {
         if (from != null)
         {
@@ -991,36 +1070,48 @@ internal static class SceneComposer
                 return default;
             a = new LayoutPoint(a.X + (e.X - a.X) / len * skip, a.Y + (e.Y - a.Y) / len * skip);
         }
-        double clearance = LineClearPx * s;
+        double clearance = obstacles.Clearance;
+        var span = new Box(Math.Min(a.X, e.X), Math.Min(a.Y, e.Y), Math.Max(a.X, e.X), Math.Max(a.Y, e.Y));
         int dots = 0;
         int labels = 0;
         int edges = 0;
         if (extra is Box box && SegmentHitsRect(a, e, box.X0, box.Y0, box.X1, box.Y1))
             dots++;
-        for (int i = 0; i < nodes.Count; i++)
+        LayoutNode[] nodes = obstacles.Nodes;
+        for (int i = 0; i < nodes.Length; i++)
         {
-            LayoutNode node = nodes[i];
-            if (node != from && SegmentPointDistance(a, e, new LayoutPoint(node.SnappedX, node.SnappedY)) < DotReachPx(node) * s + clearance)
+            LayoutPoint dot = obstacles.Dots[i];
+            double reach = obstacles.DotReach[i];
+            if (nodes[i] != from && !Far(span, dot.X, dot.Y, dot.X, dot.Y, reach) && SegmentPointDistance(a, e, dot) < reach)
                 dots++;
-            if (node.LabelPlaced && !node.IsSystemRoot)
+            if (obstacles.HasLabel[i])
             {
-                bool fit = LabelLod.RankShows(node, zFit);
-                double w = Math.Max(node.Width, fit ? node.ShortLabelTextW * s : 0.0);
-                double h = Math.Max(node.Height, fit ? TitleLinePx * s : 0.0);
-                if (SegmentHitsRect(a, e, node.LabelX - clearance, node.LabelY - clearance, node.LabelX + w + clearance, node.LabelY + h + clearance))
+                Box l = obstacles.Labels[i];
+                if (!Far(span, l.X0, l.Y0, l.X1, l.Y1, 0.0) && SegmentHitsRect(a, e, l.X0, l.Y0, l.X1, l.Y1))
                     labels++;
             }
-            for (int k = 0; k < node.Out.Count; k++)
-            {
-                IReadOnlyList<LayoutPoint> line = node.Out[k].Polyline;
-                for (int p = 0; p + 1 < line.Count; p++)
-                {
-                    if (SegmentSegmentDistance(a, e, line[p], line[p + 1]) < clearance)
-                        edges++;
-                }
-            }
+        }
+        LayoutPoint[] edgeFrom = obstacles.EdgeFrom;
+        LayoutPoint[] edgeTo = obstacles.EdgeTo;
+        for (int k = 0; k < edgeFrom.Length; k++)
+        {
+            LayoutPoint p = edgeFrom[k];
+            LayoutPoint q = edgeTo[k];
+            bool hit = Far(span, Math.Min(p.X, q.X), Math.Min(p.Y, q.Y), Math.Max(p.X, q.X), Math.Max(p.Y, q.Y), clearance)
+                ? ProperCrossing(a, e, p, q)
+                : SegmentSegmentDistance(a, e, p, q) < clearance;
+            if (hit)
+                edges++;
         }
         return new Crossings(dots, labels, edges);
+    }
+
+    // Whether the box from (x0, y0) to (x1, y1) lies farther than reach, and the slack, from the
+    // span box on either axis.
+    private static bool Far(in Box span, double x0, double y0, double x1, double y1, double reach)
+    {
+        double r = reach + FarSlack;
+        return x0 > span.X1 + r || x1 < span.X0 - r || y0 > span.Y1 + r || y1 < span.Y0 - r;
     }
 
     public static double SegmentPointDistance(LayoutPoint a, LayoutPoint b, LayoutPoint p)
@@ -1036,15 +1127,24 @@ internal static class SceneComposer
 
     public static double SegmentSegmentDistance(LayoutPoint a, LayoutPoint b, LayoutPoint c, LayoutPoint d)
     {
-        double d1 = Cross(a, b, c);
-        double d2 = Cross(a, b, d);
-        double d3 = Cross(c, d, a);
-        double d4 = Cross(c, d, b);
-        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))
+        if (ProperCrossing(a, b, c, d))
             return 0.0;
         return Math.Min(
             Math.Min(SegmentPointDistance(a, b, c), SegmentPointDistance(a, b, d)),
             Math.Min(SegmentPointDistance(c, d, a), SegmentPointDistance(c, d, b)));
+    }
+
+    // Whether a-b and c-d cross at a point inside both, with each segment's ends strictly on
+    // the two sides of the other's line.
+    private static bool ProperCrossing(LayoutPoint a, LayoutPoint b, LayoutPoint c, LayoutPoint d)
+    {
+        double d1 = Cross(a, b, c);
+        double d2 = Cross(a, b, d);
+        if (!((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)))
+            return false;
+        double d3 = Cross(c, d, a);
+        double d4 = Cross(c, d, b);
+        return (d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0);
     }
 
     // Whether the segment a-b touches the rectangle, with an end inside it or a crossing of a

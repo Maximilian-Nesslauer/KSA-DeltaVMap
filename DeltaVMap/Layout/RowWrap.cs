@@ -40,6 +40,10 @@ internal static class RowWrap
     // Shelves is the shelf count asked of the GravityWell star hub, 1 in Cumulative-down.
     internal readonly record struct Candidate(int RowCap, int Fans, int Rows, double Width, double Height, double Score, double GapPx, double GutterPx, int Shelves = 1);
 
+    // The row cap and the shelf count a plan took. Forced on the same tree and config, they give
+    // the same rows again without scoring the other candidates.
+    internal readonly record struct Choice(int RowCap, int Shelves);
+
     private sealed class Fan
     {
         public required LayoutNode Hub { get; init; }
@@ -49,11 +53,18 @@ internal static class RowWrap
     // Plans the rows of the tree and returns the wrapped fans. It sets WrapRow, Shelf and WrapDy on
     // every node, and needs the measured widths and the bands. rowCap forces one cap instead of
     // the chosen one, and in GravityWell shelves forces the shelf count, for tests that compare
-    // the candidates.
+    // the candidates and for a layout that repeats a plan.
     public static IReadOnlyList<LayoutWrap> Plan(LayoutTree tree, LayoutConfig cfg, int? rowCap = null, int? shelves = null)
     {
+        return Plan(tree, cfg, rowCap, shelves, out _);
+    }
+
+    // The same, and choice tells the cap and the shelf count the plan took.
+    public static IReadOnlyList<LayoutWrap> Plan(LayoutTree tree, LayoutConfig cfg, int? rowCap, int? shelves, out Choice choice)
+    {
+        choice = new Choice(rowCap ?? 1, shelves ?? 1);
         if (cfg.Mode == LayoutMode.GravityWell)
-            return PlanWell(tree, cfg, rowCap, shelves);
+            return PlanWell(tree, cfg, rowCap, shelves, ref choice);
         Reset(tree);
         List<Fan> fans = FindFans(tree, cfg);
         if (fans.Count == 0)
@@ -68,6 +79,7 @@ internal static class RowWrap
         {
             List<Candidate> candidates = Candidates(tree, cfg, fans);
             chosen = candidates[Choose(candidates, cfg.WrapMinGain)];
+            choice = new Choice(chosen.RowCap, 1);
         }
 
         if (chosen.Fans == 0)
@@ -433,12 +445,31 @@ internal static class RowWrap
 
     // The hubs a GravityWell plan may wrap, which are the star hub whose lanes wrap into shelves
     // and the fans of moons that wrap into rows by count, with the columns they are measured on.
+    // The rest is the same for every candidate, so it is found once. GutterFloor holds the
+    // gutter a hub needs for the label plates beside its trunk, for each hub that has one.
+    // Shown holds every node outside a revealed lane with how far its label plate reaches right
+    // of its dot, and Half the largest half height of a shown node.
     private sealed class WellPlan
     {
         public required LayoutNode? ShelfHub { get; init; }
         public required int ShelfLanes { get; init; }
         public required List<Fan> Fans { get; init; }
         public required TidyTree.WellColumns Columns { get; init; }
+        public required Dictionary<LayoutNode, double> GutterFloor { get; init; }
+        public required List<(LayoutNode Node, double Plate)> Shown { get; init; }
+        public required double Half { get; init; }
+    }
+
+    // What the candidates of one sweep share. FanMeasures holds the measures with only the moon
+    // fans wrapped, keyed by the cap that wraps them, the gutter and the gap, because the shelves
+    // of the star hub are split on such a measure and a pair that wraps no shelf is measured on
+    // it too. Bounds holds every measured plan with its bounds, keyed by the plan's key, the
+    // gutter and the gap, which fix both, because several shelf counts often split the star hub
+    // alike.
+    private sealed class WellCache
+    {
+        public readonly Dictionary<(int Cap, double Gutter, double Gap), TidyTree.WellMeasure> FanMeasures = new();
+        public readonly Dictionary<(string Key, double Gutter, double Gap), (WellPass Pass, double Width, double Height)> Bounds = new();
     }
 
     // The rows of one plan, which hold the row count and the gutter of every wrapped hub, the
@@ -451,7 +482,7 @@ internal static class RowWrap
         public required string Key { get; init; }
     }
 
-    private static IReadOnlyList<LayoutWrap> PlanWell(LayoutTree tree, LayoutConfig cfg, int? rowCap, int? shelves)
+    private static IReadOnlyList<LayoutWrap> PlanWell(LayoutTree tree, LayoutConfig cfg, int? rowCap, int? shelves, ref Choice choice)
     {
         Reset(tree);
         WellPlan? plan = FindWell(tree, cfg);
@@ -461,12 +492,21 @@ internal static class RowWrap
         Candidate chosen;
         if (rowCap.HasValue || shelves.HasValue)
         {
-            chosen = EvaluateWell(tree, cfg, plan, rowCap ?? 1, shelves ?? 1).Candidate;
+            chosen = EvaluateWell(tree, cfg, plan, rowCap ?? 1, shelves ?? 1, null).Candidate;
         }
         else
         {
-            List<Candidate> candidates = WellCandidates(tree, cfg, plan);
+            // With one shelf and no moon fan that wraps at any cap, the only candidate wraps
+            // nothing.
+            List<int> caps = DistinctCaps(tree, cfg, plan, out bool anyFan);
+            if (!anyFan && MaxShelves(plan, cfg) == 1)
+            {
+                Reset(tree);
+                return Array.Empty<LayoutWrap>();
+            }
+            List<Candidate> candidates = WellCandidates(tree, cfg, plan, caps);
             chosen = candidates[Choose(candidates, cfg.WrapMinGain)];
+            choice = new Choice(chosen.RowCap, chosen.Shelves);
         }
 
         if (chosen.Fans == 0)
@@ -522,7 +562,45 @@ internal static class RowWrap
 
         if (shelfHub == null && fans.Count == 0)
             return null;
-        return new WellPlan { ShelfHub = shelfHub, ShelfLanes = shelfLanes, Fans = fans, Columns = TidyTree.WellColumns.Build(tree) };
+
+        TidyTree.WellColumns columns = TidyTree.WellColumns.Build(tree);
+        var gutterFloor = new Dictionary<LayoutNode, double>();
+        if (shelfHub != null)
+            AddGutterFloor(gutterFloor, columns, shelfHub, cfg);
+        foreach (Fan fan in fans)
+            AddGutterFloor(gutterFloor, columns, fan.Hub, cfg);
+
+        var shown = new List<(LayoutNode Node, double Plate)>();
+        double half = 0.0;
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            if (UnderReveal(node))
+                continue;
+            shown.Add((node, node.DotRadius + LabelPlacer.LabelPadPx + Math.Max(node.Width, cfg.MinNodeWidthPx)));
+            half = Math.Max(half, Math.Max(node.DotRadius, node.Height / 2.0));
+        }
+        return new WellPlan
+        {
+            ShelfHub = shelfHub,
+            ShelfLanes = shelfLanes,
+            Fans = fans,
+            Columns = columns,
+            GutterFloor = gutterFloor,
+            Shown = shown,
+            Half = half
+        };
+    }
+
+    // The gutter of a wrapped hub is the plain one, unless a label right of a rung below the
+    // hub's spine reaches further. Then the gutter holds that plate with the line clearance and
+    // one grid cell of snap on both sides of the trunk, which is the floor kept here.
+    private static void AddGutterFloor(Dictionary<LayoutNode, double> floors, TidyTree.WellColumns columns, LayoutNode hub, LayoutConfig cfg)
+    {
+        double reach = columns.LabelReach(hub, cfg);
+        if (reach <= 0.0)
+            return;
+        double clear = OverlapCheck.WrapLineClearPx + 1.0;
+        floors[hub] = SnapUp(2.0 * (reach + clear + cfg.GridPx), cfg.GridPx);
     }
 
     private static void CollectBus(LayoutNode node, List<LayoutNode> bus)
@@ -535,19 +613,32 @@ internal static class RowWrap
         }
     }
 
+    private static int MaxShelves(WellPlan plan, LayoutConfig cfg)
+    {
+        return plan.ShelfHub == null ? 1 : Math.Min(cfg.WrapMaxRowsGw, plan.ShelfLanes);
+    }
+
     // Every pair of a moon row cap and a shelf count, fewer moon rows first and then fewer
     // shelves, so the chooser keeps fewer rows on a tie. A pair that gives the rows of a pair
-    // before it is left out, and the first candidate wraps nothing.
+    // before it is left out, and the first candidate wraps nothing. A pair is scored from its
+    // moon rows and its shelf count alone, so a cap that gives the moon rows of a smaller cap
+    // would only repeat its pairs and is not scored at all.
     private static List<Candidate> WellCandidates(LayoutTree tree, LayoutConfig cfg, WellPlan plan)
+    {
+        return WellCandidates(tree, cfg, plan, DistinctCaps(tree, cfg, plan, out _));
+    }
+
+    private static List<Candidate> WellCandidates(LayoutTree tree, LayoutConfig cfg, WellPlan plan, List<int> caps)
     {
         var candidates = new List<Candidate>();
         var seen = new HashSet<string>();
-        int maxShelves = plan.ShelfHub == null ? 1 : Math.Min(cfg.WrapMaxRowsGw, plan.ShelfLanes);
-        for (int cap = 1; cap <= cfg.WrapMaxRowsGw; cap++)
+        var cache = new WellCache();
+        int maxShelves = MaxShelves(plan, cfg);
+        foreach (int cap in caps)
         {
             for (int s = 1; s <= maxShelves; s++)
             {
-                (Candidate candidate, string key) = EvaluateWell(tree, cfg, plan, cap, s);
+                (Candidate candidate, string key) = EvaluateWell(tree, cfg, plan, cap, s, cache);
                 if (seen.Add(key))
                     candidates.Add(candidate);
             }
@@ -555,26 +646,42 @@ internal static class RowWrap
         return candidates;
     }
 
+    // The caps from one row up whose moon rows differ from those of every smaller cap. anyFan
+    // tells whether a moon fan wraps at any cap.
+    private static List<int> DistinctCaps(LayoutTree tree, LayoutConfig cfg, WellPlan plan, out bool anyFan)
+    {
+        var caps = new List<int>();
+        var seen = new HashSet<string>();
+        anyFan = false;
+        for (int cap = 1; cap <= cfg.WrapMaxRowsGw; cap++)
+        {
+            Reset(tree);
+            string key = WrapFans(plan, cfg, cap, null, 0.0);
+            anyFan |= key.Length > 0;
+            if (seen.Add(key))
+                caps.Add(cap);
+        }
+        Reset(tree);
+        return caps;
+    }
+
     // Scores one pair the way Evaluate scores a cap, with the gap and the gutters sized again for
     // the zoom the first measure gives.
-    private static (Candidate Candidate, string Key) EvaluateWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves)
+    private static (Candidate Candidate, string Key) EvaluateWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves, WellCache? cache)
     {
-        WellPass first = AssignWell(tree, cfg, plan, cap, shelves, cfg.WellBandHeightPx, cfg.WrapGutterPx, skipRevealed: true);
+        (WellPass first, double w0, double h0) = MeasureWell(tree, cfg, plan, cap, shelves, cfg.WellBandHeightPx, cfg.WrapGutterPx, cache);
         if (first.Wrapped.Count == 0)
         {
-            (double w1, double h1) = WellBounds(tree, cfg, plan, first);
             Reset(tree);
-            return (new Candidate(cap, 0, 0, w1, h1, Score(w1, h1, cfg), 0.0, 0.0, shelves), first.Key);
+            return (new Candidate(cap, 0, 0, w0, h0, Score(w0, h0, cfg), 0.0, 0.0, shelves), first.Key);
         }
 
-        (double w0, double h0) = WellBounds(tree, cfg, plan, first);
         double zNom = ScreenZoom(w0, h0, cfg);
         double g = cfg.GridPx;
         double gap = Math.Max(cfg.WellBandHeightPx, SnapUp(cfg.ShelfClearScreenPx / zNom, g));
         double gutter = Gutter(cfg, zNom);
 
-        WellPass pass = AssignWell(tree, cfg, plan, cap, shelves, gap, gutter, skipRevealed: true);
-        (double w, double h) = WellBounds(tree, cfg, plan, pass);
+        (WellPass pass, double w, double h) = MeasureWell(tree, cfg, plan, cap, shelves, gap, gutter, cache);
         int rows = 0;
         foreach ((int r, double _) in pass.Wrapped.Values)
             rows += r;
@@ -582,13 +689,87 @@ internal static class RowWrap
         return (new Candidate(cap, pass.Wrapped.Count, rows, w, h, Score(w, h, cfg), gap, gutter, shelves), pass.Key);
     }
 
-    // Sets the rows of one pair and measures the map with them. The moon fans take their rows by
-    // count first. The shelves of the star hub then split its lanes by the width of their blocks,
-    // moon rows included, which is why the blocks are measured before the split.
+    // Sets the rows of one pair, measures the map with them without the revealed lanes and finds
+    // its bounds. The plan's key, the gutter and the gap fix the measure and the bounds, so a
+    // plan the cache already holds is taken from there.
+    private static (WellPass Pass, double Width, double Height) MeasureWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves, double gapPx, double gutterPx, WellCache? cache)
+    {
+        (Dictionary<string, (int Rows, double Gutter)> wrapped, string key, bool shelved) = SetRows(tree, cfg, plan, cap, shelves, gapPx, gutterPx, cache);
+        if (cache != null && cache.Bounds.TryGetValue((key, gutterPx, gapPx), out (WellPass Pass, double Width, double Height) known))
+            return known;
+        var pass = new WellPass
+        {
+            Wrapped = wrapped,
+            Measure = MeasureRows(cfg, plan, cap, wrapped, shelved, gapPx, gutterPx, skipRevealed: true, cache),
+            Key = key
+        };
+        (double w, double h) = WellBounds(tree, cfg, plan, pass);
+        if (cache != null)
+            cache.Bounds[(key, gutterPx, gapPx)] = (pass, w, h);
+        return (pass, w, h);
+    }
+
+    // Sets the rows of one pair and measures the map with them.
     private static WellPass AssignWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves, double gapPx, double gutterPx, bool skipRevealed)
     {
+        (Dictionary<string, (int Rows, double Gutter)> wrapped, string key, bool shelved) = SetRows(tree, cfg, plan, cap, shelves, gapPx, gutterPx, null);
+        return new WellPass { Wrapped = wrapped, Measure = MeasureRows(cfg, plan, cap, wrapped, shelved, gapPx, gutterPx, skipRevealed, null), Key = key };
+    }
+
+    // Sets the rows of one pair and returns the row count and the gutter of every wrapped hub,
+    // the key of the rows, and whether the star hub wraps into shelves. The moon fans take their
+    // rows by count first. The shelves of the star hub then split its lanes by the width of their
+    // blocks, moon rows included, which is why the blocks are measured before the split.
+    private static (Dictionary<string, (int Rows, double Gutter)> Wrapped, string Key, bool Shelved) SetRows(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves, double gapPx, double gutterPx, WellCache? cache)
+    {
         Reset(tree);
-        var wrapped = new Dictionary<string, (int Rows, double Gutter)>();
+        var wrapped = new Dictionary<string, (int Rows, double Gutter)>(plan.Fans.Count + 1);
+        var key = new System.Text.StringBuilder(WrapFans(plan, cfg, cap, wrapped, gutterPx));
+        if (plan.ShelfHub != null && shelves >= 2)
+        {
+            int rows = AssignShelves(plan.ShelfHub, FanMeasure(cfg, plan, cap, wrapped, gapPx, gutterPx, cache), shelves, cfg);
+            if (rows >= 2)
+            {
+                wrapped[plan.ShelfHub.Id] = (rows, HubGutter(plan, plan.ShelfHub, gutterPx));
+                key.Append(plan.ShelfHub.Id).Append(':');
+                foreach (LayoutEdge edge in plan.ShelfHub.Out)
+                {
+                    if (edge.Class != EdgeClass.Ladder)
+                        key.Append(edge.To.WrapRow).Append(',');
+                }
+                return (wrapped, key.ToString(), true);
+            }
+        }
+        return (wrapped, key.ToString(), false);
+    }
+
+    // Measures the rows SetRows set. When only the moon fans wrap, the map measures as the
+    // blocks the shelves are split on.
+    private static TidyTree.WellMeasure MeasureRows(LayoutConfig cfg, WellPlan plan, int cap, Dictionary<string, (int Rows, double Gutter)> wrapped, bool shelved, double gapPx, double gutterPx, bool skipRevealed, WellCache? cache)
+    {
+        if (shelved)
+            return plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed, blockWidths: false);
+        return skipRevealed ? FanMeasure(cfg, plan, cap, wrapped, gapPx, gutterPx, cache) : plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed);
+    }
+
+    // The measure without the revealed lanes while only the moon fans of the cap are wrapped,
+    // from the cache when one is given.
+    private static TidyTree.WellMeasure FanMeasure(LayoutConfig cfg, WellPlan plan, int cap, Dictionary<string, (int Rows, double Gutter)> wrapped, double gapPx, double gutterPx, WellCache? cache)
+    {
+        if (cache == null)
+            return plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed: true);
+        if (!cache.FanMeasures.TryGetValue((cap, gutterPx, gapPx), out TidyTree.WellMeasure? measure))
+        {
+            measure = plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed: true);
+            cache.FanMeasures[(cap, gutterPx, gapPx)] = measure;
+        }
+        return measure;
+    }
+
+    // Wraps the moon fans of one cap by count on a tree with no rows set, and returns the key of
+    // their rows. wrapped, when given, takes the row count and the gutter of every wrapped fan.
+    private static string WrapFans(WellPlan plan, LayoutConfig cfg, int cap, Dictionary<string, (int Rows, double Gutter)>? wrapped, double gutterPx)
+    {
         var key = new System.Text.StringBuilder();
         foreach (Fan fan in plan.Fans)
         {
@@ -601,40 +782,16 @@ internal static class RowWrap
                     edge.To.WrapRow = -1;
                 continue;
             }
-            wrapped[fan.Hub.Id] = (sizes.Length, HubGutter(plan, fan.Hub, cfg, gutterPx));
+            if (wrapped != null)
+                wrapped[fan.Hub.Id] = (sizes.Length, HubGutter(plan, fan.Hub, gutterPx));
             key.Append(fan.Hub.Id).Append(':').Append(sizes.Length).Append(';');
         }
-
-        if (plan.ShelfHub != null && shelves >= 2)
-        {
-            TidyTree.WellMeasure blocks = plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed: true);
-            int rows = AssignShelves(plan.ShelfHub, blocks, shelves, cfg);
-            if (rows >= 2)
-            {
-                wrapped[plan.ShelfHub.Id] = (rows, HubGutter(plan, plan.ShelfHub, cfg, gutterPx));
-                key.Append(plan.ShelfHub.Id).Append(':');
-                foreach (LayoutEdge edge in plan.ShelfHub.Out)
-                {
-                    if (edge.Class != EdgeClass.Ladder)
-                        key.Append(edge.To.WrapRow).Append(',');
-                }
-            }
-        }
-
-        TidyTree.WellMeasure measure = plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed);
-        return new WellPass { Wrapped = wrapped, Measure = measure, Key = key.ToString() };
+        return key.ToString();
     }
 
-    // The gutter of a wrapped hub is the plain one, unless a label right of a rung below the
-    // hub's spine reaches further. Then the gutter holds that plate with the line clearance and
-    // one grid cell of snap on both sides of the trunk.
-    private static double HubGutter(WellPlan plan, LayoutNode hub, LayoutConfig cfg, double gutterPx)
+    private static double HubGutter(WellPlan plan, LayoutNode hub, double gutterPx)
     {
-        double reach = plan.Columns.LabelReach(hub, cfg);
-        if (reach <= 0.0)
-            return gutterPx;
-        double clear = OverlapCheck.WrapLineClearPx + 1.0;
-        return Math.Max(gutterPx, SnapUp(2.0 * (reach + clear + cfg.GridPx), cfg.GridPx));
+        return plan.GutterFloor.TryGetValue(hub, out double floor) ? Math.Max(gutterPx, floor) : gutterPx;
     }
 
     // Splits the lanes of the star hub into at most the given number of shelves, contiguous in the
@@ -697,13 +854,21 @@ internal static class RowWrap
             return rowOf;
         k = Math.Clamp(k, 1, n);
 
-        double RowWidth(int from, int to)
+        // rowWidth[from, to] is the width of the blocks from index from to index to in one row. It
+        // is summed from the left, so every entry adds its terms in the order a sum from scratch
+        // would.
+        var rowWidth = new double[n, n];
+        for (int from = 0; from < n; from++)
         {
             double w = widths[from];
-            for (int i = from + 1; i <= to; i++)
+            rowWidth[from, from] = w;
+            for (int i = from + 1; i < n; i++)
+            {
                 w += gaps[i] + widths[i];
-            return w;
+                rowWidth[from, i] = w;
+            }
         }
+        double RowWidth(int from, int to) => rowWidth[from, to];
 
         // best[r, j] is the narrowest widest row of the first j blocks in r + 1 rows.
         var best = new double[k, n + 1];
@@ -746,7 +911,7 @@ internal static class RowWrap
     private static List<LayoutWrap> ApplyWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, Candidate chosen)
     {
         WellPass pass = AssignWell(tree, cfg, plan, chosen.RowCap, chosen.Shelves, chosen.GapPx, chosen.GutterPx, skipRevealed: true);
-        TidyTree.WellMeasure measure = plan.Columns.Measure(cfg, pass.Wrapped, chosen.GapPx, skipRevealed: false);
+        TidyTree.WellMeasure measure = plan.Columns.Measure(cfg, pass.Wrapped, chosen.GapPx, skipRevealed: false, blockWidths: false);
 
         foreach (LayoutNode node in tree.Nodes)
         {
@@ -803,22 +968,18 @@ internal static class RowWrap
         }
         plan.Columns.Place(cfg, wrapsByHub, skipRevealed: true);
 
-        double half = 0.0;
         double minX = double.PositiveInfinity;
         double maxX = double.NegativeInfinity;
-        foreach (LayoutNode node in tree.Nodes)
+        bool rootWrapped = wrapsByHub.ContainsKey(tree.Root.Id);
+        foreach ((LayoutNode node, double plate) in plan.Shown)
         {
-            if (UnderReveal(node))
-                continue;
-            double plate = node.DotRadius + LabelPlacer.LabelPadPx + Math.Max(node.Width, cfg.MinNodeWidthPx);
-            half = Math.Max(half, Math.Max(node.DotRadius, node.Height / 2.0));
             minX = Math.Min(minX, node.X - node.DotRadius);
             maxX = Math.Max(maxX, node.X + plate);
-            if (node == tree.Root && wrapsByHub.ContainsKey(node.Id))
+            if (rootWrapped && node == tree.Root)
                 minX = Math.Min(minX, node.X - plate);
         }
         TidyTree.WellMeasure measure = pass.Measure;
-        return (maxX - minX, measure.Bottom - measure.Top + 2.0 * half);
+        return (maxX - minX, measure.Bottom - measure.Top + 2.0 * plan.Half);
     }
 
     #endregion
