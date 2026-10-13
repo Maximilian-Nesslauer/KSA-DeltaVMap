@@ -1058,8 +1058,9 @@ internal static class SceneComposer
     // count. Every point of the segment lies in its bounding box, so an obstacle far from that
     // box is farther than its reach from the segment. A far dot or label box is then missed. The
     // crossing test cannot find a far axis-aligned side either, because the slack lies far above
-    // its rounding. A far edge segment may slope, so it still counts when the crossing test,
-    // which the distance test starts with, finds a crossing.
+    // its rounding. A far edge segment still goes through the crossing test, which the distance
+    // test starts with, because that test can report a near-collinear segment as crossing through
+    // rounding, and the result must stay the same as a test without the skip.
     private static Crossings Hits(Obstacles obstacles, LayoutNode? from, LayoutPoint a, LayoutPoint e, Box? extra, double s)
     {
         if (from != null)

@@ -151,7 +151,10 @@ failures += RunWrapParts();
 failures += RunOpaqueBlock(outDir);
 failures += RunTextWidthChecks();
 failures += RunRowBreakChecks();
-RunRebuildTiming();
+// The rebuild timing takes a few seconds and prints numbers that depend on the machine, so it
+// runs only when DVMAP_TIMING is set.
+if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DVMAP_TIMING")))
+    RunRebuildTiming();
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL CASES PASS" : $"{failures} CASE(S) FAILED");
@@ -2865,7 +2868,8 @@ static int RunRowBreakChecks()
 // Prints how long a map rebuild takes, which is the ego layout, the three destination systems
 // laid out as parts and the scene composed from them, once with all of them collapsed and once
 // with the first one opened, and how much the ego layout and the collapsed compose allocate. It
-// asserts nothing, because the time depends on the machine. Every case runs a while untimed
+// asserts nothing, because the time depends on the machine, and it runs only when the
+// DVMAP_TIMING environment variable is set. Every case runs a while untimed
 // first, so the JIT has optimized the code before any run is timed, and each time is the median
 // of the timed runs.
 static void RunRebuildTiming()

@@ -700,7 +700,7 @@ internal static class RowWrap
         var pass = new WellPass
         {
             Wrapped = wrapped,
-            Measure = MeasureRows(cfg, plan, cap, wrapped, shelved, gapPx, gutterPx, skipRevealed: true, cache),
+            Measure = MeasureRows(cfg, plan, cap, wrapped, shelved, gapPx, gutterPx, cache),
             Key = key
         };
         (double w, double h) = WellBounds(tree, cfg, plan, pass);
@@ -710,10 +710,10 @@ internal static class RowWrap
     }
 
     // Sets the rows of one pair and measures the map with them.
-    private static WellPass AssignWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves, double gapPx, double gutterPx, bool skipRevealed)
+    private static WellPass AssignWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves, double gapPx, double gutterPx)
     {
         (Dictionary<string, (int Rows, double Gutter)> wrapped, string key, bool shelved) = SetRows(tree, cfg, plan, cap, shelves, gapPx, gutterPx, null);
-        return new WellPass { Wrapped = wrapped, Measure = MeasureRows(cfg, plan, cap, wrapped, shelved, gapPx, gutterPx, skipRevealed, null), Key = key };
+        return new WellPass { Wrapped = wrapped, Measure = MeasureRows(cfg, plan, cap, wrapped, shelved, gapPx, gutterPx, null), Key = key };
     }
 
     // Sets the rows of one pair and returns the row count and the gutter of every wrapped hub,
@@ -743,13 +743,13 @@ internal static class RowWrap
         return (wrapped, key.ToString(), false);
     }
 
-    // Measures the rows SetRows set. When only the moon fans wrap, the map measures as the
-    // blocks the shelves are split on.
-    private static TidyTree.WellMeasure MeasureRows(LayoutConfig cfg, WellPlan plan, int cap, Dictionary<string, (int Rows, double Gutter)> wrapped, bool shelved, double gapPx, double gutterPx, bool skipRevealed, WellCache? cache)
+    // Measures the rows SetRows set, without the revealed lanes. When only the moon fans wrap,
+    // the map measures as the blocks the shelves are split on.
+    private static TidyTree.WellMeasure MeasureRows(LayoutConfig cfg, WellPlan plan, int cap, Dictionary<string, (int Rows, double Gutter)> wrapped, bool shelved, double gapPx, double gutterPx, WellCache? cache)
     {
         if (shelved)
-            return plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed, blockWidths: false);
-        return skipRevealed ? FanMeasure(cfg, plan, cap, wrapped, gapPx, gutterPx, cache) : plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed);
+            return plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed: true, blockWidths: false);
+        return FanMeasure(cfg, plan, cap, wrapped, gapPx, gutterPx, cache);
     }
 
     // The measure without the revealed lanes while only the moon fans of the cap are wrapped,
@@ -910,7 +910,7 @@ internal static class RowWrap
     // of its row when it is a lane in a lower row, so the offsets add up through nested rows.
     private static List<LayoutWrap> ApplyWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, Candidate chosen)
     {
-        WellPass pass = AssignWell(tree, cfg, plan, chosen.RowCap, chosen.Shelves, chosen.GapPx, chosen.GutterPx, skipRevealed: true);
+        WellPass pass = AssignWell(tree, cfg, plan, chosen.RowCap, chosen.Shelves, chosen.GapPx, chosen.GutterPx);
         TidyTree.WellMeasure measure = plan.Columns.Measure(cfg, pass.Wrapped, chosen.GapPx, skipRevealed: false, blockWidths: false);
 
         foreach (LayoutNode node in tree.Nodes)

@@ -55,8 +55,9 @@ internal static class LayoutEngine
         return Run(tree, cfg, null, rowCap, shelves);
     }
 
-    // A run that takes the rows another run of the same tree and config chose, which lays out
-    // exactly as that run did.
+    // A run that takes the rows another run of the same tree chose, which lays out exactly as
+    // that run did. The config may differ in SpreadX only, because the row plan never reads it
+    // and the spread runs after the rows are set.
     public static LayoutResult Run(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText, RowWrap.Choice rows)
     {
         return Run(tree, cfg, measureText, rows.RowCap, rows.Shelves);
