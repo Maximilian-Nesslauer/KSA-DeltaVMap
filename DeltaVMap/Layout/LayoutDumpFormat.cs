@@ -285,9 +285,9 @@ internal static class LayoutDumpFormat
         }
     }
 
-    // The row break of every wrapped fan as the canvas draws it: a faint fold rule across the
-    // block in each gap between two rows, the dashed grey trunk, and the vertical "//" mark on
-    // the trunk in each gap.
+    // Draws the row break of every wrapped fan the way the canvas draws it, with a faint fold
+    // rule across the block in each gap between two rows, the dashed grey trunk, and the
+    // vertical "//" mark on the trunk in each gap.
     private static void DrawRowBreaks(StringBuilder sb, List<(LayoutNode Hub, LayoutWrap Wrap)> wraps, Func<double, double, (double X, double Y)> toScreen)
     {
         var breaks = new List<RowBreak>();

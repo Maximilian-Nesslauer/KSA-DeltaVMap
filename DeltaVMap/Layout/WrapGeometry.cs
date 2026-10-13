@@ -12,9 +12,9 @@ internal readonly record struct RowBox(double MinX, double MinY, double MaxX, do
 // at the same height from the trunk to the right end of the block.
 internal readonly record struct RowBreak(LayoutPoint Mark, double RuleLeft, double RuleRight);
 
-// The drawn geometry of a wrapped fan that is not stored in the layout: the rows as boxes and
-// the breaks between them. The canvas, the SVG dump and the scene checks all read it from here,
-// so they agree on where a row break shows. Pure, no ImGui.
+// The drawn geometry of a wrapped fan that is not stored in the layout, which is the rows as
+// boxes and the breaks between them. The canvas, the SVG dump and the scene checks all read it
+// from here, so they agree on where a row break shows. It is pure and uses no ImGui.
 internal static class WrapGeometry
 {
     // The hub node of a wrap, or null when the tree does not hold it.

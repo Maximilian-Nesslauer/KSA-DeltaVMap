@@ -111,7 +111,7 @@ internal sealed class RoutePanelRenderer
     }
 
     public PanelResult DrawBody(RouteOptions options, ViewOptions view, RouteSummary? summary,
-        InterstellarSection? section, bool severalSystems)
+        InterstellarSection? section, bool severalSystems, bool rowBreaks)
     {
         bool changed = false;
         bool rebuild = false;
@@ -119,7 +119,7 @@ internal sealed class RoutePanelRenderer
         if (Section("##dvmsec_controls"u8, "Controls"u8, ref _controlsOpen))
             LegendRenderer.DrawControls(severalSystems);
         if (Section("##dvmsec_legend"u8, "Legend"u8, ref _legendOpen))
-            LegendRenderer.DrawLegend(severalSystems);
+            LegendRenderer.DrawLegend(severalSystems, rowBreaks);
 
         bool interstellar = summary?.Interstellar != null;
 

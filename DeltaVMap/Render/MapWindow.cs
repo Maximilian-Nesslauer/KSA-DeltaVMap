@@ -30,6 +30,10 @@ internal sealed class MapWindow : ImGuiWindow
     private const double MaxZoom = 4.0;
     private const double HoverRadiusPx = 14.0;
 
+    // A Cumulative-down map more than this many times as wide as it is tall fits better in
+    // Gravity-well, and only then does the layout tooltip say so.
+    private const double WideMapAspect = 2.4;
+
     // A search pick zooms in to at least this so the found body is legible, and pans it to the
     // viewport center.
     private const double FocusZoom = 1.0;
@@ -97,6 +101,11 @@ internal sealed class MapWindow : ImGuiWindow
     private readonly Dictionary<(string RootId, bool Expanded), LayoutPart> _parts = new();
     private readonly List<LayoutPart> _shownParts = new();
     private readonly Dictionary<string, LayoutNode> _sceneById = new();
+
+    // The left end of each row of every wrapped fan in the composed scene, by hub Id. The hover
+    // keeps the gutter between the trunk and a row free of lanes with it, and the legend shows
+    // the row break only while it holds a fan.
+    private readonly Dictionary<string, double[]> _rowLeftByHub = new();
     private string? _expandedA;
     private string? _expandedB;
 
@@ -522,7 +531,8 @@ internal sealed class MapWindow : ImGuiWindow
                 section = _interstellar;
             }
 
-            result = _routePanel.DrawBody(_options, _view, _routeSummary, section, _graph?.HasSeveralSystems == true);
+            result = _routePanel.DrawBody(_options, _view, _routeSummary, section, _graph?.HasSeveralSystems == true,
+                _scene != null && _rowLeftByHub.Count > 0);
             if (!pinned)
                 _routePanel.DrawFooter(_options, _view, _routeSummary, section, availableDv);
         }
@@ -1350,7 +1360,7 @@ internal sealed class MapWindow : ImGuiWindow
         {
             ImGui.BeginTooltip();
             ImGui.Text(LayoutModeTooltip(_layoutMode));
-            if (_layoutMode == LayoutMode.CumulativeDown)
+            if (_layoutMode == LayoutMode.CumulativeDown && _egoLayout != null && _egoLayout.Width > WideMapAspect * _egoLayout.Height)
                 ImGui.TextDisabled("Wide systems fit best in Gravity-well."u8);
             ImGui.EndTooltip();
         }
@@ -1741,12 +1751,12 @@ internal sealed class MapWindow : ImGuiWindow
             {
                 LayoutEdge edge = node.Out[e];
                 // Skip hub links (no dV) and the group connector (its target is a synthetic
-                // aggregate, so an edge tooltip there would be meaningless). The layout-only
-                // prefix of an edge into a lower row runs along the shared trunk, so the hover
-                // measures from DvStart and a mouse on the trunk picks no lane.
+                // aggregate, so an edge tooltip there would be meaningless).
                 if (edge.IsHubLink || edge.To.Kind == LayoutKind.MinorGroup || edge.Polyline.Count < 2)
                     continue;
-                double sq = DistanceSqToPolyline(mouse, edge.Polyline, in transform, edge.DvStart);
+                double sq = edge.DvStart > 0
+                    ? DistanceSqToLowerRowEdge(mouse, edge, in transform)
+                    : DistanceSqToPolyline(mouse, edge.Polyline, in transform);
                 if (sq < bestSq)
                 {
                     bestSq = sq;
@@ -1812,14 +1822,44 @@ internal sealed class MapWindow : ImGuiWindow
         return dx * dx + dy * dy;
     }
 
-    private static double DistanceSqToPolyline(float2 mouse, IReadOnlyList<LayoutPoint> line, in CanvasTransform transform, int start = 0)
+    private static double DistanceSqToPolyline(float2 mouse, IReadOnlyList<LayoutPoint> line, in CanvasTransform transform)
     {
         double best = double.MaxValue;
-        for (int i = start + 1; i < line.Count; i++)
+        for (int i = 1; i < line.Count; i++)
         {
             float2 a = transform.ToScreen(line[i - 1].X, line[i - 1].Y);
             float2 b = transform.ToScreen(line[i].X, line[i].Y);
             best = Math.Min(best, DistanceSqToSegment(mouse, a, b));
+        }
+        return best;
+    }
+
+    // An edge into a lower row of a wrapped fan runs along the shared trunk to the ghost point
+    // at its row's height, where every lane of that row leaves the trunk. The hover measures only
+    // the part right of where the row starts, so a mouse on the trunk or in the gutter between
+    // the trunk and the row picks no lane, while the lane's own run and drop still pick it.
+    private double DistanceSqToLowerRowEdge(float2 mouse, LayoutEdge edge, in CanvasTransform transform)
+    {
+        IReadOnlyList<LayoutPoint> line = edge.Polyline;
+        int row = edge.To.WrapRow;
+        if (!_rowLeftByHub.TryGetValue(edge.From.Id, out double[]? rowLeft) || row < 0 || row >= rowLeft.Length)
+            return double.MaxValue;
+        double cut = rowLeft[row];
+        if (mouse.X < transform.ToScreen(cut, 0.0).X)
+            return double.MaxValue;
+
+        double best = double.MaxValue;
+        for (int i = edge.DvStart + 1; i < line.Count; i++)
+        {
+            LayoutPoint a = line[i - 1];
+            LayoutPoint b = line[i];
+            if (a.X < cut && b.X < cut)
+                continue;
+            if (a.X < cut)
+                a = new LayoutPoint(cut, a.Y + (b.Y - a.Y) * (cut - a.X) / (b.X - a.X));
+            else if (b.X < cut)
+                b = new LayoutPoint(cut, b.Y + (a.Y - b.Y) * (cut - b.X) / (a.X - b.X));
+            best = Math.Min(best, DistanceSqToSegment(mouse, transform.ToScreen(a.X, a.Y), transform.ToScreen(b.X, b.Y)));
         }
         return best;
     }
@@ -2406,6 +2446,20 @@ internal sealed class MapWindow : ImGuiWindow
         IReadOnlyList<LayoutNode> nodes = scene.Nodes;
         for (int i = 0; i < nodes.Count; i++)
             _sceneById[nodes[i].Id] = nodes[i];
+
+        // A row starts at the left end of its box, and never on the trunk itself, because the
+        // ghost point of every lane in the row lies there.
+        _rowLeftByHub.Clear();
+        var wraps = new List<(LayoutNode Hub, LayoutWrap Wrap)>();
+        WrapGeometry.Collect(scene, wraps);
+        foreach ((LayoutNode wrapHub, LayoutWrap wrap) in wraps)
+        {
+            RowBox[] boxes = WrapGeometry.RowBoxes(wrapHub, wrap, wrap.Mode);
+            var left = new double[boxes.Length];
+            for (int r = 0; r < boxes.Length; r++)
+                left[r] = Math.Max(boxes[r].MinX, wrap.TrunkX + wrap.GutterPx / 2.0);
+            _rowLeftByHub[wrapHub.Id] = left;
+        }
     }
 
     private static LayoutNode? FindLayoutNode(LayoutTree tree, string id)

@@ -443,7 +443,7 @@ internal static class SyntheticTree
         return LayoutTree.FromRoot("synthetic-opaque-block", root);
     }
 
-    // The moons of one giant, folded by the real MinorFold rules: the major moons, the inner minor
+    // The moons of one giant, folded by the real MinorFold rules into the major moons, the inner minor
     // moons (below a tenth of the SOI) and the outer swarm (between a fifth and a half of the SOI,
     // as captured moons sit). Unclamped lanes cost a few hundred m/s that grow with the orbit, so
     // the fan is a staircase of bands, each moon with a cheap surface rung. Clamped lanes cost

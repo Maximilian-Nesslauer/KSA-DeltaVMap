@@ -77,8 +77,8 @@ internal readonly record struct ConnectorBadge(string DestinationRootId, string 
 // Six passes per frame:
 //  1. Edge polylines and the dashed interstellar connectors (off-route faded, then the
 //     route heavy and white on top), plus the scale-break mark on the connector trunk. A fan
-//     wrapped into rows adds its row break under the edges: the dashed grey trunk, a "//"
-//     mark and a faint fold rule in each gap between two rows. These carry no delta-v, so an
+//     wrapped into rows adds its row break under the edges, which is the dashed grey trunk, a
+//     "//" mark and a faint fold rule in each gap between two rows. These carry no delta-v, so an
 //     edge into a lower row draws only from DvStart and leaves its layout-only prefix to the
 //     trunk, except on the route, where the prefix is dashed in the route color.
 //  2. Node dots, their state-kind glyphs, and the atmosphere/ring node markers. With other
@@ -186,8 +186,8 @@ internal sealed class CanvasRenderer
     private const float ConnectorWidth = 2.2f;
     private const float ConnectorRouteWidth = 4f;
 
-    // The row break of a wrapped fan: the dashed trunk a little thinner than a transfer line,
-    // and the fold rule faint enough that it never reads as an edge.
+    // The row break of a wrapped fan draws its dashed trunk a little thinner than a transfer
+    // line and its fold rule faint enough that it never reads as an edge.
     private const float RowBreakWidth = 1.6f;
     private const float FoldRuleWidth = 1f;
     private const double FoldRuleAlpha = 0.3;
@@ -456,8 +456,8 @@ internal sealed class CanvasRenderer
         if (!routing)
             return;
 
-        // Route pass: the selected path, heavy and white. The layout-only prefix of an edge
-        // into a lower row is dashed, so the route still shows which length states no dV.
+        // The route pass draws the selected path, heavy and white. The layout-only prefix of an
+        // edge into a lower row is dashed, so the route still shows which length states no dV.
         for (int n = 0; n < nodes.Count; n++)
         {
             LayoutNode node = nodes[n];
@@ -519,10 +519,10 @@ internal sealed class CanvasRenderer
         }
     }
 
-    // The row breaks of every wrapped fan, under the edges: the faint fold rule across the block
-    // in each gap between two rows, the dashed trunk that joins the rows, and the vertical "//"
-    // on the trunk in each gap. They fade with the other off-route geometry, because no route
-    // runs along them.
+    // Draws the row breaks of every wrapped fan under the edges, with the faint fold rule across
+    // the block in each gap between two rows, the dashed trunk that joins the rows, and the
+    // vertical "//" on the trunk in each gap. They fade with the other off-route geometry,
+    // because no route runs along them.
     private void DrawRowBreaks(ImDrawListPtr dl, in CanvasTransform t, bool routing)
     {
         if (_wrapTrunks.Count == 0)

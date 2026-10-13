@@ -9,7 +9,8 @@ namespace DeltaVMap.Render;
 // symbol set is self-documenting and can never drift from the map. It is static and has no
 // interaction. Colors are a fixed representative system color rather than any one body's, so
 // the legend reads the same whatever is on screen. The star-system rows only show when the
-// universe holds several star systems, the only time the map draws them.
+// universe holds several star systems, the only time the map draws them, and the row-break row
+// only while the map shows a wrapped fan.
 internal static class LegendRenderer
 {
     private static readonly byte4 Fill = new byte4(120, 170, 210, 255);
@@ -35,7 +36,7 @@ internal static class LegendRenderer
         ImGui.PopTextWrapPos();
     }
 
-    public static void DrawLegend(bool severalSystems)
+    public static void DrawLegend(bool severalSystems, bool rowBreaks)
     {
         ImGui.PushTextWrapPos(0f);
         Row("Low orbit", static (dl, c) => NodeGlyphs.LowOrbit(dl, c, R, Fill, Stroke));
@@ -59,18 +60,21 @@ internal static class LegendRenderer
 
         // The dashed grey line with its "//" mark that joins the rows of a wrapped fan. It sits
         // just before the interstellar row, the other line drawn not to scale.
-        Row("Row break (no delta-v)", static (dl, c) =>
+        if (rowBreaks)
         {
-            var a = new float2(c.X - CellW * 0.5f + 2f, c.Y);
-            var b = new float2(c.X + CellW * 0.5f - 2f, c.Y);
-            var gapA = new float2(c.X - 5f, c.Y);
-            var gapB = new float2(c.X + 5f, c.Y);
-            var clipMin = a - new float2(1f, 4f);
-            var clipMax = b + new float2(1f, 4f);
-            NodeGlyphs.DashedSegment(dl, a, gapA, ColorPalette.HubBusLine, 1.6f, clipMin, clipMax);
-            NodeGlyphs.DashedSegment(dl, gapB, b, ColorPalette.HubBusLine, 1.6f, clipMin, clipMax);
-            NodeGlyphs.ScaleBreakSlashes(dl, c, ColorPalette.HubBusLine, vertical: false);
-        });
+            Row("Row break (no delta-v)", static (dl, c) =>
+            {
+                var a = new float2(c.X - CellW * 0.5f + 2f, c.Y);
+                var b = new float2(c.X + CellW * 0.5f - 2f, c.Y);
+                var gapA = new float2(c.X - 5f, c.Y);
+                var gapB = new float2(c.X + 5f, c.Y);
+                var clipMin = a - new float2(1f, 4f);
+                var clipMax = b + new float2(1f, 4f);
+                NodeGlyphs.DashedSegment(dl, a, gapA, ColorPalette.HubBusLine, 1.6f, clipMin, clipMax);
+                NodeGlyphs.DashedSegment(dl, gapB, b, ColorPalette.HubBusLine, 1.6f, clipMin, clipMax);
+                NodeGlyphs.ScaleBreakSlashes(dl, c, ColorPalette.HubBusLine, vertical: false);
+            });
+        }
 
         if (severalSystems)
         {

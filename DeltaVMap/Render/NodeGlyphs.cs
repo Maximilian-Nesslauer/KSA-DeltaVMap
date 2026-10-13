@@ -204,8 +204,8 @@ internal static class NodeGlyphs
         return true;
     }
 
-    // The scale-break mark on the interstellar trunk and on the row break of a wrapped fan: two
-    // short parallel slashes across the line, so it reads as not to scale. vertical is the
+    // Draws the scale-break mark on the interstellar trunk and on the row break of a wrapped fan
+    // as two short parallel slashes across the line, so it reads as not to scale. vertical is the
     // direction of the line it sits on. The background plate cuts the line under the slashes.
     public static void ScaleBreak(ImDrawListPtr dl, float2 p, byte4 color, byte4 background, bool vertical)
     {

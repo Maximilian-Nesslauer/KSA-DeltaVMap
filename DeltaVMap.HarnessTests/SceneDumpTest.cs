@@ -10,9 +10,11 @@ namespace DeltaVMap.HarnessTests;
 
 // Composes the real map scene of the loaded universe in all three layout modes, rooted at the
 // home body, once with every other star system collapsed and once with the nearest one opened,
-// and holds both to the rules of SceneChecks at fit zoom on a 1600x1000 and a 1300x860 canvas:
-// the strip geometry, connectors clear of the home map and of each part, the empty band, the
-// titles on the canvas, and a strip that keeps its places when the system opens. It writes
+// and holds both to the rules of SceneChecks at fit zoom on a 1600x1000 and a 1300x860 canvas,
+// which are the strip geometry, connectors clear of the home map and of each part, row breaks
+// clear of the dots, the empty band, the titles on the canvas, and a strip that keeps its
+// places when the system opens. In the two tree modes the home map with its rows must pass
+// OverlapCheck before the composer places anything beside it. It writes
 // the scene text and fit-zoom preview SVGs of each to %TEMP%\dvmap-scene. Labels are measured
 // by the character-count estimate, since there is no ImGui font here. Opt-in, since it serves
 // to look at the real layout: run it with -System SolSystemInterstellar -Tests dvmap-scene-dump.
@@ -52,6 +54,19 @@ public sealed class SceneDumpTest : IHarnessTest
             {
                 VisualTree visual = VisualTree.Build(graph, new DvCache(), home, egoState: null, BuildOptions.Default);
                 LayoutResult ego = LayoutEngine.Run(VisualTreeAdapter.ToLayoutTree(visual, graph), LayoutConfig.ForMap(mode, graph.HasSeveralSystems, wrap));
+                if (mode != LayoutMode.Spring)
+                {
+                    OverlapReport egoReport = OverlapCheck.Run(ego);
+                    HarnessLog.Line($"{Tag} {name}: home map {egoReport.Summary()}");
+                    var egoProblems = new List<string>();
+                    egoProblems.AddRange(egoReport.NodeOverlaps);
+                    egoProblems.AddRange(egoReport.SubtreeOverlaps);
+                    egoProblems.AddRange(egoReport.LabelOverlaps);
+                    egoProblems.AddRange(egoReport.BandViolations);
+                    egoProblems.AddRange(egoReport.BusViolations);
+                    egoProblems.AddRange(egoReport.WrapViolations);
+                    ok &= Fail($"layout-{name}", egoProblems);
+                }
                 LayoutNode? hub = null;
                 foreach (LayoutNode node in ego.Tree.Nodes)
                 {
@@ -113,6 +128,7 @@ public sealed class SceneDumpTest : IHarnessTest
         foreach ((double w, double h) in new[] { (1600.0, 1000.0), (1300.0, 860.0) })
         {
             problems.AddRange(SceneChecks.Connectors(scene, w, h));
+            problems.AddRange(SceneChecks.WrapLines(scene, w, h));
             problems.AddRange(SceneChecks.Fit(scene, w, h, out double band));
             HarnessLog.Line($"{Tag} {stem} at {w}x{h}: empty band {band:F0} px");
         }

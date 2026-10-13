@@ -386,7 +386,7 @@ internal static class TidyTree
     }
 
     // Per-node scratch for one tidy-tree run. Number is the 1-based index among
-    // siblings; Ancestor starts as the node itself. Node is null for a contour node of a
+    // siblings, and Ancestor starts as the node itself. Node is null for a contour node of a
     // block and for the virtual parent of a lower row.
     private sealed class FlexNode
     {
@@ -588,7 +588,7 @@ internal static class TidyTree
             return reach;
         }
 
-        // Place a column at the cursor, then walk its children left to right: a body's own
+        // Place a column at the cursor, then walk its children left to right, a body's own
         // moons (Transfer spokes) first so they cluster beside it, then the hub-bus branch. A
         // wrapped hub puts its lanes into rows that start one gutter right of its column, and
         // its other children follow the widest row on its own spine.

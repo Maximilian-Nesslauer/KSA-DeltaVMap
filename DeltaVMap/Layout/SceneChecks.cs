@@ -186,10 +186,10 @@ internal static class SceneChecks
         return fails;
     }
 
-    // The fit-zoom look: the empty band between the home map and the strip (at least minBandPx,
-    // MinBandPx unless given), every system title drawn inside the canvas, nothing of one part
-    // (dot or label) on another system's glyph or title, and no label on the glyph or title of
-    // its own system root.
+    // Checks the fit-zoom look. It needs the empty band between the home map and the strip (at
+    // least minBandPx, MinBandPx unless given), every system title drawn inside the canvas,
+    // nothing of one part (dot or label) on another system's glyph or title, and no label on the
+    // glyph or title of its own system root.
     public static List<string> Fit(LayoutScene scene, double canvasW, double canvasH, out double bandPx, double minBandPx = MinBandPx)
     {
         var fails = new List<string>();

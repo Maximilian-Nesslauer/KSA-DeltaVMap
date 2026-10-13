@@ -31,7 +31,7 @@ internal sealed class OverlapReport
     public List<string> LabelOverlaps { get; } = new();
 
     // Structural invariants beyond overlap. Band violations catch a child placed at or
-    // above its parent (Y leaking the wrong way) and a node whose Y left its dV band; bus
+    // above its parent (Y leaking the wrong way) and a node whose Y left its dV band. Bus
     // violations catch the hub spine collapsing onto one point instead of spreading
     // horizontally.
     public List<string> BandViolations { get; } = new();

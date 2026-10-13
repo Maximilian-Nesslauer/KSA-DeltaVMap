@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace DeltaVMap.Layout;
 
 // Picks the wide fans of a tree layout that continue in rows below their hub, and how far each
-// row sits below the one above it. It is pure and deterministic: the choice depends only on the
+// row sits below the one above it. It is pure and deterministic, so the choice depends only on the
 // tree, its measured widths and the nominal canvas of the config, never on the live window, so
 // resizing the window never moves a node.
 //
@@ -185,8 +185,8 @@ internal static class RowWrap
         return Math.Min(w / Math.Max(1.0, width), h / Math.Max(1.0, height));
     }
 
-    // The bounds of the pre-snap layout: node boxes, the trunk gutters and the band heights with
-    // the shelf offsets. A revealed lane and everything below it are left out.
+    // Measures the pre-snap layout over the node boxes, the trunk gutters and the band heights
+    // with the shelf offsets. A revealed lane and everything below it are left out.
     private static (double Width, double Height) Measure(LayoutTree tree, LayoutConfig cfg, IReadOnlyList<LayoutWrap> wraps)
     {
         TidyTree.AssignX(tree, cfg, wraps, skipRevealed: true);
@@ -243,8 +243,9 @@ internal static class RowWrap
         }
     }
 
-    // The fans that may wrap, in pre-order: the bodies whose lanes, not counting the revealed
-    // ones, are more than the minimum. Only Cumulative-down wraps, and only with Wrap Auto.
+    // Lists the fans that may wrap in pre-order. Such a fan is a body whose lanes, not counting
+    // the revealed ones, are more than the minimum. Only Cumulative-down wraps, and only with
+    // Wrap Auto.
     private static List<Fan> FindFans(LayoutTree tree, LayoutConfig cfg)
     {
         var fans = new List<Fan>();
@@ -430,8 +431,8 @@ internal static class RowWrap
 
     #region GravityWell
 
-    // The hubs a GravityWell plan may wrap: the star hub whose lanes wrap into shelves, and the
-    // fans of moons that wrap into rows by count, with the columns they are measured on.
+    // The hubs a GravityWell plan may wrap, which are the star hub whose lanes wrap into shelves
+    // and the fans of moons that wrap into rows by count, with the columns they are measured on.
     private sealed class WellPlan
     {
         public required LayoutNode? ShelfHub { get; init; }
@@ -440,8 +441,9 @@ internal static class RowWrap
         public required TidyTree.WellColumns Columns { get; init; }
     }
 
-    // The rows of one plan: the row count and the gutter of every wrapped hub, the measure of the
-    // map with them, and a key that tells plans with the same rows apart from the others.
+    // The rows of one plan, which hold the row count and the gutter of every wrapped hub, the
+    // measure of the map with them, and a key that tells plans with the same rows apart from
+    // the others.
     private sealed class WellPass
     {
         public required Dictionary<string, (int Rows, double Gutter)> Wrapped { get; init; }

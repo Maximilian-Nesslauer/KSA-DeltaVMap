@@ -379,7 +379,7 @@ internal static class SceneComposer
         double bus = Snap(egoEdge + (below ? 0.5 : 0.3) * channel, g);
         Box egoBox = EgoBox(ego, below, s, zFit, clear, g);
         List<LayoutPoint> trunk = Trunk(ego.Tree.Nodes, egoHub, egoBox, below, bus, g, spring, s, zFit);
-        if (below)
+        if (below && cfg.Mode == LayoutMode.CumulativeDown)
             trunk = OutsideOpenedLabels(trunk, ego.Tree.Nodes, egoBox.X1, zFit, g);
         LayoutPoint join = trunk[trunk.Count - 1];
 
