@@ -59,7 +59,7 @@ public sealed class SceneDumpTest : IHarnessTest
                 for (int i = 0; i < visual.InterstellarEdges.Count; i++)
                 {
                     Edge edge = visual.InterstellarEdges[i];
-                    LayoutResult part = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(edge, graph, false), ego, null);
+                    LayoutResult part = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(edge, graph, false), ego, null, expanded: false);
                     parts.Add(new LayoutPart { RootId = edge.To.Id, Result = part, Expanded = false });
                 }
                 LayoutScene scene = SceneComposer.Compose(ego, hub, parts, ego.Config);
@@ -69,7 +69,7 @@ public sealed class SceneDumpTest : IHarnessTest
 
                 SceneChecks.Places before = SceneChecks.Take(scene);
                 Edge first = visual.InterstellarEdges[0];
-                LayoutResult openedPart = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(first, graph, true), ego, null);
+                LayoutResult openedPart = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(first, graph, true), ego, null, expanded: true);
                 var openedParts = new List<LayoutPart>(parts);
                 openedParts[0] = new LayoutPart { RootId = first.To.Id, Result = openedPart, Expanded = true };
                 LayoutScene opened = SceneComposer.Compose(ego, hub, openedParts, ego.Config);

@@ -7,20 +7,53 @@ namespace DeltaVMap.Layout;
 // offline fit preview. Positions scale with the zoom while dots and text keep a fixed screen
 // size, so with other star systems shown the fit also keeps the screen-fixed labels and system
 // titles at the right edge, and the system glyphs and titles at the bottom edge, inside the
-// canvas. With the ego map alone it is the plain bounds fit.
+// canvas. When the plain fit would put the root or the title of another system under the
+// transfer-window footer at the bottom left, the fit keeps the footer's height free below the
+// whole scene instead. With the ego map alone it is the plain bounds fit.
 internal static class SceneFit
 {
     public const double PadPx = 32.0;
 
+    // The zoom floor of the map window. A map with hundreds of moons fits only far below the zoom
+    // of a stock map, so the fit preview judges the canvas at this floor too.
+    public const double MinZoom = 0.02;
+
+    // The collapsed transfer-window footer the canvas draws at its bottom left.
+    public const double FooterW = 480.0;
+    public const double FooterH = 56.0;
+
     public static double Fit(LayoutScene scene, double canvasW, double canvasH, double minZoom, double maxZoom, out double panX, out double panY)
+    {
+        double zoom = Fit(scene, canvasW, canvasH, minZoom, maxZoom, 0.0, out panX, out panY);
+        if (UnderFooter(scene, zoom, panX, panY, canvasH))
+            zoom = Fit(scene, canvasW, canvasH, minZoom, maxZoom, FooterH, out panX, out panY);
+        return zoom;
+    }
+
+    // Whether the glyph, ring or title block of a destination root reaches into the footer.
+    private static bool UnderFooter(LayoutScene scene, double zoom, double panX, double panY, double canvasH)
+    {
+        foreach (LayoutPart part in scene.Parts)
+        {
+            LayoutNode root = part.Root;
+            double x = panX + (root.SnappedX - scene.MinX) * zoom;
+            double y = panY + (root.SnappedY - scene.MinY) * zoom;
+            double left = x - SceneComposer.GlyphRadiusPx(root) - SceneComposer.SystemRingPx;
+            if (left < FooterW && y + DownReachPx(root) > canvasH - FooterH)
+                return true;
+        }
+        return false;
+    }
+
+    private static double Fit(LayoutScene scene, double canvasW, double canvasH, double minZoom, double maxZoom, double footer, out double panX, out double panY)
     {
         double contentW = Math.Max(1.0, scene.Width);
         double contentH = Math.Max(1.0, scene.Height);
+        bool overhang = scene.Parts.Count > 0;
         double usableW = canvasW - 2.0 * PadPx;
-        double usableH = canvasH - 2.0 * PadPx;
+        double usableH = canvasH - 2.0 * PadPx - footer;
         double zoom = Math.Min(usableW / contentW, usableH / contentH);
         IReadOnlyList<LayoutNode> nodes = scene.Nodes;
-        bool overhang = scene.Parts.Count > 0;
         if (overhang)
         {
             for (int i = 0; i < nodes.Count; i++)
@@ -48,7 +81,7 @@ internal static class SceneFit
             }
         }
         panX = (canvasW - right) / 2.0;
-        panY = (canvasH - bottom) / 2.0;
+        panY = (canvasH - footer - bottom) / 2.0;
         return zoom;
     }
 
@@ -101,7 +134,7 @@ internal sealed class FitPreview
 
     public static FitPreview Build(LayoutScene scene, double canvasW, double canvasH)
     {
-        double zoom = SceneFit.Fit(scene, canvasW, canvasH, 0.1, 4.0, out double panX, out double panY);
+        double zoom = SceneFit.Fit(scene, canvasW, canvasH, SceneFit.MinZoom, 4.0, out double panX, out double panY);
         var preview = new FitPreview { CanvasW = canvasW, CanvasH = canvasH, Zoom = zoom, PanX = panX, PanY = panY, MinX = scene.MinX, MinY = scene.MinY };
         preview.PlaceTexts(scene);
         return preview;
@@ -157,26 +190,7 @@ internal sealed class FitPreview
         // Then every other label by priority, with the label LOD of the renderer. A body whose
         // label is special (the root, you-are-here, a system title) needs no short label.
         bool shortLabels = Zoom < LabelLod.FullLabelMinZoom;
-        var reps = new Dictionary<string, LayoutNode>();
-        var specialBodies = new HashSet<string>();
-        if (shortLabels)
-        {
-            foreach (LayoutNode node in nodes)
-            {
-                if (!node.LabelPlaced)
-                    continue;
-                if (LabelLod.IsSpecial(node, null, false, null))
-                {
-                    specialBodies.Add(LabelLod.BodyKey(node));
-                    continue;
-                }
-                if (!LabelLod.RankShows(node, Zoom))
-                    continue;
-                string key = LabelLod.BodyKey(node);
-                if (!reps.TryGetValue(key, out LayoutNode? cur) || LabelLod.RungPreference(node.Kind) < LabelLod.RungPreference(cur.Kind))
-                    reps[key] = node;
-            }
-        }
+        Dictionary<string, LayoutNode> reps = shortLabels ? LabelLod.ShortLabelReps(nodes, Zoom) : new Dictionary<string, LayoutNode>();
         var candidates = new List<(int Priority, LayoutNode Node, PreviewRect Rect, bool Short)>();
         foreach (LayoutNode node in nodes)
         {
@@ -190,7 +204,7 @@ internal sealed class FitPreview
                 if (shortLabels)
                 {
                     string key = LabelLod.BodyKey(node);
-                    if (specialBodies.Contains(key) || !reps.TryGetValue(key, out LayoutNode? rep) || !ReferenceEquals(rep, node))
+                    if (!reps.TryGetValue(key, out LayoutNode? rep) || !ReferenceEquals(rep, node))
                         continue;
                     useShort = true;
                 }

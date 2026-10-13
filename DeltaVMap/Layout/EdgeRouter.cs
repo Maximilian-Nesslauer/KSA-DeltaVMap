@@ -43,7 +43,7 @@ internal static class EdgeRouter
                 {
                     edge.Polyline = StraightLine(edge);
                 }
-                else if (wrap != null && edge.To.WrapRow >= 1 && !edge.IsHubLink)
+                else if (wrap != null && edge.To.WrapRow >= 1)
                 {
                     var ghost = new LayoutPoint(wrap.TrunkX, from.Y + wrap.RowDy[edge.To.WrapRow]);
                     var points = new List<LayoutPoint> { from, new LayoutPoint(wrap.TrunkX, from.Y) };
@@ -62,7 +62,9 @@ internal static class EdgeRouter
     // Puts each trunk half a gutter left of the snapped boxes of the rows, on a grid column. The
     // snap may have nudged a node toward the gutter, which is why this reads the snapped
     // positions and not the pre-snap block edge. The trunk runs from the hub over to that X and
-    // down to the last row.
+    // down to the last row. In Cumulative-down the rungs hang inside the block of row 0, in
+    // GravityWell they stay in the hub's column left of the gutter, and a hub link that carries
+    // the bus on past the hub is in no row in either mode.
     private static Dictionary<string, LayoutWrap> PlaceTrunks(LayoutTree tree, LayoutConfig cfg, IReadOnlyList<LayoutWrap> wraps)
     {
         var byHub = new Dictionary<string, LayoutWrap>();
@@ -73,9 +75,10 @@ internal static class EdgeRouter
             if (!byHub.TryGetValue(hub.Id, out LayoutWrap? wrap))
                 continue;
             double left = double.PositiveInfinity;
+            bool rungsInBlock = wrap.Mode == LayoutMode.CumulativeDown;
             foreach (LayoutEdge edge in hub.Out)
             {
-                if (edge.IsHubLink)
+                if ((edge.IsHubLink && edge.To.WrapRow < 0) || (edge.Class == EdgeClass.Ladder && !rungsInBlock))
                     continue;
                 foreach (LayoutNode node in LayoutTree.PreOrder(edge.To))
                     left = Math.Min(left, node.SnappedX - node.Width / 2.0);

@@ -15,8 +15,8 @@ internal sealed class LayoutResult
     public double MaxX { get; init; }
     public double MaxY { get; init; }
 
-    // Every wrapped fan of the tree. Empty when no wrap applies, which is always the case for a
-    // destination part, so a part that SceneComposer translates carries no wrap geometry.
+    // Every wrapped fan of the tree, empty when no wrap applies. An opened GravityWell destination
+    // wraps too, and SceneComposer moves its trunks together with its nodes.
     public IReadOnlyList<LayoutWrap> Wraps { get; init; } = Array.Empty<LayoutWrap>();
 
     public double Width => MaxX - MinX;
@@ -36,19 +36,25 @@ internal static class LayoutEngine
     // character-count estimate, which is enough to verify topology and overlap logic.
     public static LayoutResult Run(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText = null)
     {
-        return Run(tree, cfg, measureText, rowCap: null);
+        return Run(tree, cfg, measureText, rowCap: null, shelves: null);
     }
 
     // The same run with the row cap of the wrap forced instead of chosen, for tests that compare
     // the full layouts of the caps the chooser scored.
     public static LayoutResult RunWithRowCap(LayoutTree tree, LayoutConfig cfg, int rowCap)
     {
-        return Run(tree, cfg, null, rowCap);
+        return Run(tree, cfg, null, rowCap, null);
+    }
+
+    // The same with the GravityWell shelf count of the star hub forced as well.
+    public static LayoutResult RunWithRows(LayoutTree tree, LayoutConfig cfg, int rowCap, int shelves)
+    {
+        return Run(tree, cfg, null, rowCap, shelves);
     }
 
     // The row plan needs the measured widths and the bands, and its shelf offsets join Y before
     // the spread and the snap, so a wrapped row lands on the grid like any other node.
-    private static LayoutResult Run(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText, int? rowCap)
+    private static LayoutResult Run(LayoutTree tree, LayoutConfig cfg, Func<string, double>? measureText, int? rowCap, int? shelves)
     {
         cfg.Validate();
         MeasureNodes(tree, cfg, measureText);
@@ -64,7 +70,7 @@ internal static class LayoutEngine
                 WellLayout.Assign(tree, cfg);
             else
                 BandLayout.AssignBands(tree, cfg);
-            wraps = RowWrap.Plan(tree, cfg, rowCap);
+            wraps = RowWrap.Plan(tree, cfg, rowCap, shelves);
             TidyTree.AssignX(tree, cfg, wraps);
             foreach (LayoutNode node in tree.Nodes)
             {

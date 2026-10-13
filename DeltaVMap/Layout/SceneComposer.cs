@@ -49,6 +49,9 @@ internal static class SceneComposer
     // about 0.75 of the nominal one, which is a 1300x860 canvas.
     private const double ReachWeight = 1.35;
 
+    // The share of the map's own fit zoom that the scene keeps with a system opened in the strip.
+    private const double OpenedFitShare = 0.8;
+
     // Screen geometry of a system root, shared with the renderer and the fit. These are the
     // collapsed stub's half size, the ring drawn around a system root, the depth of the fan
     // under a stub, the gap between the glyph and its title, the title line height and the
@@ -108,11 +111,15 @@ internal static class SceneComposer
     // While it would grow across the strip past its share, the tree modes lower the cap on a
     // single delta-v step first, then the minimum step. When no tree layout fits, the flattest
     // one tried is used, since it comes nearest. A Spring part that fits with no spread keeps
-    // the plain layout. Every run has Wrap Off, the plain one included, because a destination
-    // system never wraps even when the ego map does.
-    public static LayoutResult LayOutPart(Func<LayoutTree> build, LayoutResult ego, Func<string, double>? measureText)
+    // the plain layout. An opened GravityWell system wraps by the rules of the ego map, the plain
+    // run and every spread run alike, with the gaps between its rows sized for the zoom that fits
+    // the ego map. A collapsed stub and every Cumulative-down system have Wrap Off, because a
+    // Cumulative-down row costs a drop that states no delta-v. The ego map does not depend on any
+    // part, so opening or closing one never re-flows it.
+    public static LayoutResult LayOutPart(Func<LayoutTree> build, LayoutResult ego, Func<string, double>? measureText, bool expanded)
     {
-        LayoutConfig cfg = ego.Config.WithoutWrap();
+        WrapMode wrap = expanded && ego.Config.Mode == LayoutMode.GravityWell ? ego.Config.Wrap : WrapMode.Off;
+        LayoutConfig cfg = ego.Config.WithoutWrap().WithWrap(wrap).WithWrapScreenZoom(NominalZoom(ego));
         Func<string, double>? measure = measureText != null ? Memoize(measureText) : null;
         LayoutResult plain = LayoutEngine.Run(build(), cfg, measure);
         bool spring = cfg.Mode == LayoutMode.Spring;
@@ -131,7 +138,7 @@ internal static class SceneComposer
         {
             for (double spread = k; spread > 1.0; spread -= 0.25)
             {
-                LayoutResult r = LayoutEngine.Run(build(), cfg.WithSpread(spread, cfg.MinBandStep, maxStep), measure);
+                LayoutResult r = LayoutEngine.Run(build(), cfg.WithSpread(spread, cfg.MinBandStep, maxStep).WithWrap(wrap), measure);
                 if (Along(r) <= maxAlong && Across(r) <= maxAcross)
                     return r;
             }
@@ -145,7 +152,7 @@ internal static class SceneComposer
             {
                 // The flattest band range for this minimum. The spread axis does not depend on
                 // the bands, so a part too long here is too long for every band range.
-                LayoutResult flat = LayoutEngine.Run(build(), cfg.WithSpread(spread, minBand, minBand), measure);
+                LayoutResult flat = LayoutEngine.Run(build(), cfg.WithSpread(spread, minBand, minBand).WithWrap(wrap), measure);
                 if (spread > 1 && Along(flat) > maxAlong)
                     break;
                 flattest = flat;
@@ -159,7 +166,7 @@ internal static class SceneComposer
                 while (lo < hi)
                 {
                     int mid = (lo + hi + 1) / 2;
-                    LayoutResult r = LayoutEngine.Run(build(), cfg.WithSpread(spread, minBand, mid), measure);
+                    LayoutResult r = LayoutEngine.Run(build(), cfg.WithSpread(spread, minBand, mid).WithWrap(wrap), measure);
                     if (Across(r) <= maxAcross)
                     {
                         lo = mid;
@@ -361,6 +368,10 @@ internal static class SceneComposer
         double clear = Math.Max(g, SnapUp(ClearPx / zNom, g));
         double partGap = Math.Max(4.0 * g, SnapUp(PartGapPx / zNom, g));
         double channel = Math.Max(6.0 * g, SnapUp((ChannelPx + ReachWeight * EgoReachPx(ego, below, zNom)) / zNom, g));
+        // A wrapped Gravity-well map gets one grid step more, because its opened systems wrap
+        // too and bring the fit zoom down further than the reach weight allows for.
+        if (cfg.Mode == LayoutMode.GravityWell && ego.Wraps.Count > 0)
+            channel += g;
         double egoEdge = below ? ego.MaxY : ego.MaxX;
         // The bus runs in the middle of the channel. Beside a strip to the right it sits nearer
         // the ego map, so each branch is long enough to carry the route badge across the
@@ -368,6 +379,8 @@ internal static class SceneComposer
         double bus = Snap(egoEdge + (below ? 0.5 : 0.3) * channel, g);
         Box egoBox = EgoBox(ego, below, s, zFit, clear, g);
         List<LayoutPoint> trunk = Trunk(ego.Tree.Nodes, egoHub, egoBox, below, bus, g, spring, s, zFit);
+        if (below)
+            trunk = OutsideOpenedLabels(trunk, ego.Tree.Nodes, egoBox.X1, zFit, g);
         LayoutPoint join = trunk[trunk.Count - 1];
 
         int n = parts.Count;
@@ -768,6 +781,48 @@ internal static class SceneComposer
             Math.Ceiling(((below ? ego.MaxY : y1) + clear) / g) * g);
     }
 
+    // Moves the leg a trunk below the map runs down the box's right side further out, past the
+    // labels at the lower zoom an opened system brings. That zoom is OpenedFitShare of the lowest
+    // fit zoom the box is sized for. There every body draws one short label, and the root and
+    // you-are-here draw their full one, each at its screen width, so a label at the right edge
+    // of the map reaches further toward the trunk. The side was chosen on the box itself, so
+    // opening a system never flips the trunk to the other side, and a trunk that leaves the box
+    // elsewhere is not moved.
+    private static List<LayoutPoint> OutsideOpenedLabels(List<LayoutPoint> trunk, IReadOnlyList<LayoutNode> nodes, double boxX1, double zFit, double g)
+    {
+        double zOpened = zFit * OpenedFitShare;
+        if (zOpened >= LabelLod.FullLabelMinZoom)
+            return trunk;
+        double side = boxX1;
+        double pad = TitlePadX + LineClearPx;
+        foreach (LayoutNode node in LabelLod.ShortLabelReps(nodes, zOpened).Values)
+            side = Math.Max(side, node.LabelX + (node.ShortLabelTextW + pad) / zOpened);
+        foreach (LayoutNode node in nodes)
+        {
+            if (node.LabelPlaced && !node.IsSystemRoot && (node.IsRoot || node.IsYouAreHere))
+                side = Math.Max(side, node.LabelX + (node.LabelTextW + pad) / zOpened);
+        }
+        side = Math.Ceiling(side / g - 1e-9) * g;
+        if (side <= boxX1)
+            return trunk;
+
+        var moved = new List<LayoutPoint>(trunk.Count + 1);
+        for (int i = 0; i < trunk.Count; i++)
+        {
+            LayoutPoint p = trunk[i];
+            if (i == 0 || Math.Abs(p.X - boxX1) > 1e-6)
+            {
+                moved.Add(p);
+                continue;
+            }
+            // The exit of the first ray keeps its angle, and a level step takes the trunk out.
+            if (i == 1)
+                moved.Add(p);
+            moved.Add(new LayoutPoint(side, p.Y));
+        }
+        return Simplify(moved);
+    }
+
     // The screen radius around a node that a line keeps out of, which is the glyph plus the
     // ring of a system root and the halo of the ego root.
     private static double DotReachPx(LayoutNode node)
@@ -1067,8 +1122,9 @@ internal static class SceneComposer
         }
     }
 
-    // Move every node of a part, its label box and its edge polylines by (dx, dy). The grid cell
-    // moves with it, so the per-cell overlap checks still see the right neighbours.
+    // Move every node of a part, its label box, its edge polylines and the trunks of its wrapped
+    // rows by (dx, dy). The grid cell moves with it, so the per-cell overlap checks still see the
+    // right neighbours.
     private static void Translate(LayoutPart part, double dx, double dy, double g)
     {
         if (dx == 0.0 && dy == 0.0)
@@ -1096,6 +1152,14 @@ internal static class SceneComposer
                     moved[p] = new LayoutPoint(line[p].X + dx, line[p].Y + dy);
                 edge.Polyline = moved;
             }
+        }
+        foreach (LayoutWrap wrap in part.Result.Wraps)
+        {
+            wrap.TrunkX += dx;
+            var trunk = new LayoutPoint[wrap.Trunk.Count];
+            for (int p = 0; p < trunk.Length; p++)
+                trunk[p] = new LayoutPoint(wrap.Trunk[p].X + dx, wrap.Trunk[p].Y + dy);
+            wrap.Trunk = trunk;
         }
     }
 }

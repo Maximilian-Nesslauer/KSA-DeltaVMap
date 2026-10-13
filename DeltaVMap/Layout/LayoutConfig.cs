@@ -161,6 +161,13 @@ internal sealed class LayoutConfig
     // for the strip to stay below it.
     public double WrapTargetAspect { get; init; } = 1.6;
 
+    // The zoom the screen-pixel gaps and gutters of the wrap are sized for. An opened destination
+    // system is drawn at the zoom that fits the ego map beside it, not at its own fit zoom, so
+    // SceneComposer.LayOutPart sets the ego map's nominal zoom here. 0 sizes them for the map's
+    // own nominal fit zoom.
+    public double WrapScreenZoom { get => _wrapScreenZoom; init => _wrapScreenZoom = value; }
+    private double _wrapScreenZoom;
+
     public static LayoutConfig Default => new();
 
     // The config of the interactive map, which the game and the harness tests both use, so a
@@ -181,8 +188,8 @@ internal sealed class LayoutConfig
 
     // A copy with another structure spread and band step range, for laying out another star
     // system beside a map laid out with this config. maxBandStep caps the cumulative and the
-    // gravity-well step alike. The copy does not take Wrap or its tunables, so it is always Off,
-    // because a destination system never wraps.
+    // gravity-well step alike. The copy keeps the wrap tunables but always has Wrap Off, because
+    // a destination system wraps only where SceneComposer.LayOutPart turns it back on.
     public LayoutConfig WithSpread(double spreadX, int minBandStep, int maxBandStep)
     {
         return new LayoutConfig
@@ -213,7 +220,18 @@ internal sealed class LayoutConfig
             YouAreHereDotRadius = YouAreHereDotRadius,
             PlanetDotRadius = PlanetDotRadius,
             MoonDotRadius = MoonDotRadius,
-            MinorDotRadius = MinorDotRadius
+            MinorDotRadius = MinorDotRadius,
+            WrapMinLanesCd = WrapMinLanesCd,
+            WrapKmaxCd = WrapKmaxCd,
+            WrapMaxRowsCd = WrapMaxRowsCd,
+            WrapMinLanesGw = WrapMinLanesGw,
+            WrapKmaxGw = WrapKmaxGw,
+            WrapMaxRowsGw = WrapMaxRowsGw,
+            WrapMinGain = WrapMinGain,
+            WrapGutterPx = WrapGutterPx,
+            ShelfClearScreenPx = ShelfClearScreenPx,
+            WrapTargetAspect = WrapTargetAspect,
+            WrapScreenZoom = WrapScreenZoom
         };
     }
 
@@ -229,6 +247,14 @@ internal sealed class LayoutConfig
     {
         var copy = (LayoutConfig)MemberwiseClone();
         copy._wrap = wrap;
+        return copy;
+    }
+
+    // An exact copy whose wrap sizes its screen gaps for the given zoom, see WrapScreenZoom.
+    public LayoutConfig WithWrapScreenZoom(double zoom)
+    {
+        var copy = (LayoutConfig)MemberwiseClone();
+        copy._wrapScreenZoom = zoom;
         return copy;
     }
 
@@ -292,5 +318,8 @@ internal sealed class LayoutConfig
         if (WrapTargetAspect <= 0.0)
             throw new System.ArgumentException(
                 $"WrapTargetAspect ({WrapTargetAspect}) must be positive.");
+        if (WrapScreenZoom < 0.0)
+            throw new System.ArgumentException(
+                $"WrapScreenZoom ({WrapScreenZoom}) must not be negative.");
     }
 }

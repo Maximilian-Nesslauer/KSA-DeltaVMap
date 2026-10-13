@@ -15,9 +15,14 @@ internal static class SceneChecks
     // top left, the collapsed transfer-window footer at the bottom left).
     public const double LineClearPx = 6.0;
     public const double MinBandPx = 120.0;
+
+    // The empty band when every destination is opened beside a wrapped GravityWell map. Each
+    // opened system wraps into shelves under its root, so the strip is as deep as the compact
+    // home map and the fit zoom falls far below the zoom the channel is sized for.
+    public const double MinBandAllOpenWrappedPx = 60.0;
     private const double ButtonZonePx = 76.0;
-    private const double FooterW = 480.0;
-    private const double FooterH = 56.0;
+    private const double FooterW = SceneFit.FooterW;
+    private const double FooterH = SceneFit.FooterH;
 
     // The plate of the route badge at a connector's badge anchor: two text lines about 110 px wide.
     private const double BadgeW = 116.0;
@@ -181,10 +186,11 @@ internal static class SceneChecks
         return fails;
     }
 
-    // The fit-zoom look: the empty band between the home map and the strip, every system title
-    // drawn inside the canvas, nothing of one part (dot or label) on another system's glyph or
-    // title, and no label on the glyph or title of its own system root.
-    public static List<string> Fit(LayoutScene scene, double canvasW, double canvasH, out double bandPx)
+    // The fit-zoom look: the empty band between the home map and the strip (at least minBandPx,
+    // MinBandPx unless given), every system title drawn inside the canvas, nothing of one part
+    // (dot or label) on another system's glyph or title, and no label on the glyph or title of
+    // its own system root.
+    public static List<string> Fit(LayoutScene scene, double canvasW, double canvasH, out double bandPx, double minBandPx = MinBandPx)
     {
         var fails = new List<string>();
         bandPx = double.PositiveInfinity;
@@ -222,8 +228,8 @@ internal static class SceneChecks
                 fails.Add($"{at}: the title of {text.Node.Id} is cut off by the canvas edge");
         }
         bandPx = partNear - egoFar;
-        if (bandPx < MinBandPx)
-            fails.Add(string.Create(Inv, $"{at}: the band between the home map and the strip is {bandPx:F0} px, under {MinBandPx:F0}"));
+        if (bandPx < minBandPx)
+            fails.Add(string.Create(Inv, $"{at}: the band between the home map and the strip is {bandPx:F0} px, under {minBandPx:F0}"));
         if (titles != scene.Parts.Count)
             fails.Add($"{at}: {titles} of {scene.Parts.Count} system titles are drawn");
 

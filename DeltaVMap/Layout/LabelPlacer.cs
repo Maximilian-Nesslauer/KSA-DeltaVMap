@@ -17,9 +17,12 @@ internal static class LabelPlacer
         public int Dropped => Total - Placed;
     }
 
+    // The gap between a dot and the near edge of its label plate.
+    internal const double LabelPadPx = 4.0;
+
     public static Result Place(LayoutTree tree, LayoutConfig cfg)
     {
-        const double pad = 4.0;
+        const double pad = LabelPadPx;
         double bucket = Math.Max(cfg.GridPx, cfg.MinNodeWidthPx);
         var hash = new SpatialHash(bucket);
 

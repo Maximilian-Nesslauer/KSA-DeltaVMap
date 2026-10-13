@@ -34,6 +34,33 @@ internal static class LabelLod
         return true;
     }
 
+    // The one label per body that a view below FullLabelMinZoom draws as the body's short name,
+    // keyed by body. It is the shown label of the preferred rung. A body with a special label
+    // (the root, you-are-here, a system title) has no entry, because that label names it.
+    public static Dictionary<string, LayoutNode> ShortLabelReps(IReadOnlyList<LayoutNode> nodes, double zoom)
+    {
+        var reps = new Dictionary<string, LayoutNode>();
+        var specialBodies = new HashSet<string>();
+        foreach (LayoutNode node in nodes)
+        {
+            if (!node.LabelPlaced)
+                continue;
+            if (IsSpecial(node, null, false, null))
+            {
+                specialBodies.Add(BodyKey(node));
+                continue;
+            }
+            if (!RankShows(node, zoom))
+                continue;
+            string key = BodyKey(node);
+            if (!reps.TryGetValue(key, out LayoutNode? cur) || RungPreference(node.Kind) < RungPreference(cur.Kind))
+                reps[key] = node;
+        }
+        foreach (string body in specialBodies)
+            reps.Remove(body);
+        return reps;
+    }
+
     // Whether a node's body is immediate context of the root: its well hangs off the root
     // itself or off the root's nearest hub (a spine node at depth <= 1). That covers the
     // root's own moons (Luna on an Earth root) and, when rooted on a moon, its sibling

@@ -162,7 +162,7 @@ internal static class LayoutDump
         var parts = new System.Collections.Generic.List<LayoutPart>();
         foreach (Edge edge in visual.InterstellarEdges)
         {
-            LayoutResult part = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(edge, graph: null, expanded: true), ego, null);
+            LayoutResult part = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(edge, graph: null, expanded: true), ego, null, expanded: true);
             OverlapReport partReport = OverlapCheck.Run(part);
             DefaultCategory.Log.Info($"{Tag} [{part.Tree.Name}] ({role}, other system) {partReport.Summary()}");
             LogReport(partReport);

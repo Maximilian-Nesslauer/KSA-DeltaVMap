@@ -26,7 +26,7 @@ internal sealed class MapWindow : ImGuiWindow
     // sits far below the zoom that fits a stock map, and auto-fit can show the whole map on
     // open. At this floor the lanes of such a map are closer than one dot, so it reads as an
     // overview and the labels have already thinned out by rank.
-    private const double MinZoom = 0.02;
+    private const double MinZoom = SceneFit.MinZoom;
     private const double MaxZoom = 4.0;
     private const double HoverRadiusPx = 14.0;
 
@@ -2380,7 +2380,7 @@ internal sealed class MapWindow : ImGuiWindow
                 using var partPerf = new PerfTracker.Scope("DvMap.Layout.Part");
 #endif
                 SystemGraph graph = _graph;
-                LayoutResult laid = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(edge, graph, expanded), _egoLayout, MeasureText);
+                LayoutResult laid = SceneComposer.LayOutPart(() => VisualTreeAdapter.ToPartTree(edge, graph, expanded), _egoLayout, MeasureText, expanded);
                 part = new LayoutPart { RootId = rootId, Result = laid, Expanded = expanded };
                 _parts[(rootId, expanded)] = part;
             }

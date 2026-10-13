@@ -24,11 +24,21 @@ namespace DeltaVMap.Layout;
 // fans, and the drop from the shelf into each lane keeps its true length. The gap and the gutter
 // that holds the trunk are sized in screen pixels at the nominal fit zoom, the way SceneComposer
 // sizes its channel, so they stay clear on screen however large the map is.
+//
+// In GravityWell Y is local to each well, so a row states no false delta-v, and the wrap works at
+// two levels. A fan of more than WrapMinLanesGw moons wraps by count as above, inside the block of
+// its planet. The star hub of the bus, the one with the most lanes, wraps its whole planet
+// systems into shelves, each system with its moon rows kept in one shelf, split by width so the
+// widest shelf is as narrow as it can be. The chooser scores every pair of a moon row cap and a
+// shelf count, and takes a further row or shelf only for the same gain, so on a tie it keeps
+// fewer rows first and then fewer shelves. The rows of one hub sit one gap below the lowest dot
+// of the row above, so the offsets are local to the hub and no shelf is shared across the map.
 internal static class RowWrap
 {
-    // One row cap the chooser scored. Width and Height are the estimated bounds of the map, Score
-    // its fit zoom on the nominal canvas, Fans and Rows the wrapped fans and their rows in total.
-    internal readonly record struct Candidate(int RowCap, int Fans, int Rows, double Width, double Height, double Score, double GapPx, double GutterPx);
+    // One row plan the chooser scored. Width and Height are the estimated bounds of the map, Score
+    // its fit zoom on the nominal canvas, Fans and Rows the wrapped hubs and their rows in total.
+    // Shelves is the shelf count asked of the GravityWell star hub, 1 in Cumulative-down.
+    internal readonly record struct Candidate(int RowCap, int Fans, int Rows, double Width, double Height, double Score, double GapPx, double GutterPx, int Shelves = 1);
 
     private sealed class Fan
     {
@@ -38,9 +48,12 @@ internal static class RowWrap
 
     // Plans the rows of the tree and returns the wrapped fans. It sets WrapRow, Shelf and WrapDy on
     // every node, and needs the measured widths and the bands. rowCap forces one cap instead of
-    // the chosen one, for tests that compare the candidates.
-    public static IReadOnlyList<LayoutWrap> Plan(LayoutTree tree, LayoutConfig cfg, int? rowCap = null)
+    // the chosen one, and in GravityWell shelves forces the shelf count, for tests that compare
+    // the candidates.
+    public static IReadOnlyList<LayoutWrap> Plan(LayoutTree tree, LayoutConfig cfg, int? rowCap = null, int? shelves = null)
     {
+        if (cfg.Mode == LayoutMode.GravityWell)
+            return PlanWell(tree, cfg, rowCap, shelves);
         Reset(tree);
         List<Fan> fans = FindFans(tree, cfg);
         if (fans.Count == 0)
@@ -71,6 +84,13 @@ internal static class RowWrap
     public static List<Candidate> Candidates(LayoutTree tree, LayoutConfig cfg)
     {
         Reset(tree);
+        if (cfg.Mode == LayoutMode.GravityWell)
+        {
+            WellPlan? plan = FindWell(tree, cfg);
+            List<Candidate> wellCandidates = plan == null ? new List<Candidate>() : WellCandidates(tree, cfg, plan);
+            Reset(tree);
+            return wellCandidates;
+        }
         List<Fan> fans = FindFans(tree, cfg);
         List<Candidate> candidates = fans.Count == 0 ? new List<Candidate>() : Candidates(tree, cfg, fans);
         Reset(tree);
@@ -124,7 +144,7 @@ internal static class RowWrap
         if (first.Count == 0)
             return null;
         (double w0, double h0) = Measure(tree, cfg, first);
-        double zNom = SceneComposer.NominalZoom(w0, h0);
+        double zNom = ScreenZoom(w0, h0, cfg);
         double g = cfg.GridPx;
         double gap = Math.Max(cfg.BandHeightPx, SnapUp(cfg.ShelfClearScreenPx / zNom, g));
         double gutter = Math.Max(cfg.WrapGutterPx, SnapUp(2.0 * (cfg.MoonDotRadius + OverlapCheck.WrapLineClearPx) / zNom, g));
@@ -136,6 +156,13 @@ internal static class RowWrap
             rows += wrap.RowSizes.Count;
         Reset(tree);
         return new Candidate(cap, wraps.Count, rows, w, h, Score(w, h, cfg), gap, gutter);
+    }
+
+    // The zoom the gap and the gutter of a candidate are sized for, which is its own nominal fit
+    // zoom, or the zoom of the map it is drawn beside when the config names one.
+    private static double ScreenZoom(double width, double height, LayoutConfig cfg)
+    {
+        return cfg.WrapScreenZoom > 0.0 ? cfg.WrapScreenZoom : SceneComposer.NominalZoom(width, height);
     }
 
     // The fit zoom of bounds on the nominal canvas at the config's target aspect. The canvas is
@@ -390,4 +417,397 @@ internal static class RowWrap
     }
 
     private static double SnapUp(double v, double g) => Math.Ceiling(v / g - 1e-9) * g;
+
+    #region GravityWell
+
+    // The hubs a GravityWell plan may wrap: the star hub whose lanes wrap into shelves, and the
+    // fans of moons that wrap into rows by count, with the columns they are measured on.
+    private sealed class WellPlan
+    {
+        public required LayoutNode? ShelfHub { get; init; }
+        public required int ShelfLanes { get; init; }
+        public required List<Fan> Fans { get; init; }
+        public required TidyTree.WellColumns Columns { get; init; }
+    }
+
+    // The rows of one plan: the row count and the gutter of every wrapped hub, the measure of the
+    // map with them, and a key that tells plans with the same rows apart from the others.
+    private sealed class WellPass
+    {
+        public required Dictionary<string, (int Rows, double Gutter)> Wrapped { get; init; }
+        public required TidyTree.WellMeasure Measure { get; init; }
+        public required string Key { get; init; }
+    }
+
+    private static IReadOnlyList<LayoutWrap> PlanWell(LayoutTree tree, LayoutConfig cfg, int? rowCap, int? shelves)
+    {
+        Reset(tree);
+        WellPlan? plan = FindWell(tree, cfg);
+        if (plan == null)
+            return Array.Empty<LayoutWrap>();
+
+        Candidate chosen;
+        if (rowCap.HasValue || shelves.HasValue)
+        {
+            chosen = EvaluateWell(tree, cfg, plan, rowCap ?? 1, shelves ?? 1).Candidate;
+        }
+        else
+        {
+            List<Candidate> candidates = WellCandidates(tree, cfg, plan);
+            chosen = candidates[Choose(candidates, cfg.WrapMinGain)];
+        }
+
+        if (chosen.Fans == 0)
+        {
+            Reset(tree);
+            return Array.Empty<LayoutWrap>();
+        }
+        return ApplyWell(tree, cfg, plan, chosen);
+    }
+
+    // Finds the star hub of the bus with the most lanes and every other node with more moon lanes
+    // than the minimum. Null when the config does not wrap or nothing can wrap.
+    private static WellPlan? FindWell(LayoutTree tree, LayoutConfig cfg)
+    {
+        if (cfg.Wrap != WrapMode.Auto || cfg.Mode != LayoutMode.GravityWell)
+            return null;
+
+        LayoutNode? shelfHub = null;
+        int shelfLanes = 1;
+        var bus = new List<LayoutNode>();
+        CollectBus(tree.Root, bus);
+        foreach (LayoutNode node in bus)
+        {
+            if (node.Kind != LayoutKind.Hub)
+                continue;
+            int lanes = 0;
+            foreach (LayoutEdge edge in node.Out)
+            {
+                if (edge.Class != EdgeClass.Ladder && !edge.To.IsRevealed)
+                    lanes++;
+            }
+            if (lanes > shelfLanes)
+            {
+                shelfHub = node;
+                shelfLanes = lanes;
+            }
+        }
+
+        var fans = new List<Fan>();
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            if (node == shelfHub)
+                continue;
+            int unrevealed = 0;
+            foreach (LayoutEdge edge in node.Out)
+            {
+                if (IsLane(edge) && !edge.To.IsRevealed)
+                    unrevealed++;
+            }
+            if (unrevealed > cfg.WrapMinLanesGw)
+                fans.Add(new Fan { Hub = node, Unrevealed = unrevealed });
+        }
+
+        if (shelfHub == null && fans.Count == 0)
+            return null;
+        return new WellPlan { ShelfHub = shelfHub, ShelfLanes = shelfLanes, Fans = fans, Columns = TidyTree.WellColumns.Build(tree) };
+    }
+
+    private static void CollectBus(LayoutNode node, List<LayoutNode> bus)
+    {
+        bus.Add(node);
+        foreach (LayoutEdge edge in node.Out)
+        {
+            if (edge.IsHubLink)
+                CollectBus(edge.To, bus);
+        }
+    }
+
+    // Every pair of a moon row cap and a shelf count, fewer moon rows first and then fewer
+    // shelves, so the chooser keeps fewer rows on a tie. A pair that gives the rows of a pair
+    // before it is left out, and the first candidate wraps nothing.
+    private static List<Candidate> WellCandidates(LayoutTree tree, LayoutConfig cfg, WellPlan plan)
+    {
+        var candidates = new List<Candidate>();
+        var seen = new HashSet<string>();
+        int maxShelves = plan.ShelfHub == null ? 1 : Math.Min(cfg.WrapMaxRowsGw, plan.ShelfLanes);
+        for (int cap = 1; cap <= cfg.WrapMaxRowsGw; cap++)
+        {
+            for (int s = 1; s <= maxShelves; s++)
+            {
+                (Candidate candidate, string key) = EvaluateWell(tree, cfg, plan, cap, s);
+                if (seen.Add(key))
+                    candidates.Add(candidate);
+            }
+        }
+        return candidates;
+    }
+
+    // Scores one pair the way Evaluate scores a cap, with the gap and the gutters sized again for
+    // the zoom the first measure gives.
+    private static (Candidate Candidate, string Key) EvaluateWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves)
+    {
+        WellPass first = AssignWell(tree, cfg, plan, cap, shelves, cfg.WellBandHeightPx, cfg.WrapGutterPx, skipRevealed: true);
+        if (first.Wrapped.Count == 0)
+        {
+            (double w1, double h1) = WellBounds(tree, cfg, plan, first);
+            Reset(tree);
+            return (new Candidate(cap, 0, 0, w1, h1, Score(w1, h1, cfg), 0.0, 0.0, shelves), first.Key);
+        }
+
+        (double w0, double h0) = WellBounds(tree, cfg, plan, first);
+        double zNom = ScreenZoom(w0, h0, cfg);
+        double g = cfg.GridPx;
+        double gap = Math.Max(cfg.WellBandHeightPx, SnapUp(cfg.ShelfClearScreenPx / zNom, g));
+        double gutter = Math.Max(cfg.WrapGutterPx, SnapUp(2.0 * (cfg.MoonDotRadius + OverlapCheck.WrapLineClearPx) / zNom, g));
+
+        WellPass pass = AssignWell(tree, cfg, plan, cap, shelves, gap, gutter, skipRevealed: true);
+        (double w, double h) = WellBounds(tree, cfg, plan, pass);
+        int rows = 0;
+        foreach ((int r, double _) in pass.Wrapped.Values)
+            rows += r;
+        Reset(tree);
+        return (new Candidate(cap, pass.Wrapped.Count, rows, w, h, Score(w, h, cfg), gap, gutter, shelves), pass.Key);
+    }
+
+    // Sets the rows of one pair and measures the map with them. The moon fans take their rows by
+    // count first. The shelves of the star hub then split its lanes by the width of their blocks,
+    // moon rows included, which is why the blocks are measured before the split.
+    private static WellPass AssignWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, int cap, int shelves, double gapPx, double gutterPx, bool skipRevealed)
+    {
+        Reset(tree);
+        var wrapped = new Dictionary<string, (int Rows, double Gutter)>();
+        var key = new System.Text.StringBuilder();
+        foreach (Fan fan in plan.Fans)
+        {
+            int[]? sizes = RowSizes(fan.Unrevealed, cap, cfg.WrapKmaxGw);
+            if (sizes == null)
+                continue;
+            if (!AssignRows(fan.Hub, sizes))
+            {
+                foreach (LayoutEdge edge in fan.Hub.Out)
+                    edge.To.WrapRow = -1;
+                continue;
+            }
+            wrapped[fan.Hub.Id] = (sizes.Length, HubGutter(plan, fan.Hub, cfg, gutterPx));
+            key.Append(fan.Hub.Id).Append(':').Append(sizes.Length).Append(';');
+        }
+
+        if (plan.ShelfHub != null && shelves >= 2)
+        {
+            TidyTree.WellMeasure blocks = plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed: true);
+            int rows = AssignShelves(plan.ShelfHub, blocks, shelves, cfg);
+            if (rows >= 2)
+            {
+                wrapped[plan.ShelfHub.Id] = (rows, HubGutter(plan, plan.ShelfHub, cfg, gutterPx));
+                key.Append(plan.ShelfHub.Id).Append(':');
+                foreach (LayoutEdge edge in plan.ShelfHub.Out)
+                {
+                    if (edge.Class != EdgeClass.Ladder)
+                        key.Append(edge.To.WrapRow).Append(',');
+                }
+            }
+        }
+
+        TidyTree.WellMeasure measure = plan.Columns.Measure(cfg, wrapped, gapPx, skipRevealed);
+        return new WellPass { Wrapped = wrapped, Measure = measure, Key = key.ToString() };
+    }
+
+    // The gutter of a wrapped hub is the plain one, unless a label right of a rung below the
+    // hub's spine reaches further. Then the gutter holds that plate with the line clearance and
+    // one grid cell of snap on both sides of the trunk.
+    private static double HubGutter(WellPlan plan, LayoutNode hub, LayoutConfig cfg, double gutterPx)
+    {
+        double reach = plan.Columns.LabelReach(hub, cfg);
+        if (reach <= 0.0)
+            return gutterPx;
+        double clear = OverlapCheck.WrapLineClearPx + 1.0;
+        return Math.Max(gutterPx, SnapUp(2.0 * (reach + clear + cfg.GridPx), cfg.GridPx));
+    }
+
+    // Splits the lanes of the star hub into at most the given number of shelves, contiguous in the
+    // hub's order, so the widest shelf is as narrow as it can be. Among the splits that reach that
+    // width, each shelf takes as many systems as fit, so a smaller count that fits as narrow wins.
+    // A revealed lane joins the shelf of the lane before it and the rungs stay in row 0. Returns
+    // the shelf count, and leaves the hub unwrapped when that is one or when a "+N" group would
+    // not land in the last shelf.
+    private static int AssignShelves(LayoutNode hub, TidyTree.WellMeasure blocks, int shelves, LayoutConfig cfg)
+    {
+        var widths = new List<double>();
+        var gaps = new List<double>();
+        foreach (LayoutEdge edge in hub.Out)
+        {
+            if (edge.Class == EdgeClass.Ladder || edge.To.IsRevealed)
+                continue;
+            widths.Add(blocks.BlockWidth[edge]);
+            gaps.Add(edge.IsHubLink ? cfg.BusGapPx : cfg.SiblingGapPx);
+        }
+        int[] shelfOf = Partition(widths, gaps, shelves);
+        int count = shelfOf.Length == 0 ? 1 : shelfOf[^1] + 1;
+        if (count < 2)
+            return 1;
+
+        int lane = 0;
+        int previous = 0;
+        foreach (LayoutEdge edge in hub.Out)
+        {
+            LayoutNode child = edge.To;
+            if (edge.Class == EdgeClass.Ladder)
+            {
+                child.WrapRow = 0;
+                continue;
+            }
+            if (child.IsRevealed)
+            {
+                child.WrapRow = previous;
+                continue;
+            }
+            child.WrapRow = shelfOf[lane++];
+            previous = child.WrapRow;
+            if (child.Kind == LayoutKind.MinorGroup && child.WrapRow != count - 1)
+            {
+                foreach (LayoutEdge e in hub.Out)
+                    e.To.WrapRow = -1;
+                return 1;
+            }
+        }
+        return count;
+    }
+
+    // The narrowest widest row of a contiguous split of the blocks into at most k rows, found by
+    // dynamic programming, then filled greedily from the left at that width. gaps[i] is the gap in
+    // front of block i when it is not the first of its row. Returns the row of every block.
+    private static int[] Partition(List<double> widths, List<double> gaps, int k)
+    {
+        int n = widths.Count;
+        var rowOf = new int[n];
+        if (n == 0)
+            return rowOf;
+        k = Math.Clamp(k, 1, n);
+
+        double RowWidth(int from, int to)
+        {
+            double w = widths[from];
+            for (int i = from + 1; i <= to; i++)
+                w += gaps[i] + widths[i];
+            return w;
+        }
+
+        // best[r, j] is the narrowest widest row of the first j blocks in r + 1 rows.
+        var best = new double[k, n + 1];
+        for (int j = 1; j <= n; j++)
+            best[0, j] = RowWidth(0, j - 1);
+        for (int r = 1; r < k; r++)
+        {
+            for (int j = r + 1; j <= n; j++)
+            {
+                double b = double.PositiveInfinity;
+                for (int i = r; i < j; i++)
+                    b = Math.Min(b, Math.Max(best[r - 1, i], RowWidth(i, j - 1)));
+                best[r, j] = b;
+            }
+        }
+        double limit = best[k - 1, n] + 1e-6;
+
+        int row = 0;
+        double current = widths[0];
+        for (int i = 1; i < n; i++)
+        {
+            double next = current + gaps[i] + widths[i];
+            if (next > limit)
+            {
+                row++;
+                current = widths[i];
+            }
+            else
+            {
+                current = next;
+            }
+            rowOf[i] = row;
+        }
+        return rowOf;
+    }
+
+    // Sets the rows of the chosen pair, then the offsets of the full map with the revealed lanes,
+    // and returns the wrap records in pre-order. A node's WrapDy is its parent's plus the offset
+    // of its row when it is a lane in a lower row, so the offsets add up through nested rows.
+    private static List<LayoutWrap> ApplyWell(LayoutTree tree, LayoutConfig cfg, WellPlan plan, Candidate chosen)
+    {
+        WellPass pass = AssignWell(tree, cfg, plan, chosen.RowCap, chosen.Shelves, chosen.GapPx, chosen.GutterPx, skipRevealed: true);
+        TidyTree.WellMeasure measure = plan.Columns.Measure(cfg, pass.Wrapped, chosen.GapPx, skipRevealed: false);
+
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            LayoutNode? parent = node.Parent;
+            if (parent == null)
+                continue;
+            double dy = parent.WrapDy;
+            if (node.WrapRow >= 1 && node.ParentEdge!.Class != EdgeClass.Ladder && measure.RowDy.TryGetValue(parent.Id, out double[]? rowDy))
+                dy += rowDy[node.WrapRow];
+            node.WrapDy = dy;
+        }
+
+        var wraps = new List<LayoutWrap>(pass.Wrapped.Count);
+        foreach (LayoutNode hub in tree.Nodes)
+        {
+            if (!pass.Wrapped.TryGetValue(hub.Id, out (int Rows, double Gutter) wrapped))
+                continue;
+            var sizes = new int[wrapped.Rows];
+            foreach (LayoutEdge edge in hub.Out)
+            {
+                if (edge.Class != EdgeClass.Ladder && edge.To.WrapRow >= 0)
+                    sizes[edge.To.WrapRow]++;
+            }
+            wraps.Add(new LayoutWrap
+            {
+                ParentId = hub.Id,
+                Mode = cfg.Mode,
+                RowSizes = sizes,
+                RowDy = measure.RowDy[hub.Id],
+                Balanced = hub != plan.ShelfHub,
+                GutterPx = wrapped.Gutter
+            });
+        }
+        return wraps;
+    }
+
+    // The bounds of a plan without the revealed lanes, which hold the dots and the label plates as
+    // the layout's bounds do. The width comes from placing the columns, which costs as little as
+    // the measure. A label sits right of its dot, except on a wrapped root, whose spine the trunk
+    // leaves to the right, so its plate moves to the left of its dot.
+    private static (double Width, double Height) WellBounds(LayoutTree tree, LayoutConfig cfg, WellPlan plan, WellPass pass)
+    {
+        var wrapsByHub = new Dictionary<string, LayoutWrap>();
+        foreach ((string hubId, (int rows, double gutter)) in pass.Wrapped)
+        {
+            wrapsByHub[hubId] = new LayoutWrap
+            {
+                ParentId = hubId,
+                Mode = cfg.Mode,
+                RowSizes = new int[rows],
+                RowDy = pass.Measure.RowDy[hubId],
+                GutterPx = gutter
+            };
+        }
+        plan.Columns.Place(cfg, wrapsByHub, skipRevealed: true);
+
+        double half = 0.0;
+        double minX = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity;
+        foreach (LayoutNode node in tree.Nodes)
+        {
+            if (UnderReveal(node))
+                continue;
+            double plate = node.DotRadius + LabelPlacer.LabelPadPx + Math.Max(node.Width, cfg.MinNodeWidthPx);
+            half = Math.Max(half, Math.Max(node.DotRadius, node.Height / 2.0));
+            minX = Math.Min(minX, node.X - node.DotRadius);
+            maxX = Math.Max(maxX, node.X + plate);
+            if (node == tree.Root && wrapsByHub.ContainsKey(node.Id))
+                minX = Math.Min(minX, node.X - plate);
+        }
+        TidyTree.WellMeasure measure = pass.Measure;
+        return (maxX - minX, measure.Bottom - measure.Top + 2.0 * half);
+    }
+
+    #endregion
 }
