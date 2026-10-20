@@ -17,7 +17,7 @@ public sealed class Mod
     private static Harmony? _harmony;
     private static bool _validationDumped;
 
-    private const string TestedGameVersion = "v2026.10.13.5602";
+    private const string TestedGameVersion = "v2026.10.19.5638";
 
     [StarMapAllModsLoaded]
     public void OnFullyLoaded()
