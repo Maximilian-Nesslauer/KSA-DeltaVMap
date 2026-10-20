@@ -14,11 +14,13 @@ namespace DeltaVMap.Model;
 // The model follows the game's interstellar planner (OrbitalTransfers.SolveInterstellar,
 // OrbitalTransfers.TargetInterstellarPeriapsis): the coast runs from the source star (the nearest
 // star at or above the departure body, Universe.NearestStar of the vessel in stock) to the
-// destination star (the nearest star at or above the target, else the system root), and a star
-// or barycenter target is captured around its own mass (Barycenter.Mass for a multiple system)
-// at a periapsis that defaults to 1 AU. Unlike stock, the departure climbs through every level
-// above the parking orbit, so a moon or a planet of an orbiting star also gets an estimate, and
-// the capture runs the whole chain down into a planet's or a moon's own low orbit.
+// destination star (the nearest star at or above the target), and a star target is captured
+// around its own mass at a periapsis that defaults to 1 AU, the default of the stock TARGET
+// PERIAPSIS. Stock plans only to a star. For a barycenter target, the map still coasts to the
+// barycenter and captures around Barycenter.Mass, while the stock button opens on the most
+// massive star of that system (StockDestinationStar). Unlike stock, the departure climbs through
+// every level above the parking orbit, so a moon or a planet of an orbiting star also gets an
+// estimate, and the capture runs the whole chain down into a planet's or a moon's own low orbit.
 internal static class InterstellarLegs
 {
     public static InterstellarLeg Build(PhysicalNode departBody, PhysicalNode target, double capturePeriapsis)
@@ -152,6 +154,14 @@ internal static class InterstellarLegs
     public static PhysicalNode DestinationPoint(PhysicalNode target)
     {
         return NearestStarAtOrAbove(target);
+    }
+
+    // The star the stock planner gets for target (ForestRules.DestinationStar). It differs from
+    // DestinationPoint only for a target with no star above it, where stock needs a star and the
+    // map keeps the barycenter as the end of the coast.
+    public static PhysicalNode? StockDestinationStar(PhysicalNode target)
+    {
+        return ForestRules.DestinationStar(target, n => n.Parent, n => n.IsStar, n => n.Children, n => (n.Id, n.Body.Mass));
     }
 
     private static PhysicalNode NearestStarAtOrAbove(PhysicalNode body)

@@ -11,10 +11,12 @@ namespace DeltaVMap.HarnessTests;
 // The OPEN STOCK TRANSFER PLANNER button preselects the interstellar plan through private
 // TransferPlanner statics. A game update that renames or retypes one of them only degrades the
 // button to opening the window, so this test resolves every key and fails on any that is gone.
-// It then writes the plan type and, in a system with several roots, a destination root the way
-// the button does, reads the state back and restores what stock held before. With several roots
-// and a vessel in the system, it also runs the full button path, source included, and checks
-// which departure root lets the destination through.
+// It then writes the plan type and, in a system with several roots, a destination star the way
+// the button does, reads the state back and restores what stock held before. Stock offers only
+// the stars outside the vessel's own root (TransferPlanner.PopulateWithStars), so with several
+// roots and a vessel in the system it also runs the full button path, source included, checks
+// which departure root and which destinations get through, and checks the star a route
+// preselects.
 public sealed class StockPlannerKeysTest : IHarnessTest
 {
     private const string Tag = "[dvmap-stock-planner]";
@@ -38,14 +40,8 @@ public sealed class StockPlannerKeysTest : IHarnessTest
 
             ok &= CheckSelection(null);
 
-            Astronomical? destination = null;
-            ReadOnlySpan<IIndependentRoot> roots = Universe.Roots;
             IIndependentRoot? home = session.System.HomeBody != null ? IIndependentRoot.RootOf(session.System.HomeBody) : null;
-            for (int i = 0; i < roots.Length && destination == null; i++)
-            {
-                if (!ReferenceEquals(roots[i], home) && roots[i] is Astronomical astro)
-                    destination = astro;
-            }
+            StellarBody? destination = FirstStarOutside(home);
             if (destination != null)
             {
                 ok &= CheckSelection(destination);
@@ -53,7 +49,7 @@ public sealed class StockPlannerKeysTest : IHarnessTest
             }
             else
             {
-                HarnessLog.Line($"{Tag} SKIP destination: system '{session.System.Id}' has no second root.");
+                HarnessLog.Line($"{Tag} SKIP destination: system '{session.System.Id}' has no star outside the home root.");
             }
         }
         catch (Exception ex)
@@ -91,8 +87,21 @@ public sealed class StockPlannerKeysTest : IHarnessTest
         return ok;
     }
 
+    // The first star outside root, in the Universe.Stars order stock lists them in.
+    private static StellarBody? FirstStarOutside(IIndependentRoot? root)
+    {
+        ReadOnlySpan<StellarBody> stars = Universe.Stars;
+        for (int i = 0; i < stars.Length; i++)
+        {
+            if (!ReferenceEquals(IIndependentRoot.RootOf(stars[i]), root))
+                return stars[i];
+        }
+        return null;
+    }
+
     // The button path with a real vessel: StockDestination accepts only the root the vessel is
-    // nearest to as the departure, and Preselect makes the vessel the source as well.
+    // nearest to as the departure and only a star stock lists as the destination, and Preselect
+    // makes the vessel the source as well.
     private static bool CheckButtonPath(CelestialSystem system)
     {
         Vehicle? vehicle = null;
@@ -109,23 +118,37 @@ public sealed class StockPlannerKeysTest : IHarnessTest
 
         if (Universe.NearestRoot(vehicle.GetPositionEcl()) is not Astronomical own)
             return Check($"vessel {vehicle.Id} has a nearest root", false);
-        Astronomical? other = null;
-        ReadOnlySpan<IIndependentRoot> roots = Universe.Roots;
-        for (int i = 0; i < roots.Length && other == null; i++)
-        {
-            if (!ReferenceEquals(roots[i], own) && roots[i] is Astronomical astro)
-                other = astro;
-        }
+        StellarBody? other = FirstStarOutside((IIndependentRoot)own);
         if (other == null)
-            return Check($"a root other than {own.Id} exists", false);
+            return Check($"a star outside {own.Id} exists", false);
+        if (IIndependentRoot.RootOf(other) is not Astronomical otherRoot)
+            return Check($"star {other.Id} has a root", false);
 
         bool ok = Check($"{own.Id} to {other.Id} is a stock destination for {vehicle.Id}",
             ReferenceEquals(StockPlannerBridge.StockDestination(vehicle, own, other), other));
-        ok &= Check($"departure {other.Id} is refused for {vehicle.Id}",
-            StockPlannerBridge.StockDestination(vehicle, other, own) == null);
-        ok &= Check($"the vessel's own root {own.Id} is refused as the destination",
-            StockPlannerBridge.StockDestination(vehicle, own, own) == null);
+        ok &= Check($"departure {otherRoot.Id} is refused for {vehicle.Id}",
+            StockPlannerBridge.StockDestination(vehicle, otherRoot, other) == null);
+        StellarBody? ownStar = Universe.NearestStar(vehicle.GetPositionEcl());
+        ok &= Check($"the vessel's own star {ownStar?.Id} is refused as the destination",
+            ownStar != null && StockPlannerBridge.StockDestination(vehicle, own, ownStar) == null);
+        Barycenter? barycenter = null;
+        ReadOnlySpan<IIndependentRoot> roots = Universe.Roots;
+        for (int i = 0; i < roots.Length && barycenter == null; i++)
+        {
+            if (!ReferenceEquals(roots[i], own) && roots[i] is Barycenter b)
+                barycenter = b;
+        }
+        if (barycenter != null)
+        {
+            ok &= Check($"the barycenter {barycenter.Id} is refused as the destination",
+                StockPlannerBridge.StockDestination(vehicle, own, barycenter) == null);
+        }
+        else
+        {
+            HarnessLog.Line($"{Tag} SKIP barycenter destination: system '{system.Id}' has no barycenter root.");
+        }
         ok &= CheckPlanetRoute(system, vehicle, own);
+        ok &= CheckRouteStars(system, vehicle, own);
 
         StockPlannerBridge.PlannerState before = StockPlannerBridge.Capture();
         try
@@ -134,8 +157,19 @@ public sealed class StockPlannerKeysTest : IHarnessTest
             StockPlannerBridge.PlannerState after = StockPlannerBridge.Capture();
             ok &= Check("button path: PLAN TYPE is Interstellar", after.Type.GetKey() == StockPlannerBridge.InterstellarKey);
             ok &= Check($"button path: the source is {vehicle.Id}", after.Source.GetKey() == vehicle.Id);
-            ok &= Check($"button path: the destination is {other.Id}", after.Destination.GetKey() == other.Id);
+            ok &= Check($"button path: the destination is the star {other.Id}",
+                after.Destination.Body is StellarBody star && star.Id == other.Id);
             ok &= Check("button path: no stale transfer is shown", !after.Calculated && after.Entry == null);
+            // Stock keeps any star as its destination, but its DESTINATION combo shows a star only
+            // when its own list holds it, else the first entry, so a pick outside the list would
+            // show one star while stock plans for another.
+            var list = new TransferObject[Universe.Stars.Length];
+            int count = 0;
+            TransferPlanner.PopulateWithStars(list, ref count);
+            bool listed = false;
+            for (int i = 0; i < count; i++)
+                listed |= list[i].GetKey() == other.Id;
+            ok &= Check($"button path: stock lists {other.Id}, so its combo shows the pick", listed);
         }
         finally
         {
@@ -145,8 +179,8 @@ public sealed class StockPlannerKeysTest : IHarnessTest
         return ok;
     }
 
-    // A route to a planet of another star system preselects that system's root: stock can only
-    // target a root, so the panel passes InterstellarRoute.DestinationRoot.
+    // A route to a planet of another star system preselects the star it orbits, while the route
+    // still names that system's root for the map.
     private static bool CheckPlanetRoute(CelestialSystem system, Vehicle vehicle, Astronomical own)
     {
         SystemGraph? graph = SystemGraph.Build(system);
@@ -157,14 +191,84 @@ public sealed class StockPlannerKeysTest : IHarnessTest
             return true;
         }
         VisualTree tree = VisualTree.Build(graph, new DvCache(), home, null, BuildOptions.Default);
+        InterstellarRoute? leg = RouteTo(graph, tree, home, "ProximaCentaurib");
+        Astronomical? destination = leg?.DestinationStar?.Astro;
+        return Check("a route to ProximaCentaurib preselects ProximaCentauri in AlphaCentauri",
+            destination != null && destination.Id == "ProximaCentauri" && leg!.DestinationRoot?.Id == "AlphaCentauri"
+            && ReferenceEquals(StockPlannerBridge.StockDestination(vehicle, leg.SourceRoot.Astro, destination), destination));
+    }
+
+    // A route to the parking orbit of every other system root preselects the root itself when it
+    // is a star, else the most massive star under it by the masses the graph reads. A route to the
+    // parking orbit of a star of a multiple system preselects exactly that star, also when it is
+    // not the most massive one. Stock must accept each pick.
+    private static bool CheckRouteStars(CelestialSystem system, Vehicle vehicle, Astronomical own)
+    {
+        SystemGraph? graph = SystemGraph.Build(system);
+        PhysicalNode? home = graph != null && system.HomeBody != null ? graph.Find(system.HomeBody.Id) : null;
+        if (graph == null || home == null || !ReferenceEquals(SystemGraph.SystemRootOf(home).Astro, own))
+        {
+            HarnessLog.Line($"{Tag} SKIP route stars: needs a vessel in the home system.");
+            return true;
+        }
+        VisualTree tree = VisualTree.Build(graph, new DvCache(), home, null, BuildOptions.Default);
+        bool ok = true;
+        foreach (PhysicalNode root in graph.Roots)
+        {
+            if (ReferenceEquals(root, graph.HomeRoot))
+                continue;
+            var stars = new List<PhysicalNode>();
+            CollectStars(root, stars);
+            PhysicalNode? heaviest = null;
+            foreach (PhysicalNode star in stars)
+            {
+                if (heaviest == null || star.Body.Mass > heaviest.Body.Mass)
+                    heaviest = star;
+            }
+            ok &= CheckRouteStar(graph, tree, home, vehicle, root, heaviest);
+            foreach (PhysicalNode star in stars)
+            {
+                if (!ReferenceEquals(star, root))
+                    ok &= CheckRouteStar(graph, tree, home, vehicle, star, star);
+            }
+        }
+        return ok;
+    }
+
+    private static bool CheckRouteStar(SystemGraph graph, VisualTree tree, PhysicalNode home, Vehicle vehicle, PhysicalNode target, PhysicalNode? expected)
+    {
+        if (tree.FindBodyNode(target.Id, StateKind.LowOrbit) == null)
+        {
+            HarnessLog.Line($"{Tag} SKIP route star {target.Id}: its parking orbit is not in the map.");
+            return true;
+        }
+        InterstellarRoute? leg = RouteTo(graph, tree, home, target.Id);
+        PhysicalNode? star = leg?.DestinationStar;
+        bool ok = Check($"a route to {target.Id} preselects {expected?.Id}", star != null && ReferenceEquals(star, expected));
+        if (leg != null && star != null)
+        {
+            ok &= Check($"stock accepts {star.Id} for {vehicle.Id}",
+                ReferenceEquals(StockPlannerBridge.StockDestination(vehicle, leg.SourceRoot.Astro, star.Astro), star.Astro));
+        }
+        return ok;
+    }
+
+    private static void CollectStars(PhysicalNode node, List<PhysicalNode> stars)
+    {
+        if (node.IsStar)
+            stars.Add(node);
+        foreach (PhysicalNode child in node.Children)
+            CollectStars(child, stars);
+    }
+
+    // The interstellar leg of the route from the home body's low orbit to the low or parking orbit
+    // of bodyId, the node MapWindow.ResolveTarget picks for a click on that body.
+    private static InterstellarRoute? RouteTo(SystemGraph graph, VisualTree tree, PhysicalNode home, string bodyId)
+    {
         StateNode? origin = tree.FindBodyNode(home.Id, StateKind.LowOrbit);
-        StateNode? target = tree.FindBodyNode("ProximaCentaurib", StateKind.LowOrbit);
+        StateNode? target = tree.FindBodyNode(bodyId, StateKind.LowOrbit);
         RoutePath? path = origin != null && target != null ? RouteFinder.FindPath(origin, target) : null;
-        InterstellarRoute? leg = path != null ? RouteAccumulator.Accumulate(path, graph, new RouteOptions(), RouteContext.None).Interstellar : null;
-        Astronomical? destination = leg?.DestinationRoot?.Astro;
-        return Check("a route to ProximaCentaurib preselects AlphaCentauri",
-            destination != null && destination.Id == "AlphaCentauri"
-            && ReferenceEquals(StockPlannerBridge.StockDestination(vehicle, leg!.SourceRoot.Astro, destination), destination));
+        return path != null ? RouteAccumulator.Accumulate(path, graph, new RouteOptions(), RouteContext.None).Interstellar : null;
     }
 
     private static bool Check(string what, bool pass)

@@ -34,10 +34,14 @@ internal sealed class InterstellarRoute
     public required PhysicalNode DepartBody { get; init; }
     public required PhysicalNode Target { get; init; }
 
-    // The two system roots, for the stock planner preselection. DestinationRoot is null for a
-    // capture inside the system the vessel already coasts through on an open orbit.
+    // The two system roots. DestinationRoot is null for a capture inside the system the vessel
+    // already coasts through on an open orbit.
     public required PhysicalNode SourceRoot { get; init; }
     public PhysicalNode? DestinationRoot { get; init; }
+
+    // The star the stock planner is preselected to (InterstellarLegs.StockDestinationStar),
+    // null exactly when DestinationRoot is null or the destination system holds no star.
+    public PhysicalNode? DestinationStar { get; init; }
 
     // The part of the chain capture that the route charges again as the circularize ladder
     // step after an Intercept anchor (DeltaVCalculator.EscapeToSoi), the same split as a
@@ -307,6 +311,7 @@ internal static class RouteAccumulator
             Target = target,
             SourceRoot = SystemGraph.SystemRootOf(departBody),
             DestinationRoot = crossesSystems ? SystemGraph.SystemRootOf(target) : null,
+            DestinationStar = crossesSystems ? InterstellarLegs.StockDestinationStar(target) : null,
             CaptureSplitDv = split,
             TargetIsHub = target.IsHubOnly,
             FromVessel = context.FromVessel && !inTransit,

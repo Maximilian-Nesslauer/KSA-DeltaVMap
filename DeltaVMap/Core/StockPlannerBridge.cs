@@ -21,10 +21,13 @@ namespace DeltaVMap.Core;
 // AfterGui draw, which is after stock drew the window for this frame, so stock never sees half of
 // them.
 //
-// SetTransferInfo leaves an interstellar plan alone: a system root is a FixedStar or a Barycenter,
-// neither is an IOrbiter, so TransferPlanner.Destination is null and SetTransferInfo only clears
-// the transfer info. That also holds when the window appears on the next frame and stock calls it
-// again.
+// The destination is always a star, because stock offers only stars (TransferPlanner.PopulateWithStars).
+// A FixedStar is no IOrbiter, so for it TransferPlanner.Destination is null and SetTransferInfo
+// only clears the transfer info. An OrbitingStar (a star of a multiple system) is an IOrbiter, so
+// SetTransferInfo builds a Hohmann TransferInfo for it and can pick a new _selectedTimeUnit in
+// place of Years. Stock runs SetTransferInfo when the window appears on the next frame and on a
+// SOURCE change, and it does so after the player's own pick of such a star too, so the bridge
+// still ends in the state that pick ends in.
 internal static class StockPlannerBridge
 {
     internal const string InterstellarKey = "Interstellar";
@@ -78,16 +81,16 @@ internal static class StockPlannerBridge
     }
 
     // Opens the window, selects the interstellar plan type, makes vehicle the source, and selects
-    // the destination too when StockDestination accepts it. Without the keys it only opens the
-    // window.
-    internal static void OpenInterstellar(Vehicle vehicle, Astronomical? departureRoot, Astronomical? destinationRoot)
+    // destinationStar too when StockDestination accepts it, else clears a destination star that
+    // stock does not list. Without the keys it only opens the window.
+    internal static void OpenInterstellar(Vehicle vehicle, Astronomical? departureRoot, Astronomical? destinationStar)
     {
         TransferPlanner.ShowPlanWindow = true;
         if (_broken)
             return;
         try
         {
-            if (!Preselect(vehicle, departureRoot, destinationRoot))
+            if (!Preselect(vehicle, departureRoot, destinationStar))
             {
                 LogHelper.WarnOnce("stock-planner-keys",
                     $"[DvMap] The stock Transfer Planner opens without a preselected plan. Missing: {string.Join(", ", MissingKeys())}.");
@@ -102,13 +105,17 @@ internal static class StockPlannerBridge
 
     // The writes of OpenInterstellar without the window, also for a harness test. False when a key
     // is missing, and then nothing is written.
-    internal static bool Preselect(Vehicle vehicle, Astronomical? departureRoot, Astronomical? destinationRoot)
+    internal static bool Preselect(Vehicle vehicle, Astronomical? departureRoot, Astronomical? destinationStar)
     {
         if (Missing.Count > 0 || !TryFindInterstellarType(out TransferType interstellar) || !TryFindYears(out TimeObject years))
             return false;
         SelectType(interstellar, years);
         SelectSource(vehicle);
-        SelectDestination(StockDestination(vehicle, departureRoot, destinationRoot));
+        Astronomical? destination = StockDestination(vehicle, departureRoot, destinationStar);
+        if (destination != null)
+            SelectDestination(destination);
+        else
+            ClearUnlistedStar(vehicle);
         return true;
     }
 
@@ -178,6 +185,20 @@ internal static class StockPlannerBridge
         InterstellarDepartureFailedRef!() = false;
     }
 
+    // Stock replaces only a destination that is no star with its first entry, on its next draw
+    // (TransferPlanner.DrawInterstellarPlan). It keeps a star that it does not list for the source
+    // and plans to that star, while its DESTINATION combo shows the first entry, because
+    // TransferPlanner.DrawComboControl writes the value only when a key matches. A star left from
+    // an earlier pick can be such a star after the vessel changed systems, so it is cleared here,
+    // and stock then shows and plans the same first entry. The writes are those of that stock reset.
+    private static void ClearUnlistedStar(Vehicle vehicle)
+    {
+        if (DestinationBodyRef!().Body is not StellarBody star || IsListed(vehicle, star))
+            return;
+        DestinationBodyRef!() = new TransferObject(-1);
+        TransferCalculatedRef!() = false;
+    }
+
     // Stock cancels only while a calculation runs, and disposes the source only after it cleared
     // that flag. A source that was disposed all the same has nothing left to cancel.
     private static void CancelCalculation()
@@ -193,24 +214,36 @@ internal static class StockPlannerBridge
         }
     }
 
-    // destinationRoot when stock offers it as a destination for this vehicle, else null. Stock
-    // lists every root except the one the vehicle is nearest to (TransferPlanner.PopulateWithStars)
-    // and departs from that root, so departureRoot must be it too, or the panel would show one
-    // route and stock would plan another.
-    internal static Astronomical? StockDestination(Vehicle vehicle, Astronomical? departureRoot, Astronomical? destinationRoot)
+    // destinationStar when stock offers it as a destination for this vehicle, else null. Stock
+    // lists every star of Universe.Stars whose root is not the root the vehicle is nearest to
+    // (TransferPlanner.PopulateWithStars), and departs from that root, so departureRoot must be it
+    // too, or the panel would show one route and stock would plan another. A barycenter is never
+    // in that list, and neither is a star of the vehicle's own multiple system. Stock keeps a star
+    // outside the list as its destination but shows the first entry in its DESTINATION combo, so
+    // a pick outside the list would show one star while stock plans for another.
+    internal static Astronomical? StockDestination(Vehicle vehicle, Astronomical? departureRoot, Astronomical? destinationStar)
     {
-        if (departureRoot == null || destinationRoot is not IIndependentRoot destination)
+        if (departureRoot == null || destinationStar is not StellarBody star)
             return null;
         IIndependentRoot? own = Universe.NearestRoot(vehicle.GetPositionEcl());
-        if (own == null || !ReferenceEquals(own, departureRoot) || ReferenceEquals(own, destination))
+        if (own == null || !ReferenceEquals(own, departureRoot))
             return null;
-        ReadOnlySpan<IIndependentRoot> roots = Universe.Roots;
-        for (int i = 0; i < roots.Length; i++)
+        return IsListed(vehicle, star) ? star : null;
+    }
+
+    // The test of TransferPlanner.PopulateWithStars with vehicle as the source.
+    private static bool IsListed(Vehicle vehicle, StellarBody star)
+    {
+        IIndependentRoot? own = Universe.NearestRoot(vehicle.GetPositionEcl());
+        if (ReferenceEquals(IIndependentRoot.RootOf(star), own))
+            return false;
+        ReadOnlySpan<StellarBody> stars = Universe.Stars;
+        for (int i = 0; i < stars.Length; i++)
         {
-            if (ReferenceEquals(roots[i], destination))
-                return destinationRoot;
+            if (ReferenceEquals(stars[i], star))
+                return true;
         }
-        return null;
+        return false;
     }
 
     // Searched by key, not by index, because other mods add their own plan types to the list.

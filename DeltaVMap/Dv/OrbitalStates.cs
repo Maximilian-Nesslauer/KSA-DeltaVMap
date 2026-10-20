@@ -223,8 +223,9 @@ internal static class OrbitalStates
         };
     }
 
-    // Parking radius around a star or barycenter: 1 AU, the periapsis the game's interstellar
-    // planner aims at around a destination root.
+    // Parking radius around a star or barycenter: 1 AU, the default TARGET PERIAPSIS of the
+    // game's interstellar planner around a destination star, which stock also keeps inside half
+    // that star's SOI.
     public const double HubParkingRadius = InterstellarMath.AstronomicalUnit;
 
     // The parking radius actually used around a star or barycenter for a requested one: kept

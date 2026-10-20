@@ -56,7 +56,8 @@ internal static class InterstellarMath
 {
     public const double SpeedOfLight = 299792458.0;
 
-    // The game's interstellar planner aims at a 1 AU periapsis around the destination root.
+    // 1 AU is the default TARGET PERIAPSIS of the game's interstellar planner around the
+    // destination star.
     public const double AstronomicalUnit = 149597870700.0;
 
     // Coarse samples over the departure point, then golden-section steps around the best sample.

@@ -125,6 +125,10 @@ internal sealed class InterstellarSection
     private double _dvScale = 1.0;
     private bool _fromSurface;
 
+    // The stock planner hint for the route's DestinationStar, built once per star.
+    private PhysicalNode? _hintStar;
+    private string _hintText = "";
+
     private readonly record struct LegKey(SystemGraph? Graph, string? DepartId, string? TargetId, float PeriapsisAu, bool Arrival);
 
     private readonly record struct ViewKey(
@@ -220,6 +224,8 @@ internal sealed class InterstellarSection
         _fuelInputs = null;
         _graph = null;
         _route = null;
+        _hintStar = null;
+        _hintText = "";
         HasView = false;
         Failed = false;
         Badge = null;
@@ -456,9 +462,10 @@ internal sealed class InterstellarSection
         DrawRows(_fuelRows);
     }
 
-    // Opens the stock planner on an interstellar plan from this vessel to the route's system.
-    // Stock departs only from the vessel's own system (StockPlannerBridge.StockDestination), so
-    // for a map rooted elsewhere, or a vessel in transit, the button selects the plan type alone
+    // Opens the stock planner on an interstellar plan from this vessel to the route's
+    // DestinationStar, which for a barycenter is the most massive star of that system, so the hint
+    // names it. Stock departs only from the vessel's own system (StockPlannerBridge.StockDestination),
+    // so for a map rooted elsewhere, or a vessel in transit, the button selects the plan type alone
     // and the player picks the destination there.
     public void DrawStockPlannerButton()
     {
@@ -469,15 +476,27 @@ internal sealed class InterstellarSection
             return;
         ImGui.Separator();
         Astronomical? departure = _route.InTransit ? null : _route.SourceRoot.Astro;
-        Astronomical? destination = _route.DestinationRoot?.Astro;
+        PhysicalNode? star = _route.DestinationStar;
+        Astronomical? destination = star?.Astro;
         if (ConsoleWidgets.Button("OPEN STOCK TRANSFER PLANNER".AsSpan()))
             StockPlannerBridge.OpenInterstellar(vehicle, departure, destination);
         if (!StockPlannerBridge.IsAvailable)
+        {
             ImGui.TextWrapped("Set PLAN TYPE to Interstellar there.");
-        else if (StockPlannerBridge.StockDestination(vehicle, departure, destination) != null)
-            ImGui.TextWrapped("Opens on the Interstellar plan to this system.");
+        }
+        else if (star != null && StockPlannerBridge.StockDestination(vehicle, departure, destination) != null)
+        {
+            if (!ReferenceEquals(star, _hintStar))
+            {
+                _hintStar = star;
+                _hintText = "Opens on the Interstellar plan to " + star.Id + ".";
+            }
+            ImGui.TextWrapped(_hintText);
+        }
         else
+        {
             ImGui.TextWrapped("Opens on the Interstellar plan. Pick the destination there.");
+        }
     }
 
     private static void DrawRows(List<Row> rows)

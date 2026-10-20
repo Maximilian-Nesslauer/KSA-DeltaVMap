@@ -199,11 +199,13 @@ public sealed class MultiStarGraphTest : IHarnessTest
         if (origin == null)
             return Check("the medium-orbit you-are-here node exists", false);
 
-        foreach ((string bodyId, StateKind kind, string root) in new[]
+        // The star is what the stock planner button preselects: the planet's own star, and for the
+        // barycenter its most massive star.
+        foreach ((string bodyId, StateKind kind, string root, string star) in new[]
         {
-            ("ProximaCentaurib", StateKind.LowOrbit, "AlphaCentauri"),
-            ("BarnardsStarb", StateKind.Surface, "BarnardsStar"),
-            ("AlphaCentauri", StateKind.LowOrbit, "AlphaCentauri")
+            ("ProximaCentaurib", StateKind.LowOrbit, "AlphaCentauri", "ProximaCentauri"),
+            ("BarnardsStarb", StateKind.Surface, "BarnardsStar", "BarnardsStar"),
+            ("AlphaCentauri", StateKind.LowOrbit, "AlphaCentauri", "AlphaCentauriA")
         })
         {
             StateNode? target = tree.FindBodyNode(bodyId, kind);
@@ -225,6 +227,7 @@ public sealed class MultiStarGraphTest : IHarnessTest
                 continue;
             ok &= Check($"{bodyId}: departs {earth.Id} for {bodyId} in {root}",
                 leg.DepartBody.Id == earth.Id && leg.Target.Id == bodyId && leg.SourceRoot.Id == graph.HomeRoot.Id && leg.DestinationRoot?.Id == root);
+            ok &= Check($"{bodyId}: the stock planner star is {star}", leg.DestinationStar?.Id == star);
             bool noTransfer = true;
             foreach (RouteSegment segment in vessel.Segments)
                 noTransfer &= segment.Kind != SegmentKind.Transfer;
@@ -343,7 +346,9 @@ public sealed class MultiStarGraphTest : IHarnessTest
         bool ok = Check("the home root comes first", ReferenceEquals(graph.HomeRoot, SystemGraph.SystemRootOf(home)));
 
         // The stock planner measures from the star nearest the vessel (TransferPlanner.SourceStar)
-        // to the destination root (TransferPlanner.DrawInterstellarPlan, DISTANCE).
+        // to the destination star (TransferPlanner.DrawInterstellarPlan, DISTANCE). For a single
+        // star root that is the root itself. A barycenter is no stock destination, so for it the
+        // check holds the map's own coast to the barycenter against the same source star.
         StellarBody? sourceStar = Universe.NearestStar(home.Astro.GetPositionEcl());
         if (sourceStar == null)
             return Check("a star is nearest the home body", false);
@@ -361,7 +366,7 @@ public sealed class MultiStarGraphTest : IHarnessTest
             ok &= Check($"finite estimate to {root.Id}", double.IsFinite(total) && total > v && leg.Distance > 0.0);
 
             double stockDistance = (root.Astro.GetPositionEcl() - sourceStar.GetPositionEcl()).Length();
-            ok &= Check($"distance to {root.Id} is the stock planner's", Relative(leg.Distance, stockDistance) <= 1e-12);
+            ok &= Check($"distance to {root.Id} is measured from the stock source star", Relative(leg.Distance, stockDistance) <= 1e-12);
             double captureRadius = InterstellarLegs.CaptureRadius(root, InterstellarMath.AstronomicalUnit);
             double circular = Math.Sqrt(root.Body.Mass * G / captureRadius);
             ok &= Check($"capture at {root.Id} is around its own mass", Relative(leg.ArrivePark.Speed, circular) <= 1e-9);

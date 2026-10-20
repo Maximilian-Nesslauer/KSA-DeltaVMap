@@ -1498,8 +1498,71 @@ static int RunForestChecks()
     string order = string.Join(",", roots.ConvertAll(r => r.Id));
     fails += Check("roots are home first, then nearest, then by Id", order == "Sol,AlphaCentauri,Zeta,BarnardsStar,TauCeti");
 
+    // The stock content masses in Suns. The pick is the "A" star of every multiple system.
+    foreach ((string system, (string Id, double Mass)[] stars) in new[]
+    {
+        ("AlphaCentauri", new[] { ("AlphaCentauriA", 1.0788), ("AlphaCentauriB", 0.9092), ("ProximaCentauri", 0.1221) }),
+        ("Sirius", new[] { ("SiriusA", 2.063), ("SiriusB", 1.018) }),
+        ("61Cygni", new[] { ("61CygniA", 0.6772), ("61CygniB", 0.6289) }),
+        ("Procyon", new[] { ("ProcyonA", 1.478), ("ProcyonB", 0.592) })
+    })
+    {
+        string expected = stars[0].Id;
+        int pick = ForestRules.MostMassive(stars);
+        fails += Check($"{system}: the most massive star is {expected}", pick >= 0 && stars[pick].Id == expected);
+        var reversed = new List<(string Id, double Mass)>(stars);
+        reversed.Reverse();
+        int reversedPick = ForestRules.MostMassive(reversed);
+        fails += Check($"{system}: a reversed list still picks {expected}", reversedPick >= 0 && reversed[reversedPick].Id == expected);
+        var rotated = new List<(string Id, double Mass)>(stars);
+        rotated.Add(rotated[0]);
+        rotated.RemoveAt(0);
+        int rotatedPick = ForestRules.MostMassive(rotated);
+        fails += Check($"{system}: a rotated list still picks {expected}", rotatedPick >= 0 && rotated[rotatedPick].Id == expected);
+    }
+
+    var tied = new List<(string Id, double Mass)> { ("StarB", 1.0), ("StarA", 1.0), ("StarC", 0.5) };
+    fails += Check("equal masses pick the ordinal-smaller Id", ForestRules.MostMassive(tied) == 1);
+    tied.Reverse();
+    fails += Check("equal masses pick the ordinal-smaller Id in any order", ForestRules.MostMassive(tied) == 1);
+    var invalid = new List<(string Id, double Mass)> { ("Nan", double.NaN), ("Zero", 0.0), ("Negative", -2.0), ("Infinite", double.PositiveInfinity) };
+    fails += Check("NaN, zero, negative and infinite masses give no pick", ForestRules.MostMassive(invalid) == -1);
+    invalid.Add(("Valid", 0.1));
+    fails += Check("invalid masses are skipped", ForestRules.MostMassive(invalid) == 4);
+    fails += Check("an empty list gives no pick", ForestRules.MostMassive(new List<(string Id, double Mass)>()) == -1);
+    fails += Check("a single star picks itself", ForestRules.MostMassive(new List<(string Id, double Mass)> { ("Solo", 1.0) }) == 0);
+
+    var bary = new ForestTestNode("AlphaCentauri", false, 0.0);
+    ForestTestNode starA = bary.Add(new ForestTestNode("AlphaCentauriA", true, 1.0788));
+    ForestTestNode starB = bary.Add(new ForestTestNode("AlphaCentauriB", true, 0.9092));
+    ForestTestNode proxima = bary.Add(new ForestTestNode("ProximaCentauri", true, 0.1221));
+    ForestTestNode proximaB = proxima.Add(new ForestTestNode("ProximaCentaurib", false, 3.5e-6));
+    ForestTestNode moon = proximaB.Add(new ForestTestNode("ProximaCentaurib-moon", false, 1e-8));
+    ForestTestNode circumbinary = bary.Add(new ForestTestNode("Circumbinary", false, 1e-5));
+    fails += Check("a star hub is exactly that star, also when it is lighter", DestinationStarOf(starB) == starB);
+    fails += Check("the heaviest star hub is itself", DestinationStarOf(starA) == starA);
+    fails += Check("a planet gets the star it orbits", DestinationStarOf(proximaB) == proxima);
+    fails += Check("a moon gets the star its planet orbits", DestinationStarOf(moon) == proxima);
+    fails += Check("a barycenter gets its most massive star", DestinationStarOf(bary) == starA);
+    fails += Check("a circumbinary planet gets the most massive star", DestinationStarOf(circumbinary) == starA);
+
+    var empty = new ForestTestNode("EmptyBarycenter", false, 0.0);
+    ForestTestNode lonePlanet = empty.Add(new ForestTestNode("LonePlanet", false, 1e-6));
+    fails += Check("a barycenter with no star gives no star", DestinationStarOf(empty) == null);
+    fails += Check("a body under a starless barycenter gives no star", DestinationStarOf(lonePlanet) == null);
+
+    var sol = new ForestTestNode("Sol", true, 1.0);
+    ForestTestNode earth = sol.Add(new ForestTestNode("Earth", false, 3e-6));
+    fails += Check("a single fixed star root is itself", DestinationStarOf(sol) == sol);
+    fails += Check("a planet of a single star gets that star", DestinationStarOf(earth) == sol);
+
     Console.WriteLine(fails == 0 ? "  forest: OK" : $"  forest: {fails} FAIL");
     return fails;
+}
+
+static ForestTestNode? DestinationStarOf(ForestTestNode target)
+{
+    return ForestRules.DestinationStar(target, n => n.Parent, n => n.IsStar, n => n.Children, n => (n.Id, n.Mass));
 }
 
 // Assertions on the closed-form transfer-window formulas, run offline (no game state). Locks
@@ -3008,3 +3071,28 @@ static int Check(string name, bool ok)
 // The times of one rebuild in milliseconds, with the node count, the row candidates and the bytes
 // the ego layout and the collapsed compose allocate.
 readonly record struct RebuildTime(int Nodes, double Ego, long EgoBytes, int Candidates, double CandidatesMs, double CollapsedParts, double CollapsedCompose, double OpenedParts, double OpenedCompose, long ComposeBytes);
+
+// A body of a synthetic forest, standing in for PhysicalNode in the ForestRules.DestinationStar
+// checks.
+sealed class ForestTestNode
+{
+    public ForestTestNode(string id, bool isStar, double mass)
+    {
+        Id = id;
+        IsStar = isStar;
+        Mass = mass;
+    }
+
+    public string Id { get; }
+    public bool IsStar { get; }
+    public double Mass { get; }
+    public ForestTestNode? Parent { get; private set; }
+    public List<ForestTestNode> Children { get; } = new();
+
+    public ForestTestNode Add(ForestTestNode child)
+    {
+        child.Parent = this;
+        Children.Add(child);
+        return child;
+    }
+}
