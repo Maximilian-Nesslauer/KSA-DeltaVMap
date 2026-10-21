@@ -54,6 +54,9 @@ internal sealed class RoutePanelRenderer
     private readonly List<(string Text, bool Disabled)> _totals = new();
     private TextKey? _textKey;
     private RouteTotalsText _headline;
+    // ImGui.TextDisabled reads its text as a printf format, so the "%" of the margin note is
+    // doubled, else "12% piloting" prints a pointer for "%p".
+    private string _marginLineFormat = "";
 
     private string _barLabel = "";
     private float _barLabelW;
@@ -185,7 +188,7 @@ internal sealed class RoutePanelRenderer
         ImGui.Separator();
         ImGui.Text(_headline.Headline);
         if (_headline.MarginLine.Length > 0)
-            ImGui.TextDisabled(_headline.MarginLine);
+            ImGui.TextDisabled(_marginLineFormat);
         DrawVehicleBar(_headline.Needed, availableDv);
     }
 
@@ -352,6 +355,7 @@ internal sealed class RoutePanelRenderer
             Interstellar: route != null,
             CoastTimeLine: legView ? leg!.CoastTimeLine : null);
         _headline = RouteTotals.Build(in input, _totals);
+        _marginLineFormat = _headline.MarginLine.Replace("%", "%%");
     }
 
     // The lines wrap at the panel edge, so a long label never pushes its figure out of view.
