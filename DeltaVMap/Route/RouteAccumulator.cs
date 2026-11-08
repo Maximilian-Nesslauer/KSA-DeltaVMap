@@ -480,8 +480,8 @@ internal static class RouteAccumulator
 
     private static bool HasUsableAtmosphere(Astronomical body, Func<string, BodyLadder?> ladderFor)
     {
-        AtmosphereReference? atmo = ladderFor(body.Id)?.Body.GetAtmosphereReference();
-        return atmo != null && atmo.Physical.SeaLevelDensity > DeltaVCalculator.UsableAtmosphereDensity;
+        BodyLadder? ladder = ladderFor(body.Id);
+        return ladder != null && OrbitalStates.IsUsable(ladder.Body.GetPhysicalAtmosphere());
     }
 
     private static string DepartLabel(TransferLegs legs)

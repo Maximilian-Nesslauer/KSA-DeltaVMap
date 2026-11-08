@@ -112,15 +112,18 @@ internal sealed class TooltipRenderer
             Add("Eccentricity: " + orbiter.Orbit.Eccentricity.ToString("0.000", Inv));
         }
 
-        AtmosphereReference? atmosphere = body.GetAtmosphereReference();
+        PhysicalAtmosphere? atmosphere = OrbitalStates.Atmosphere(body.GetPhysicalAtmosphere());
         if (atmosphere == null)
         {
             AddDisabled("No atmosphere");
         }
         else
         {
-            double density = atmosphere.Physical.SeaLevelDensity;
-            Add("Atmosphere: " + density.ToString("0.###", Inv) + " kg/m3 at surface");
+            double density = OrbitalStates.SurfaceDensity(atmosphere);
+            // A trace atmosphere (Pluto, Triton) reads 0 at three decimals, so it gets three
+            // significant digits instead.
+            string densityText = density >= 0.001 ? density.ToString("0.###", Inv) : density.ToString("0.##E+0", Inv);
+            Add("Atmosphere: " + densityText + " kg/m3 at surface, up to " + (atmosphere.Height / 1000.0).ToString("0", Inv) + " km");
             // Use the density just read rather than re-fetching the atmosphere; the floor is
             // the one shared constant the jet/aerobrake/descent paths all gate on.
             bool usable = density > DeltaVCalculator.UsableAtmosphereDensity;

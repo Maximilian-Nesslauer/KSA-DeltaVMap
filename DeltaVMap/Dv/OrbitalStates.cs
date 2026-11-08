@@ -93,18 +93,41 @@ internal static class OrbitalStates
     // revisit if a modded system needs finer control.
     private const double GasGiantRadiusMeters = 15_000_000.0;
 
+    // Filters the game's runtime atmosphere of a body (GetPhysicalAtmosphere on the body):
+    // returns null when the body has none or when its boundary lies at the surface. The
+    // game builds PhysicalAtmosphere as a layered profile from the XML data, and its Height
+    // is the boundary altitude the game itself uses for the atmosphere radius and the
+    // vehicle region. A trace atmosphere that is already below the game's pressure and
+    // density cutoffs at the surface gets Height 0, so nothing ever flies through it and it
+    // counts as no atmosphere here.
+    public static PhysicalAtmosphere? Atmosphere(PhysicalAtmosphere? atmosphere)
+    {
+        return atmosphere != null && atmosphere.Height > 0.0 ? atmosphere : null;
+    }
+
+    // Air density (kg/m^3) at altitude zero of the layered profile.
+    public static double SurfaceDensity(PhysicalAtmosphere atmosphere)
+    {
+        return atmosphere.ComputeDensityAtAltitude(0.0);
+    }
+
     public static bool HasAtmosphere(IParentBody body)
     {
-        return body.GetAtmosphereReference() != null;
+        return Atmosphere(body.GetPhysicalAtmosphere()) != null;
     }
 
     // A usable atmosphere: dense enough to fly jets in and to brake against. Reuses the
-    // same sea-level density floor the descent and aerobrake models already apply, so the
+    // same surface density floor the descent and aerobrake models already apply, so the
     // jet halo and the aerobrake marker agree with the routing on which bodies "have air".
     public static bool HasUsableAtmosphere(Astronomical body)
     {
-        AtmosphereReference? atmosphere = body.GetAtmosphereReference();
-        return atmosphere != null && atmosphere.Physical.SeaLevelDensity > DeltaVCalculator.UsableAtmosphereDensity;
+        return IsUsable(body.GetPhysicalAtmosphere());
+    }
+
+    public static bool IsUsable(PhysicalAtmosphere? atmosphere)
+    {
+        atmosphere = Atmosphere(atmosphere);
+        return atmosphere != null && SurfaceDensity(atmosphere) > DeltaVCalculator.UsableAtmosphereDensity;
     }
 
     // True when the body carries a ring system in its template (Saturn in the stock
@@ -125,9 +148,9 @@ internal static class OrbitalStates
 
     public static double ComputeLowOrbitRadius(IParentBody body)
     {
-        AtmosphereReference? atmosphere = body.GetAtmosphereReference();
+        PhysicalAtmosphere? atmosphere = Atmosphere(body.GetPhysicalAtmosphere());
         bool hasAtmosphere = atmosphere != null;
-        double atmosphereHeight = hasAtmosphere ? atmosphere!.Physical.Height.InMeters() : 0.0;
+        double atmosphereHeight = atmosphere?.Height ?? 0.0;
         return LowOrbitHeuristic.Compute(body.MeanRadius, hasAtmosphere, atmosphereHeight, body.GetNearSurfaceRadius());
     }
 
@@ -288,14 +311,13 @@ internal static class OrbitalStates
         double rSurface = ladder.MeanRadius;
         double vacuum = DeltaVCalculator.AscentVacuum(ladder.Mu, rSurface, ladder.LowOrbitRadius);
 
-        AtmosphereReference? atmosphere = ladder.Body.GetAtmosphereReference();
+        PhysicalAtmosphere? atmosphere = Atmosphere(ladder.Body.GetPhysicalAtmosphere());
         if (atmosphere == null)
             return new AscentDv(vacuum, vacuum, hasAtmosphere: false);
 
-        double seaLevelDensity = atmosphere.Physical.SeaLevelDensity;
-        double atmosphereHeight = atmosphere.Physical.Height.InMeters();
+        double surfaceDensity = SurfaceDensity(atmosphere);
         double surfaceGravity = DeltaVCalculator.SurfaceGravity(ladder.Mu, rSurface);
-        double factor = DeltaVCalculator.AtmosphericAscentFactor(seaLevelDensity, surfaceGravity, atmosphereHeight, rSurface);
+        double factor = DeltaVCalculator.AtmosphericAscentFactor(surfaceDensity, surfaceGravity, atmosphere.Height, rSurface);
         return new AscentDv(vacuum, vacuum * factor, hasAtmosphere: true);
     }
 
@@ -311,11 +333,12 @@ internal static class OrbitalStates
     {
         double vacuumAscent = DeltaVCalculator.AscentVacuum(ladder.Mu, ladder.MeanRadius, ladder.LowOrbitRadius);
 
-        AtmosphereReference? atmosphere = ladder.Body.GetAtmosphereReference();
-        if (atmosphere == null || atmosphere.Physical.SeaLevelDensity <= DeltaVCalculator.UsableAtmosphereDensity)
+        PhysicalAtmosphere? atmosphere = Atmosphere(ladder.Body.GetPhysicalAtmosphere());
+        double surfaceDensity = atmosphere != null ? SurfaceDensity(atmosphere) : 0.0;
+        if (surfaceDensity <= DeltaVCalculator.UsableAtmosphereDensity)
             return vacuumAscent;
 
-        double densityRatio = atmosphere.Physical.SeaLevelDensity / DeltaVCalculator.StandardSeaLevelDensity;
+        double densityRatio = surfaceDensity / DeltaVCalculator.StandardSeaLevelDensity;
         return vacuumAscent * DeltaVCalculator.AtmosphericLandingFraction(densityRatio);
     }
 }

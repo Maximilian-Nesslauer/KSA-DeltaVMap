@@ -441,12 +441,12 @@ static int RunMathChecks()
     // Atmospheric landing fraction: bounded, and a thin atmosphere (Mars) costs more than a
     // thick one (Venus), with Earth between. Values cross-checked against the stock bodies.
     {
-        double mars = DeltaVCalculator.AtmosphericLandingFraction(0.02 / 1.225);
+        double mars = DeltaVCalculator.AtmosphericLandingFraction(0.0155 / 1.225);
         double earth = DeltaVCalculator.AtmosphericLandingFraction(1.0);
-        double venus = DeltaVCalculator.AtmosphericLandingFraction(65.0 / 1.225);
+        double venus = DeltaVCalculator.AtmosphericLandingFraction(65.5 / 1.225);
         fails += Check("landing fraction within clamp", mars <= 0.35 && venus >= 0.06);
         fails += Check("thin atmosphere costs more than thick", mars > earth && earth > venus);
-        fails += Approx("Mars landing fraction near first-cut value", mars, 0.2119, 0.02);
+        fails += Approx("Mars landing fraction near first-cut value", mars, 0.2364, 0.02);
     }
 
     // A transfer between bodies moving at their own speeds reduces to Hohmann when both move at

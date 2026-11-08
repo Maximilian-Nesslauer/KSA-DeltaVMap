@@ -90,10 +90,10 @@ internal static class DeltaVCalculator
     // atmosphere: drag sheds most of the orbital energy, so only a deorbit burn plus a
     // terminal landing burn remain. The cost falls as the atmosphere thickens (a thick
     // atmosphere like Venus brakes nearly to a stop; a thin one like Mars leaves a fast
-    // terminal descent). densityRatio is the body's sea-level density over the ISA standard.
+    // terminal descent). densityRatio is the body's surface density over the ISA standard.
     // The floor keeps a final touchdown burn even in a very thick atmosphere; the cap bounds
     // the wispiest atmospheres that barely brake. Checked offline against the stock bodies'
-    // own data: Earth landed ~510 m/s, Venus ~460, Mars ~775 (a thin atmosphere reading
+    // own data: Earth landed ~515 m/s, Venus ~445, Mars ~860 (a thin atmosphere reading
     // costlier than the thick ones, as it should). Tune here if an in-game figure reads wrong.
     public static double AtmosphericLandingFraction(double densityRatio)
     {
