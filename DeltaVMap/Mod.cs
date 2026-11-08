@@ -2,22 +2,28 @@ using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using DeltaVMap.Layout;
 using DeltaVMap.Model;
-using DeltaVMap.Patches;
 using DeltaVMap.Render;
 using Brutal.Logging;
-using HarmonyLib;
 using KSA;
 using StarMap.API;
+using StarMap.API.Services;
 
 namespace DeltaVMap;
 
 [StarMapMod]
 public sealed class Mod
 {
-    private static Harmony? _harmony;
     private static bool _validationDumped;
 
     private const string TestedGameVersion = "v2026.11.10.5801";
+
+    private readonly IModMenuService _modMenu;
+    private IDisposable? _modMenuItem;
+
+    public Mod(IModMenuService modMenu)
+    {
+        _modMenu = modMenu;
+    }
 
     [StarMapAllModsLoaded]
     public void OnFullyLoaded()
@@ -29,15 +35,16 @@ public sealed class Mod
                 $"[DvMap] Tested against {TestedGameVersion}, current is {gameVersion}. " +
                 "Some features may not work correctly.");
 
-        _harmony = new Harmony("com.maxi.deltavmap");
+        // StarMap calls the item from inside the game's menu bar draw, an active ImGui frame, so
+        // MapWindow.Instance can be created there. The label must be unique across mods, and a
+        // duplicate throws. Without the item the map is unreachable, but the mod stays loaded.
         try
         {
-            _harmony.CreateClassProcessor(typeof(Patch_MenuBar)).Patch();
+            _modMenuItem = _modMenu.AddModMenuItem("Delta-V Map", () => MapWindow.Instance.ToggleShown());
         }
         catch (Exception ex)
         {
-            // A missing menu hook leaves the map unreachable but must not unload the mod.
-            LogHelper.ErrorOnce("patch-" + nameof(Patch_MenuBar), $"[DvMap] Failed to apply the menu bar patch: {ex}");
+            LogHelper.ErrorOnce("mod-menu", $"[DvMap] Failed to add the Mods menu item: {ex}");
         }
 
         DefaultCategory.Log.Info("[DvMap] Loaded.");
@@ -74,8 +81,8 @@ public sealed class Mod
     [StarMapUnload]
     public void Unload()
     {
-        _harmony?.UnpatchAll(_harmony.Id);
-        _harmony = null;
+        _modMenuItem?.Dispose();
+        _modMenuItem = null;
         _validationDumped = false;
 
         MapWindow.ResetStatic();

@@ -58,7 +58,7 @@ A separate, opt-in layer draws the same data in the game's 3D map mode: the opti
 
 ## Installation
 
-1. Install [StarMap](https://github.com/StarMapLoader/StarMap).
+1. Install [StarMap](https://github.com/StarMapLoader/StarMap) 0.5.0 or later.
 2. Download the latest release from the [GitHub Releases](https://github.com/Maximilian-Nesslauer/KSA-DeltaVMap/releases) tab or from [SpaceDock](https://spacedock.info/mod/4294/DeltaVMap).
 3. Extract into `Documents\My Games\Kitten Space Agency\mods\DeltaVMap\`.
 4. The game auto-discovers new mods and prompts you to enable them. Alternatively, add to `Documents\My Games\Kitten Space Agency\manifest.toml`:
@@ -69,13 +69,13 @@ id = "DeltaVMap"
 enabled = true
 ```
 
-Open the map from the top-level **Delta-V Map** menu, in flight and in the editor.
+Open the map from **Mods > Delta-V Map**, in flight and in the editor.
 
 ## Dependencies
 
 | Package | Purpose | Tested version |
 | --- | --- | --- |
-| [StarMap](https://github.com/StarMapLoader/StarMap) | Mod loader, required at runtime (see [Installation](#installation)) | 0.4.6 |
+| [StarMap](https://github.com/StarMapLoader/StarMap) | Mod loader, version 0.5.0 or later, required at runtime (see [Installation](#installation)) | 0.5.2 |
 
 ## Build dependencies
 
@@ -83,7 +83,7 @@ Required only to build the mod from source. Targets **.NET 10**.
 
 | Package | Source | Tested Version |
 | --- | --- | --- |
-| [StarMap.API](https://github.com/StarMapLoader/StarMap) | NuGet | 0.3.6 |
+| [StarMap.API](https://github.com/StarMapLoader/StarMap) | NuGet | 0.5.2 |
 | [Lib.Harmony](https://www.nuget.org/packages/Lib.Harmony) | NuGet | 2.4.2 |
 
 ## Mod compatibility

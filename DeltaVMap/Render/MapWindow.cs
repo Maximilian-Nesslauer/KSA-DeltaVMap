@@ -326,6 +326,14 @@ internal sealed class MapWindow : ImGuiWindow
         _show = false;
     }
 
+    public void ToggleShown()
+    {
+        if (IsShown)
+            Close();
+        else
+            Open();
+    }
+
     public override void DrawMenuBar()
     {
         base.DrawMenuBar();
