@@ -12,14 +12,16 @@ internal static class LowOrbitHeuristic
     private const double ClearanceMeters = 10000.0;
     private const double AbsoluteFloorMeters = 5000.0;
 
-    public static double Compute(double meanRadius, bool hasAtmosphere, double atmosphereHeight, double nearSurfaceRadius)
+    public static double Compute(double meanRadius, bool hasAtmosphere, double atmosphereHeight, double maxTerrainRadius)
     {
         double rLo;
         if (hasAtmosphere)
         {
-            // About 10 km above the atmosphere boundary (or 10% of its height,
-            // whichever is larger, for very tall atmospheres).
-            rLo = meanRadius + atmosphereHeight + Math.Max(ClearanceMeters, 0.1 * atmosphereHeight);
+            // About 10 km above the atmosphere boundary, and never below the terrain
+            // clearance, because a thin atmosphere (Io) can end below the highest peaks.
+            // The boundary is a pressure and density cutoff far above where drag matters,
+            // so a percentage margin on top of it would only inflate tall, thin atmospheres.
+            rLo = Math.Max(meanRadius + atmosphereHeight, maxTerrainRadius) + ClearanceMeters;
         }
         else
         {
@@ -28,7 +30,7 @@ internal static class LowOrbitHeuristic
             // wins for larger airless bodies (e.g. Luna lands at ~87 km, not the
             // ~20 km the bare 10 km clearance would give), leaving margin over
             // unmodelled terrain.
-            rLo = Math.Max(nearSurfaceRadius + ClearanceMeters, meanRadius * 1.05);
+            rLo = Math.Max(maxTerrainRadius + ClearanceMeters, meanRadius * 1.05);
         }
 
         return Math.Max(rLo, meanRadius + AbsoluteFloorMeters);

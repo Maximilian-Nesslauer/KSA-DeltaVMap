@@ -151,7 +151,9 @@ internal static class OrbitalStates
         PhysicalAtmosphere? atmosphere = Atmosphere(body.GetPhysicalAtmosphere());
         bool hasAtmosphere = atmosphere != null;
         double atmosphereHeight = atmosphere?.Height ?? 0.0;
-        return LowOrbitHeuristic.Compute(body.MeanRadius, hasAtmosphere, atmosphereHeight, body.GetNearSurfaceRadius());
+        // MaxTerrainRadius, not GetNearSurfaceRadius: on an AtmosphericBody the latter returns the top of
+        // the atmosphere whenever the body has one, even one with a boundary at 0 km.
+        return LowOrbitHeuristic.Compute(body.MeanRadius, hasAtmosphere, atmosphereHeight, body.MaxTerrainRadius);
     }
 
     // Synchronous orbit radius, or null if the body does not rotate or the

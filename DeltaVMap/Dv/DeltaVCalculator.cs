@@ -28,7 +28,7 @@ internal static class DeltaVCalculator
     public const double StandardSeaLevelDensity = 1.225;
     public const double StandardSurfaceGravity = 9.81;
 
-    // Sea-level air density (kg/m^3) above which an atmosphere counts as "usable": thick
+    // Surface air density (kg/m^3) above which an atmosphere counts as "usable": thick
     // enough to fly a jet in and to aerobrake against. The jet halo, the aerobrake marker,
     // the landing model and the route's aerobrake eligibility all gate on this one floor so
     // they never disagree about which bodies have air.
@@ -68,9 +68,9 @@ internal static class DeltaVCalculator
     // Empirical loss factor applied to the vacuum ascent when the body has an
     // atmosphere, driven by atmospheric density and surface gravity. The result is
     // inherently approximate and clamped to a sane range.
-    public static double AtmosphericAscentFactor(double seaLevelDensity, double surfaceGravity, double atmosphereHeight, double rSurface)
+    public static double AtmosphericAscentFactor(double surfaceDensity, double surfaceGravity, double atmosphereHeight, double rSurface)
     {
-        double densityRatio = seaLevelDensity / StandardSeaLevelDensity;
+        double densityRatio = surfaceDensity / StandardSeaLevelDensity;
         double gravityRatio = surfaceGravity / StandardSurfaceGravity;
         double atmoDepth = atmosphereHeight / rSurface;
         double factor = 1.0
