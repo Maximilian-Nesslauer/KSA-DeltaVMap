@@ -679,11 +679,12 @@ internal sealed class VisualTree
             return edge;
         }
 
-        // Maximum plane-change dV for a sibling transfer, where both bodies orbit the same
-        // hub (two moons of a planet, or two planets of the star). It is turned against the
-        // cheaper hyperbolic-excess leg, the same rule the route accumulator applies, so the
-        // on-map number and the route breakdown agree. Returns zero for any pairing that is
-        // not a true sibling leg, or below the calculator's half-degree threshold.
+        // Plane-change dV for a sibling transfer, where both bodies orbit the same hub (two
+        // moons of a planet, or two planets of the star). It is turned in the burn at the
+        // cheaper end (DeltaVCalculator.TransferPlaneChange), the same rule the route
+        // accumulator applies, so the on-map number and the route breakdown agree. Returns zero
+        // for any pairing that is not a true sibling leg, or below the calculator's half-degree
+        // threshold.
         private static double SiblingPlaneChange(PhysicalNode a, PhysicalNode b, EdgeDv transfer)
         {
             if (a.Astro is not IOrbiter oa || b.Astro is not IOrbiter ob)
@@ -691,8 +692,9 @@ internal sealed class VisualTree
             if (oa.Orbit?.Parent == null || ob.Orbit?.Parent == null || !ReferenceEquals(oa.Orbit.Parent, ob.Orbit.Parent))
                 return 0.0;
             double di = oa.Orbit.GetRelativeInclination(ob.Orbit).Value();
-            double vInf = Math.Min(transfer.DepartDv, transfer.ArriveDv);
-            return DeltaVCalculator.PlaneChange(vInf, di);
+            return DeltaVCalculator.TransferPlaneChange(oa.Orbit.Parent.Mu,
+                OrbitalStates.TransferRadius(oa.Orbit), transfer.DepartDv,
+                OrbitalStates.TransferRadius(ob.Orbit), transfer.ArriveDv, di);
         }
 
         private static Edge ConnectLadder(StateNode from, StateNode to, SegmentKind kind, double ladderDv, bool isApproximate = false, double descentDv = 0.0)

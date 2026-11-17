@@ -180,13 +180,30 @@ internal static class DeltaVCalculator
         return vBurn - vPark;
     }
 
-    // Plane change at a node, given the circular speed at the relevant radius.
-    // Returns 0 below the half-degree threshold.
-    public static double PlaneChange(double circularSpeed, double relativeInclinationRad)
+    // The extra cost of a transfer between two orbits around one hub at a relative inclination,
+    // with the plane turned in the burn at one end of the transfer, the cheaper one. At an end of
+    // radius r the vessel changes between the circular speed vc and the transfer speed vt, which
+    // is the in-plane change vInf of that end. Turned in the same burn, the change is the vector
+    // difference of the two velocities, sqrt(vInf^2 + 4 vt vc sin^2(di / 2)), so the extra cost
+    // is that minus vInf. Between orbits of equal radius vInf is zero and the cost is the full
+    // 2 v sin(di / 2). For a large vInf it is far less, about vt vc (1 - cos di) / vInf. The
+    // speeds are those of circular orbits at the two transfer radii, and vInf comes from the
+    // caller, so an open or eccentric end keeps its own in-plane figure. Returns 0 below the
+    // half-degree threshold.
+    public static double TransferPlaneChange(double muHub, double r1, double vInf1, double r2, double vInf2, double relativeInclinationRad)
     {
         if (relativeInclinationRad < MinPlaneChangeRad)
             return 0.0;
-        return 2.0 * circularSpeed * Math.Sin(relativeInclinationRad / 2.0);
+        double sine = Math.Sin(relativeInclinationRad / 2.0);
+        double sum = r1 + r2;
+        double atFirst = CombinedTurn(vInf1, muHub / r1 * Math.Sqrt(2.0 * r2 / sum), sine);
+        double atSecond = CombinedTurn(vInf2, muHub / r2 * Math.Sqrt(2.0 * r1 / sum), sine);
+        return Math.Min(atFirst, atSecond);
+    }
+
+    private static double CombinedTurn(double vInf, double speedProduct, double halfAngleSine)
+    {
+        return Math.Sqrt(vInf * vInf + 4.0 * speedProduct * halfAngleSine * halfAngleSine) - vInf;
     }
 
     // Hohmann transfer time (half the transfer ellipse period).

@@ -383,8 +383,8 @@ static void PrintIssues(string kind, List<string> issues)
 
 // Assertions on the closed-form delta-v formulas, run offline (no game state). Locks the
 // comet velocity-match generalization, that it reduces to the exact Hohmann for two bound
-// endpoints, the intercept capture/circularize split identity, and the atmospheric landing
-// fraction across the stock bodies' density range.
+// endpoints, the intercept capture/circularize split identity, the plane change of a transfer,
+// and the atmospheric landing fraction across the stock bodies' density range.
 static int RunMathChecks()
 {
     int fails = 0;
@@ -466,6 +466,31 @@ static int RunMathChecks()
         DeltaVCalculator.TransferBetweenSpeeds(mu, r1, DeltaVCalculator.CircularSpeed(0.1 * mu, r1),
             r2, DeltaVCalculator.CircularSpeed(mu, r2), out double slowDepart, out _);
         fails += Check("a slower own-mass body pays more to depart", slowDepart > hd);
+    }
+
+    // The plane change of a transfer is the vector difference of the transfer and circular
+    // velocities at the cheaper end, less the in-plane change. Earth to Mars at 1.85 deg costs
+    // 100.2 m/s, at the Mars end. Between two orbits of equal radius at Jupiter's distance and
+    // 18 deg apart there is no in-plane change, so the full turn 2 v sin(9 deg) = 4084.8 m/s is
+    // due. Below half a degree nothing is charged.
+    {
+        double mu = 1.327e20;
+        double r1 = 1.496e11;
+        double r2 = 2.279e11;
+        double di = 1.85 * Math.PI / 180.0;
+        DeltaVCalculator.Hohmann(mu, r1, r2, out double hd, out double ha);
+        double cost = DeltaVCalculator.TransferPlaneChange(mu, r1, hd, r2, ha, di);
+        double vc2 = DeltaVCalculator.CircularSpeed(mu, r2);
+        double vt2 = vc2 * Math.Sqrt(2.0 * r1 / (r1 + r2));
+        double vector = Math.Sqrt(vt2 * vt2 + vc2 * vc2 - 2.0 * vt2 * vc2 * Math.Cos(di)) - ha;
+        fails += Approx("Earth->Mars plane change is the combined burn at Mars", cost, vector, 1e-9);
+        fails += Approx("Earth->Mars plane change ~ 100.2 m/s", cost, 100.15, 1e-3);
+
+        double rJupiter = 7.785e11;
+        double coOrbital = DeltaVCalculator.TransferPlaneChange(mu, rJupiter, 0.0, rJupiter, 0.0, 18.0 * Math.PI / 180.0);
+        fails += Approx("equal radii pay the full turn", coOrbital, 2.0 * DeltaVCalculator.CircularSpeed(mu, rJupiter) * Math.Sin(9.0 * Math.PI / 180.0), 1e-12);
+        fails += Approx("equal radii at 18 deg ~ 4084.8 m/s", coOrbital, 4084.78, 1e-4);
+        fails += Check("no plane change below half a degree", DeltaVCalculator.TransferPlaneChange(mu, r1, hd, r2, ha, 0.4 * Math.PI / 180.0) == 0.0);
     }
 
     Console.WriteLine(fails == 0 ? "  math: OK" : $"  math: {fails} FAIL");

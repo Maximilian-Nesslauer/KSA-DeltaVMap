@@ -461,13 +461,9 @@ internal static class RouteAccumulator
     // Plane change for a sibling leg only: both endpoints must orbit the same hub (two
     // planets of a star, or two moons of a planet). A hub-own-ladder transfer (one end
     // is the hub) and a cruise leg (one end is the star or barycenter hub) are skipped.
-    //
-    // The inclination is turned against the hyperbolic excess (v_inf), not the much
-    // larger hub-orbital speed: you tilt the departure (or arrival) asymptote, which is
-    // the realistic marginal cost over a coplanar transfer. Using the orbital speed here
-    // was the bug behind the wildly inflated figure - it overstated the cost by the ratio
-    // of orbital speed to v_inf (roughly 10x for an Earth-Mars transfer). Charge it at the
-    // cheaper (smaller v_inf) end.
+    // The plane is turned in the burn at the cheaper end of the transfer
+    // (DeltaVCalculator.TransferPlaneChange), so this is the marginal cost over a coplanar
+    // transfer: small for Earth to Mars, but the full turn between two orbits of equal radius.
     private static double PlaneChangeFor(TransferLegs legs)
     {
         if (legs.DepartBody is not IOrbiter a || legs.ArriveBody is not IOrbiter b)
@@ -478,8 +474,9 @@ internal static class RouteAccumulator
             return 0.0;
 
         double di = a.Orbit.GetRelativeInclination(b.Orbit).Value();
-        double vInf = Math.Min(legs.DepartVinf, legs.ArriveVinf);
-        return DeltaVCalculator.PlaneChange(vInf, di);
+        return DeltaVCalculator.TransferPlaneChange(a.Orbit.Parent.Mu,
+            OrbitalStates.TransferRadius(a.Orbit), legs.DepartVinf,
+            OrbitalStates.TransferRadius(b.Orbit), legs.ArriveVinf, di);
     }
 
     private static bool HasUsableAtmosphere(Astronomical body, Func<string, BodyLadder?> ladderFor)
