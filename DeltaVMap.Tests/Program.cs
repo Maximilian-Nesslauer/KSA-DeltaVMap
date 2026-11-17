@@ -1817,25 +1817,27 @@ static int RunMissionChecks()
     object treeA = new object();
     object treeB = new object();
     MissionKey key = MissionRoutes.KeyOf(treeA, Plan());
-    fails += Check("an opening without a selection applies", MissionRoutes.ShouldApply(null, key, true, false, false));
-    fails += Check("an opening keeps a selection", !MissionRoutes.ShouldApply(key, key, true, true, false));
-    fails += Check("the first read without an opening does not apply", !MissionRoutes.ShouldApply(null, key, false, false, false));
-    fails += Check("nothing changed does not apply", !MissionRoutes.ShouldApply(key, key, false, false, false));
+    fails += Check("an opening without a selection applies", MissionRoutes.ShouldApply(null, key, true, false, false, true));
+    fails += Check("an opening keeps a selection", !MissionRoutes.ShouldApply(key, key, true, true, false, true));
+    fails += Check("the first read without an opening does not apply", !MissionRoutes.ShouldApply(null, key, false, false, false, true));
+    fails += Check("nothing changed does not apply", !MissionRoutes.ShouldApply(key, key, false, false, false, true));
     MissionKey otherBody = MissionRoutes.KeyOf(treeA, Plan(body: "Mars"));
-    fails += Check("a plan change replaces a pick of the player", MissionRoutes.ShouldApply(key, otherBody, false, true, false));
+    fails += Check("a plan change replaces a pick of the player", MissionRoutes.ShouldApply(key, otherBody, false, true, false, true));
     fails += Check("an arrival change replaces a pick of the player",
-        MissionRoutes.ShouldApply(key, MissionRoutes.KeyOf(treeA, Plan(arrival: RouteArrival.Land)), false, true, false));
+        MissionRoutes.ShouldApply(key, MissionRoutes.KeyOf(treeA, Plan(arrival: RouteArrival.Land)), false, true, false, true));
     fails += Check("a trip change replaces a pick of the player",
-        MissionRoutes.ShouldApply(key, MissionRoutes.KeyOf(treeA, Plan(ret: false)), false, true, false));
+        MissionRoutes.ShouldApply(key, MissionRoutes.KeyOf(treeA, Plan(ret: false)), false, true, false, true));
     fails += Check("a retarget that also clears the arrival replaces a pick of the player",
-        MissionRoutes.ShouldApply(MissionRoutes.KeyOf(treeA, Plan(arrived: true)), otherBody, false, true, false));
+        MissionRoutes.ShouldApply(MissionRoutes.KeyOf(treeA, Plan(arrived: true)), otherBody, false, true, false, true));
     MissionKey otherTree = MissionRoutes.KeyOf(treeB, Plan());
-    fails += Check("another craft keeps a pick of the player", !MissionRoutes.ShouldApply(key, otherTree, false, true, false));
-    fails += Check("another craft replaces a mission pick", MissionRoutes.ShouldApply(key, otherTree, false, true, true));
-    fails += Check("another craft applies without a selection", MissionRoutes.ShouldApply(key, otherTree, false, false, false));
+    fails += Check("another craft keeps a pick of the player", !MissionRoutes.ShouldApply(key, otherTree, false, true, false, true));
+    fails += Check("another craft replaces a mission pick", MissionRoutes.ShouldApply(key, otherTree, false, true, true, true));
+    fails += Check("another craft applies without a selection", MissionRoutes.ShouldApply(key, otherTree, false, false, false, true));
     MissionKey arrivedKey = MissionRoutes.KeyOf(treeA, Plan(arrived: true));
-    fails += Check("an arrival keeps a pick of the player", !MissionRoutes.ShouldApply(key, arrivedKey, false, true, false));
-    fails += Check("an arrival replaces a mission pick", MissionRoutes.ShouldApply(key, arrivedKey, false, true, true));
+    fails += Check("an arrival keeps a pick of the player", !MissionRoutes.ShouldApply(key, arrivedKey, false, true, false, true));
+    fails += Check("an arrival replaces a mission pick", MissionRoutes.ShouldApply(key, arrivedKey, false, true, true, true));
+    fails += Check("with the Life Support rule off an opening applies nothing", !MissionRoutes.ShouldApply(null, key, true, false, false, false));
+    fails += Check("with the Life Support rule off a plan change applies nothing", !MissionRoutes.ShouldApply(key, otherBody, false, false, true, false));
     fails += Check("the key of no mission is empty and compares the tree by reference",
         MissionRoutes.KeyOf(treeA, null) == new MissionKey(treeA, MissionGoal.None, "", RouteArrival.Orbit, false, false, false)
         && MissionRoutes.KeyOf(treeA, null) != MissionRoutes.KeyOf(treeB, null));

@@ -57,7 +57,6 @@ public sealed class MissionCoreTest : IHarnessTest
         ok &= Check("the plan limits equal MissionPlan's",
             MissionRoutes.MinCruiseSpeedC == MissionPlan.MIN_CRUISE_SPEED_C
             && MissionRoutes.MaxCruiseSpeedC == MissionPlan.MAX_CRUISE_SPEED_C
-            && MissionRoutes.DefaultCruiseSpeedC == MissionPlan.DEFAULT_CRUISE_SPEED_C
             && MissionRoutes.DefaultStaySeconds == MissionPlan.DEFAULT_STAY_SECONDS);
         return ok;
     }
@@ -328,8 +327,13 @@ public sealed class MissionCoreTest : IHarnessTest
             MissionHost host = MissionReader.ResolveHost() ?? new MissionHost(tree, vehicle, false);
             ok &= Check("the controlled vessel is the flight host", !host.InEditor && ReferenceEquals(host.Tree, tree));
             string? homeId = MissionReader.HomeBodyId();
-            ok &= Check("a stock mission accepts the target and the home body",
-                MissionWriter.RefusalFor(target, (IParentBody)home) == null && MissionWriter.RefusalFor(home, (IParentBody)home) == null);
+            ok &= Check("a stock mission accepts the target and the home body in low orbit",
+                MissionWriter.RefusalFor(target, RouteEnd.Surface, (IParentBody)home) == null
+                && MissionWriter.RefusalFor(home, RouteEnd.Orbit, (IParentBody)home) == null);
+            ok &= Check("a stock mission refuses a landing or a flyby at the home body",
+                MissionWriter.RefusalFor(home, RouteEnd.Surface, (IParentBody)home) != null
+                && MissionWriter.RefusalFor(home, RouteEnd.Flyby, (IParentBody)home) != null);
+            ok &= Check("the home body read is the system's", ReferenceEquals(MissionReader.HomeBody(), home));
 
             tree.Mission = new MissionPlan
             {

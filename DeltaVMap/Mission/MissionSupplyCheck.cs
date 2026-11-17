@@ -59,8 +59,11 @@ internal static class MissionSupplyCheck
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("mission-supplies", $"[DvMap] Mission supply check failed: {ex}");
-            Reset();
+            // The key and the timestamp stay, so a check that keeps failing runs again only once
+            // per interval.
+            _verdict = null;
+            LogHelper.WarnOnce("mission-supplies", (Craft: host.Vehicle?.Id ?? "the editor craft", Error: ex),
+                static s => $"[DvMap] Mission supply check of '{s.Craft}' failed: {s.Error}");
             return null;
         }
     }

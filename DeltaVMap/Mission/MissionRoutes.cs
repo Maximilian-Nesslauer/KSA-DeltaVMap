@@ -37,9 +37,9 @@ internal readonly record struct MissionKey(
     bool Custom,
     bool Arrived);
 
-// The fields a route writes into a stock mission plan. CruiseSpeedC is null for an in-system
-// route and for an interstellar route without a known cruise speed, which leaves the plan's cruise
-// speed alone.
+// The fields a route writes into a stock mission plan, normalized by MissionRoutes.PlanFor.
+// CruiseSpeedC is null for an in-system route and for an interstellar route without a known cruise
+// speed, which leaves the plan's cruise speed alone.
 internal readonly record struct MissionWrite(
     MissionGoal Destination,
     string BodyId,
@@ -52,11 +52,9 @@ internal readonly record struct MissionWrite(
 // for, when that route replaces the selection, and which plan a route writes back.
 internal static class MissionRoutes
 {
-    // MissionPlan.MIN_CRUISE_SPEED_C, MAX_CRUISE_SPEED_C, DEFAULT_CRUISE_SPEED_C and
-    // DEFAULT_STAY_SECONDS.
+    // MissionPlan.MIN_CRUISE_SPEED_C, MAX_CRUISE_SPEED_C and DEFAULT_STAY_SECONDS.
     public const double MinCruiseSpeedC = 0.001;
     public const double MaxCruiseSpeedC = 0.8999999999999999;
-    public const double DefaultCruiseSpeedC = 0.1;
     public const double DefaultStaySeconds = 86400.0;
 
     // The route the mission asks for, or null when it asks for none. After the arrival a return
@@ -122,11 +120,15 @@ internal static class MissionRoutes
         return new MissionKey(tree, m.Destination, m.BodyId ?? "", m.Arrival, m.Return, m.Custom, m.Arrived);
     }
 
-    // Whether the mission route replaces the selection now. A change of the mission itself
-    // replaces even a pick of the player, because the player changed the mission. Another craft or
-    // an arrival replaces only no selection or a selection the mission made.
-    public static bool ShouldApply(MissionKey? previous, MissionKey current, bool opening, bool hasSelection, bool selectionFromMission)
+    // Whether the mission route replaces the selection now. Only while the Life Support rule is
+    // on, because with the rule off stock plans with no mission (MissionTransfer.FindDestinationId).
+    // A change of the mission itself replaces even a pick of the player, because the player
+    // changed the mission. Another craft or an arrival replaces only no selection or a selection
+    // the mission made.
+    public static bool ShouldApply(MissionKey? previous, MissionKey current, bool opening, bool hasSelection, bool selectionFromMission, bool lifeSupport)
     {
+        if (!lifeSupport)
+            return false;
         if (opening && !hasSelection)
             return true;
         if (previous is not { } p)
@@ -147,13 +149,13 @@ internal static class MissionRoutes
         return false;
     }
 
-    // The plan a route writes. The home body as the target is the stock LOW ORBIT mission. A stay
-    // that is not finite falls back to the stock default, and the cruise speed of an interstellar
-    // route is clamped to the range a stock mission accepts. A NaN cruise speed is one the panel
-    // does not show, so the plan keeps its own.
+    // The plan a route writes. The home body as the target is the stock LOW ORBIT mission. The
+    // stay is normalized, and the cruise speed of an interstellar route is clamped to the range a
+    // stock mission accepts. A NaN cruise speed is one the panel does not show, so the plan keeps
+    // its own.
     public static MissionWrite PlanFor(string targetBodyId, string? homeBodyId, RouteEnd end, bool returnTrip, bool interstellar, double staySeconds, double cruiseSpeedC)
     {
-        double stay = double.IsFinite(staySeconds) ? Math.Max(0.0, staySeconds) : DefaultStaySeconds;
+        double stay = NormalizeStay(staySeconds);
         if (!string.IsNullOrEmpty(homeBodyId) && string.Equals(targetBodyId, homeBodyId, StringComparison.Ordinal))
             return new MissionWrite(MissionGoal.LowOrbit, "", RouteArrival.Orbit, returnTrip, stay, null);
 
@@ -161,5 +163,12 @@ internal static class MissionRoutes
             ? Math.Clamp(cruiseSpeedC, MinCruiseSpeedC, MaxCruiseSpeedC)
             : null;
         return new MissionWrite(MissionGoal.Body, targetBodyId, ArrivalOf(end), returnTrip, stay, cruise);
+    }
+
+    // A stay a plan can hold: not negative, and the stock default for one that is not finite,
+    // because the UniverseTime of MissionPlan.Stay cannot hold a NaN.
+    public static double NormalizeStay(double seconds)
+    {
+        return double.IsFinite(seconds) ? Math.Max(0.0, seconds) : DefaultStaySeconds;
     }
 }

@@ -26,17 +26,12 @@ internal static class ProbePower
     private static ProbeReading? _reading;
     private static double _lastComputeTime = double.NegativeInfinity;
 
-    // Null in the vehicle editor, without a vessel, or when a read failed.
+    // The reading of a vessel in flight, null when a read failed.
     internal static ProbeReading? Read(Vehicle vehicle)
     {
         try
         {
-            if (Program.Editor != null || vehicle == null)
-                return null;
-            PartTree? tree = vehicle.Parts;
-            if (tree == null)
-                return null;
-
+            PartTree tree = vehicle.Parts;
             bool sameTree = ReferenceEquals(tree, _tree);
             double now = Program.GetPlayerTime();
             // The backwards test catches a clock reset (new game, save load).
@@ -56,8 +51,11 @@ internal static class ProbePower
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("probe-power", $"[DvMap] Probe power read failed: {ex}");
-            Reset();
+            // The tree and the timestamp stay, so a read that keeps failing runs again only once
+            // per interval.
+            _reading = null;
+            LogHelper.WarnOnce("probe-power", (Vessel: vehicle.Id, Error: ex),
+                static s => $"[DvMap] Probe power read of '{s.Vessel}' failed: {s.Error}");
             return null;
         }
     }

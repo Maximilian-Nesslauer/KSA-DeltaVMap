@@ -9,14 +9,15 @@ namespace DeltaVMap.Mission;
 // planner's UPDATE MISSION button (MissionTransfer.Retarget) does.
 internal static class MissionWriter
 {
-    // Why a stock mission cannot name target, or null when it can. The accepted set is the one
-    // MissionPicker lists: the home body (as the LOW ORBIT mission), every star except the root
-    // of the home system, and every other body on a bound orbit; never a barycenter, a root that
-    // is no star, or a vessel.
-    internal static string? RefusalFor(Astronomical target, IParentBody? home)
+    // Why a stock mission cannot name a route to target that ends at end, or null when it can.
+    // The accepted set is the one MissionPicker offers: the home body only as its LOW ORBIT
+    // mission, because MissionPicker.DrawBodyOptions skips it among the bodies, every star except
+    // the root of the home system, and every other body on a bound orbit; never a barycenter, a
+    // root that is no star, or a vessel. home is MissionReader.HomeBody.
+    internal static string? RefusalFor(Astronomical target, RouteEnd end, IParentBody? home)
     {
         if (home != null && ReferenceEquals(target, home))
-            return null;
+            return end == RouteEnd.Orbit ? null : "A STOCK MISSION TO THE HOME BODY IS LOW ORBIT ONLY";
         switch (target)
         {
             case Vehicle:
@@ -40,7 +41,8 @@ internal static class MissionWriter
         return body;
     }
 
-    // False when the write failed. The caller checks RefusalFor first.
+    // False when the write failed. The caller checks RefusalFor first, and plan comes from
+    // MissionRoutes.PlanFor.
     internal static bool Write(in MissionHost host, in MissionWrite plan)
     {
         try
@@ -88,7 +90,8 @@ internal static class MissionWriter
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("mission-write", $"[DvMap] Mission write failed: {ex}");
+            LogHelper.WarnOnce("mission-write",
+                $"[DvMap] Mission write of '{plan.BodyId}' ({plan.Destination}, {(host.InEditor ? "editor" : "flight")}) failed: {ex}");
             return false;
         }
     }
@@ -97,11 +100,8 @@ internal static class MissionWriter
     {
         mission.Arrival = MissionReader.ToGame(plan.Arrival);
         mission.Trip = plan.Return ? MissionTrip.Return : MissionTrip.OneWay;
-        // UniverseTime throws on NaN; MissionRoutes.PlanFor never gives one, this guards a caller
-        // that builds the write by hand.
-        double stay = double.IsFinite(plan.StaySeconds) ? Math.Max(0.0, plan.StaySeconds) : MissionRoutes.DefaultStaySeconds;
-        mission.Stay = new UniverseTime(stay);
-        if (plan.CruiseSpeedC is double c && !double.IsNaN(c))
-            mission.CruiseSpeedC = Math.Clamp(c, MissionRoutes.MinCruiseSpeedC, MissionRoutes.MaxCruiseSpeedC);
+        mission.Stay = new UniverseTime(plan.StaySeconds);
+        if (plan.CruiseSpeedC is double c)
+            mission.CruiseSpeedC = c;
     }
 }

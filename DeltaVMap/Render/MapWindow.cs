@@ -586,7 +586,7 @@ internal sealed class MapWindow : ImGuiWindow
 
         if (_mission.MissionRouteRequested)
             ApplyMissionRoute();
-        else if (_mission.MissionWritten)
+        else if (_mission.WriteRequestedMission())
             AcceptMissionWrite();
     }
 
@@ -1747,25 +1747,26 @@ internal sealed class MapWindow : ImGuiWindow
     }
 
     // Reads the mission of the craft the map plans for, every frame (field reads and a few
-    // lookups), and selects the route it asks for when MissionRoutes.ShouldApply says so: on
-    // opening with nothing selected, when the mission itself changes, and when another craft or
-    // an arrival changes it while the selection is empty or came from the mission.
+    // lookups), and selects the route it asks for when MissionRoutes.ShouldApply says so: with the
+    // Life Support rule on, on opening with nothing selected, when the mission itself changes, and
+    // when another craft or an arrival changes it while the selection is empty or came from the
+    // mission. The mission block and its MISSION ROUTE button work with the rule off too.
     private void UpdateMissionRoute()
     {
         try
         {
             MissionHost? host = MissionReader.ResolveHost();
             MissionSnapshot? snapshot = host is { } h ? MissionReader.Read(h.Tree) : null;
-            string? home = MissionReader.HomeBodyId();
-            MissionRouteGoal? goal = MissionRoutes.DefaultRoute(snapshot, home);
-            _missionContext = BuildMissionContext(host, snapshot, home, goal);
+            MissionRouteGoal? goal = MissionRoutes.DefaultRoute(snapshot, MissionReader.HomeBodyId());
+            _missionContext = BuildMissionContext(host, snapshot, goal);
             // Without a tree there is nothing to select, so the opening and a mission change wait
             // for it.
             if (_visualTree == null)
                 return;
 
             MissionKey key = MissionRoutes.KeyOf(host?.Tree, snapshot);
-            bool apply = MissionRoutes.ShouldApply(_missionKey, key, _missionOpening, _selectedId != null, _selectionFromMission);
+            bool apply = MissionRoutes.ShouldApply(_missionKey, key, _missionOpening, _selectedId != null, _selectionFromMission,
+                Universe.Rules.LifeSupport);
             _missionKey = key;
             _missionOpening = false;
             if (apply)
@@ -1779,7 +1780,7 @@ internal sealed class MapWindow : ImGuiWindow
 
     // GoalOnMap is also true for a body the map hides but MISSION ROUTE can reveal. A body that
     // already has a node, such as the ego system's root star, has no route a reveal could add.
-    private MissionContext BuildMissionContext(MissionHost? host, MissionSnapshot? snapshot, string? home, MissionRouteGoal? goal)
+    private MissionContext BuildMissionContext(MissionHost? host, MissionSnapshot? snapshot, MissionRouteGoal? goal)
     {
         RouteEnd? endOnMap = null;
         bool onMap = false;
@@ -1801,7 +1802,7 @@ internal sealed class MapWindow : ImGuiWindow
             CelestialSystem? system = Universe.CurrentSystem;
             known = system != null && system.All.TryGet(g.BodyId, out Astronomical? _);
         }
-        return new MissionContext(host, snapshot, home, goal, endOnMap, onMap, known);
+        return new MissionContext(host, snapshot, goal, endOnMap, onMap, known);
     }
 
     // Selects the route of the mission with its arrival and its trip, revealing a body the map
@@ -1841,7 +1842,7 @@ internal sealed class MapWindow : ImGuiWindow
     private void RefreshMissionContext()
     {
         MissionContext c = _missionContext;
-        _missionContext = BuildMissionContext(c.Host, c.Mission, c.HomeBodyId, c.Goal);
+        _missionContext = BuildMissionContext(c.Host, c.Mission, c.Goal);
     }
 
     // SET AS MISSION wrote the selected route into the mission. The write never re-routes, and

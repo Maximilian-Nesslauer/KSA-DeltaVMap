@@ -10,8 +10,9 @@ namespace DeltaVMap.Mission;
 // and life support plan with.
 internal static class MissionTimingBridge
 {
-    // launch and destination are the bodies of the route's two ends. cruiseSpeedC is read only for
-    // a route between two star systems.
+    // launch and destination are the bodies of the route's two ends. staySeconds goes to stock as
+    // it is, as MissionTiming.Compute passes the plan's stay. cruiseSpeedC is read only for a
+    // route between two star systems.
     internal static MissionTimes Compute(Astronomical launch, Astronomical destination, RouteArrival arrival, bool returnTrip, double staySeconds, double cruiseSpeedC)
     {
         try
@@ -31,7 +32,6 @@ internal static class MissionTimingBridge
             if (!ChainIsBound(from) || !ChainIsBound(to))
                 return MissionTimes.Unknown;
 
-            double requested = double.IsFinite(staySeconds) ? Math.Max(0.0, staySeconds) : MissionRoutes.DefaultStaySeconds;
             MissionArrival gameArrival = MissionReader.ToGame(arrival);
             MissionTrip trip = returnTrip ? MissionTrip.Return : MissionTrip.OneWay;
             MissionLegs legs;
@@ -39,11 +39,11 @@ internal static class MissionTimingBridge
             {
                 if (double.IsNaN(cruiseSpeedC))
                     return MissionTimes.Unknown;
-                legs = MissionTiming.ComputeInterstellarLegs(from, to, gameArrival, trip, requested, cruiseSpeedC);
+                legs = MissionTiming.ComputeInterstellarLegs(from, to, gameArrival, trip, staySeconds, cruiseSpeedC);
             }
             else
             {
-                legs = MissionTiming.ComputeLegs(from, to, gameArrival, trip, requested);
+                legs = MissionTiming.ComputeLegs(from, to, gameArrival, trip, staySeconds);
             }
 
             MissionTimesStatus status = legs.Status switch
@@ -55,19 +55,14 @@ internal static class MissionTimingBridge
             if (status == MissionTimesStatus.Unknown)
                 return MissionTimes.Unknown;
 
-            // MissionLegs.FromSeconds saturates an infinite time at UniverseTime.EndOfTime, whose
-            // seconds are finite, so a saturated leg counts as no timing.
+            // The UniverseTime(double) constructor saturates an infinite time at the end or the
+            // beginning of time, whose seconds are finite, so a saturated leg counts as no timing.
             if (legs.Out.IsSaturated() || legs.Stay.IsSaturated() || legs.Back.IsSaturated() || legs.ReturnWait.IsSaturated())
                 return MissionTimes.Unknown;
-            double outSeconds = legs.Out.Seconds();
-            double stay = legs.Stay.Seconds();
-            double back = legs.Back.Seconds();
-            double wait = legs.ReturnWait.Seconds();
-            if (!double.IsFinite(outSeconds) || !double.IsFinite(stay) || !double.IsFinite(back) || !double.IsFinite(wait))
-                return MissionTimes.Unknown;
 
-            return new MissionTimes(status, outSeconds, stay, back, wait,
-                arrival == RouteArrival.Flyby ? 0.0 : requested, interstellar);
+            return new MissionTimes(status,
+                legs.Out.Seconds(), legs.Stay.Seconds(), legs.Back.Seconds(), legs.ReturnWait.Seconds(),
+                arrival == RouteArrival.Flyby ? 0.0 : staySeconds, interstellar);
         }
         catch (Exception ex)
         {

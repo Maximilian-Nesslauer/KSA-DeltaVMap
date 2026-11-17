@@ -58,9 +58,9 @@ public sealed class MissionRouteTest : IHarnessTest
     {
         string detail = fullLadder ? "full" : "core";
         var arrived = new MissionSnapshot(MissionGoal.Body, "Elsewhere", RouteArrival.Land, Return: true,
-            MissionRoutes.DefaultStaySeconds, MissionRoutes.DefaultCruiseSpeedC, Custom: false, Arrived: true);
+            MissionRoutes.DefaultStaySeconds, MissionPlan.DEFAULT_CRUISE_SPEED_C, Custom: false, Arrived: true);
         var lowOrbit = new MissionSnapshot(MissionGoal.LowOrbit, "", RouteArrival.Orbit, Return: true,
-            MissionRoutes.DefaultStaySeconds, MissionRoutes.DefaultCruiseSpeedC, Custom: false, Arrived: false);
+            MissionRoutes.DefaultStaySeconds, MissionPlan.DEFAULT_CRUISE_SPEED_C, Custom: false, Arrived: false);
         bool ok = true;
         foreach ((string what, MissionSnapshot mission) in new[] { ("the way home", arrived), ("the LOW ORBIT mission", lowOrbit) })
         {
@@ -88,7 +88,7 @@ public sealed class MissionRouteTest : IHarnessTest
             foreach (RouteArrival arrival in arrivals)
             {
                 var mission = new MissionSnapshot(MissionGoal.Body, body.Id, arrival, Return: true,
-                    MissionRoutes.DefaultStaySeconds, MissionRoutes.DefaultCruiseSpeedC, Custom: false, Arrived: false);
+                    MissionRoutes.DefaultStaySeconds, MissionPlan.DEFAULT_CRUISE_SPEED_C, Custom: false, Arrived: false);
                 if (MissionRoutes.DefaultRoute(mission, homeId) is not { } goal)
                 {
                     ok &= Check($"{detail}: a mission to {body.Id} ({arrival}) asks for a route", false);

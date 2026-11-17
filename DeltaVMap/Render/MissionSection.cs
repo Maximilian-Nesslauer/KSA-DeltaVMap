@@ -16,7 +16,6 @@ namespace DeltaVMap.Render;
 internal readonly record struct MissionContext(
     MissionHost? Host,
     MissionSnapshot? Mission,
-    string? HomeBodyId,
     MissionRouteGoal? Goal,
     RouteEnd? GoalEndOnMap,
     bool GoalOnMap,
@@ -34,8 +33,9 @@ internal readonly record struct MissionContext(
 internal sealed class MissionSection
 {
     private const double SecondsPerDay = 86400.0;
-    // The cruise speed in the timing key, in fractions of c. A finer change does not move a
-    // mission time by a shown digit.
+    // The step the panel's cruise speed is rounded to, in fractions of c, for the timing key and
+    // for the speed stock times with, so the key always holds the speed that was timed. A finer
+    // change does not move a mission time by a shown digit.
     private const double CruiseKeyStep = 1e-6;
     // Two cruise speeds closer than this, relative, are the same plan.
     private const double CruiseMatchTolerance = 1e-6;
@@ -57,10 +57,13 @@ internal sealed class MissionSection
 
     private const string WriteTooltipBase =
         "Write this route into the vessel's mission: destination, arrival, trip and stay, and the cruise speed "
-        + "of an interstellar route. Life support, the launch check and the stock Transfer Planner then plan with it.";
+        + "of an interstellar route. With the Life Support rule on, life support, the launch check and the stock "
+        + "Transfer Planner plan with it.";
     private const string WriteTooltipEditor = " It is one undo step.";
     private const string WriteTooltipFlight =
-        " It clears the arrival the mission has recorded; stock records it again at once if the vessel is already there.";
+        " In flight it replaces all of these at once, while the stock UPDATE MISSION button changes only the "
+        + "destination. It also clears the arrival the mission has recorded; stock records it again at once if the "
+        + "vessel is already there.";
     private const string WriteTooltipHome = " The home body is the stock LOW ORBIT mission.";
     private static readonly string[] WriteTooltips =
     {
@@ -69,6 +72,9 @@ internal sealed class MissionSection
         WriteTooltipBase + WriteTooltipEditor,
         WriteTooltipBase + WriteTooltipEditor + WriteTooltipHome,
     };
+
+    private static readonly string SlowCruiseText = FormattableString.Invariant(
+        $"MISSION TIME AT {MissionRoutes.MinCruiseSpeedC} C, THE SLOWEST CRUISE A STOCK MISSION PLANS");
 
     private enum FooterKind : byte { None, Supplies, Probe }
 
@@ -133,8 +139,9 @@ internal sealed class MissionSection
     // MISSION ROUTE was clicked this frame.
     public bool MissionRouteRequested { get; private set; }
 
-    // SET AS MISSION wrote the mission this frame.
-    public bool MissionWritten { get; private set; }
+    // The plan SET AS MISSION asked for this frame. MapWindow has WriteRequestedMission write it
+    // after the panel draw, as it applies MISSION ROUTE there.
+    private (MissionHost Host, MissionWrite Plan)? _writeRequest;
 
     // The RETURN TRIP row of an interstellar route changed the route options this frame.
     public bool OptionsChanged { get; private set; }
@@ -150,15 +157,24 @@ internal sealed class MissionSection
         _missionLineKey = null;
         _noteKey = null;
         MissionRouteRequested = false;
-        MissionWritten = false;
+        _writeRequest = null;
         OptionsChanged = false;
         ClearRoute();
+    }
+
+    // Writes the plan SET AS MISSION asked for this frame. True when it wrote one.
+    public bool WriteRequestedMission()
+    {
+        if (_writeRequest is not { } request)
+            return false;
+        _writeRequest = null;
+        return MissionWriter.Write(in request.Host, in request.Plan);
     }
 
     public void Update(RouteSummary? summary, RouteOptions options, InterstellarSection? leg, in MissionContext context)
     {
         MissionRouteRequested = false;
-        MissionWritten = false;
+        _writeRequest = null;
         OptionsChanged = false;
         _options = options;
         _context = context;
@@ -240,9 +256,7 @@ internal sealed class MissionSection
         if (_staySeed == seed)
             return;
         _staySeed = seed;
-        _staySeconds = context.Mission is { } m && double.IsFinite(m.StaySeconds)
-            ? Math.Max(0.0, m.StaySeconds)
-            : MissionRoutes.DefaultStaySeconds;
+        _staySeconds = MissionRoutes.NormalizeStay(context.Mission?.StaySeconds ?? double.NaN);
     }
 
     private void ClearRoute()
@@ -325,7 +339,7 @@ internal sealed class MissionSection
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("mission-panel-draw", $"[DvMap] Mission panel draw failed: {ex}");
+            LogHelper.WarnOnce("mission-panel-draw-none", $"[DvMap] Mission panel draw without a route failed: {ex}");
         }
     }
 
@@ -373,7 +387,7 @@ internal sealed class MissionSection
             DrawStayRow();
 
         if (_interstellar && !_inTransit && _cruiseC < MissionRoutes.MinCruiseSpeedC)
-            ConsoleUi.StatusText("MISSION TIME AT 0.001 C, THE SLOWEST CRUISE A STOCK MISSION PLANS");
+            ConsoleUi.StatusText(SlowCruiseText);
 
         DrawRows();
         DrawWriteRow(summary, options);
@@ -410,21 +424,14 @@ internal sealed class MissionSection
         }
     }
 
-    // A stock mission names a body the mission picker lists, and the home body only as its LOW
-    // ORBIT mission, so the button shows only for such a route and says why otherwise.
+    // The button shows only for a route a stock mission can name, and says why otherwise.
     private void DrawWriteRow(RouteSummary summary, RouteOptions options)
     {
         if (IsMissionRoute || _context.Host is not { } host)
             return;
         Astronomical target = summary.Target.Body;
-        string? homeId = _context.HomeBodyId;
-        bool isHome = !string.IsNullOrEmpty(homeId) && string.Equals(target.Id, homeId, StringComparison.Ordinal);
-        if (isHome && _end != RouteEnd.Orbit)
-        {
-            ConsoleUi.StatusText("A STOCK MISSION TO THE HOME BODY IS LOW ORBIT ONLY");
-            return;
-        }
-        string? refusal = MissionWriter.RefusalFor(target, Universe.CurrentSystem?.HomeBody);
+        IParentBody? home = MissionReader.HomeBody();
+        string? refusal = MissionWriter.RefusalFor(target, _end, home);
         if (refusal != null)
         {
             ConsoleUi.StatusText(refusal);
@@ -432,12 +439,11 @@ internal sealed class MissionSection
         }
 
         if (ConsoleWidgets.Button("SET AS MISSION".AsSpan()))
-        {
-            MissionWrite plan = MissionRoutes.PlanFor(target.Id, homeId, _end, options.ShowReturnTrip, _interstellar, _staySeconds, _cruiseC);
-            MissionWritten = MissionWriter.Write(in host, in plan);
-        }
-        ConsoleWidgets.ItemTooltip(WriteTooltips[(host.InEditor ? 2 : 0) + (isHome ? 1 : 0)].AsSpan());
+            _writeRequest = (host, MissionRoutes.PlanFor(target.Id, home?.Id, _end, options.ShowReturnTrip, _interstellar, _staySeconds, _cruiseC));
+        ConsoleWidgets.ItemTooltip(WriteTooltip(host.InEditor, ReferenceEquals(target, home)).AsSpan());
     }
+
+    private static string WriteTooltip(bool inEditor, bool isHome) => WriteTooltips[(inEditor ? 2 : 0) + (isHome ? 1 : 0)];
 
     // The supplies or probe power line under the vehicle bar, one line in the value font.
     public void DrawFooterLine()

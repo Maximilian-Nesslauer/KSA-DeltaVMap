@@ -18,7 +18,8 @@ internal enum SupplyKind : byte { Air, Scrubber, Water, Food }
 // picks it. Zone counts from 1.
 internal readonly record struct SupplyVerdict(bool Short, SupplyKind Supply, double ShortBySeconds, int Zone, int ZoneCount);
 
-// The member order of KSA.ProbeCorePower, with None for NoProbeCore.
+// The member order of KSA.ProbeCorePower, with None for NoProbeCore. ProbePower.Max ranks the
+// states by this order, as Vehicle.Max ranks ProbeCorePower in Vehicle.ScanProbeCore.
 internal enum ProbeState : byte { None, Failed, SwitchedOff, StormStandby, Rebooting, Unpowered, Powered }
 
 internal readonly record struct ProbeReading(ProbeState State, DrainKind Drain, double RemainingSeconds);
