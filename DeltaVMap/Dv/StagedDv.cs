@@ -33,9 +33,10 @@ namespace DeltaVMap.Dv;
 internal static class StagedDv
 {
     // A stock recompute costs single-digit milliseconds, far too much to run per frame on the draw
-    // thread. It only has to run when the answer can have moved, which is why the propellant and
-    // part-count signature below gates it; this interval is the floor between recomputes while that
-    // signature keeps changing, as it does throughout a burn.
+    // thread. It only has to run when the answer can have moved, which is why the signature of
+    // propellant, parts and sequences below gates it; this interval is the floor between recomputes
+    // while that signature keeps changing, as it does throughout a burn. The signature itself is
+    // read only once per interval, so a change shows up to one interval late.
     private const double RecomputeIntervalSeconds = 0.25;
 
     // Propellant mass wanders by rounding alone while nothing is burning, so ignore changes that
@@ -48,10 +49,11 @@ internal static class StagedDv
     private static PartTree? _tree;
     private static SequencePerformanceList? _analyzer;
     private static double? _totalDv;
-    private static double _lastComputeTime = double.NegativeInfinity;
+    private static double _lastProbeTime = double.NegativeInfinity;
     private static double _lastPropellantMass = double.NaN;
     private static int _lastPartCount = -1;
     private static int _lastSequenceCount = -1;
+    private static int _lastSequenceSignature;
 
     // Owned copy of the per-sequence masses from the last recompute, because stock rewrites its
     // published array in place two recomputes later.
@@ -90,17 +92,21 @@ internal static class StagedDv
             double now = Program.GetPlayerTime();
             // The backwards test catches a clock reset (new game, save load) so the readout cannot
             // latch until the old timestamp is reached again.
-            bool intervalElapsed = now - _lastComputeTime >= RecomputeIntervalSeconds || now < _lastComputeTime;
+            bool intervalElapsed = now - _lastProbeTime >= RecomputeIntervalSeconds || now < _lastProbeTime;
+            if (_totalDv != null && !intervalElapsed)
+                return _totalDv;
 
             double propellant = SumPropellantMass(tree);
             int partCount = tree.Count;
             int sequenceCount = tree.SequenceList.Sequences.Length;
+            int sequenceSignature = SequenceSignature(tree);
             bool changed = partCount != _lastPartCount
                 || sequenceCount != _lastSequenceCount
+                || sequenceSignature != _lastSequenceSignature
                 || double.IsNaN(_lastPropellantMass)
                 || Math.Abs(propellant - _lastPropellantMass) >= PropellantEpsilonKg;
 
-            if (_totalDv == null || (intervalElapsed && changed))
+            if (_totalDv == null || changed)
             {
                 // Pending work clears at the next PrepareFrame, so the readout keeps its last
                 // value, or shows n/a for a frame on a fresh tree.
@@ -110,12 +116,13 @@ internal static class StagedDv
                 // The baseline is the state the cached total was computed from, so it moves only
                 // here. Advancing it on a frame that skipped the recompute would let a slow drain
                 // stay under the epsilon forever and freeze the readout.
-                _lastComputeTime = now;
                 _lastPropellantMass = propellant;
                 _lastPartCount = partCount;
                 _lastSequenceCount = sequenceCount;
+                _lastSequenceSignature = sequenceSignature;
                 _totalDv = Compute(_analyzer!, tree, inFlight);
             }
+            _lastProbeTime = now;
             return _totalDv;
         }
         catch (Exception ex)
@@ -137,10 +144,11 @@ internal static class StagedDv
         _tree = null;
         _analyzer = null;
         _totalDv = null;
-        _lastComputeTime = double.NegativeInfinity;
+        _lastProbeTime = double.NegativeInfinity;
         _lastPropellantMass = double.NaN;
         _lastPartCount = -1;
         _lastSequenceCount = -1;
+        _lastSequenceSignature = 0;
         _stageCount = 0;
     }
 
@@ -158,6 +166,28 @@ internal static class StagedDv
         for (int i = 0; i < states.Length; i++)
             mass += states[i].Mass;
         return mass;
+    }
+
+    // The rest of the change probe: the inputs of the drain that change neither the parts nor the propellant,
+    // which are the VAC or ATM toggle and the activation of each sequence, and the sequence of
+    // every engine, decoupler and parachute. Stock marks its own list dirty on these
+    // (Sequence.Environment, SequenceList.ResetCaches), but in flight it clears that flag in the
+    // vehicle solver, so the flag cannot be read here.
+    private static int SequenceSignature(PartTree tree)
+    {
+        var hash = new HashCode();
+        ReadOnlySpan<Sequence> sequences = tree.SequenceList.Sequences;
+        for (int i = 0; i < sequences.Length; i++)
+        {
+            Sequence sequence = sequences[i];
+            hash.Add(sequence.Number);
+            hash.Add(sequence.Environment);
+            hash.Add(sequence.Activated);
+        }
+        ModuleList.ModuleEnumerator<ISequenced> modules = tree.Modules.GetUsing<ISequenced>().GetEnumerator();
+        while (modules.MoveNext())
+            hash.Add(modules.Current.Sequence);
+        return hash.ToHashCode();
     }
 
     private static double Compute(SequencePerformanceList analyzer, PartTree tree, bool inFlight)
