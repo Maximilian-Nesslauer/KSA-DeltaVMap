@@ -153,7 +153,7 @@ internal static class StagedDv
     }
 
     // Half of the change probe: propellant drains during a burn and is consumed or added by an
-    // edit. A walk over a few dozen floats, cheap enough to run on every frame, which is what keeps
+    // edit. A walk over a few dozen floats, cheap enough to run on every probe, which is what keeps
     // a coasting vehicle or an untouched editor from recomputing at all.
     private static double SumPropellantMass(PartTree tree)
     {
@@ -168,11 +168,12 @@ internal static class StagedDv
         return mass;
     }
 
-    // The rest of the change probe: the inputs of the drain that change neither the parts nor the propellant,
-    // which are the VAC or ATM toggle and the activation of each sequence, and the sequence of
-    // every engine, decoupler and parachute. Stock marks its own list dirty on these
-    // (Sequence.Environment, SequenceList.ResetCaches), but in flight it clears that flag in the
-    // vehicle solver, so the flag cannot be read here.
+    // The rest of the change probe: the inputs of the drain that the player changes without a
+    // change of parts or propellant. These are the VAC or ATM toggle and the activation of each
+    // sequence, the sequence of every engine, decoupler and parachute, and the propellant use
+    // switch of every tank. Stock marks its own list dirty on these (Sequence.Environment,
+    // SequenceList.ResetCaches, InputEvents.TankPropellantUseChangeData), but in flight it clears
+    // that flag in the vehicle solver, so the flag cannot be read here.
     private static int SequenceSignature(PartTree tree)
     {
         var hash = new HashCode();
@@ -184,9 +185,14 @@ internal static class StagedDv
             hash.Add(sequence.Environment);
             hash.Add(sequence.Activated);
         }
-        ModuleList.ModuleEnumerator<ISequenced> modules = tree.Modules.GetUsing<ISequenced>().GetEnumerator();
+        ModuleList.ModuleEnumerator<ModuleBase> modules = tree.Modules.GetUsing<ModuleBase>().GetEnumerator();
         while (modules.MoveNext())
-            hash.Add(modules.Current.Sequence);
+        {
+            if (modules.Current is ISequenced sequenced)
+                hash.Add(sequenced.Sequence);
+            else if (modules.Current is Tank tank)
+                hash.Add(tank.PropellantUseEnabled);
+        }
         return hash.ToHashCode();
     }
 
