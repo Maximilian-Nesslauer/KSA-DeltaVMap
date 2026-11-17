@@ -70,7 +70,7 @@ A separate, opt-in layer draws the same data in the game's 3D map mode: the opti
 
 ## Installation
 
-1. Install [StarMap](https://github.com/StarMapLoader/StarMap) 0.5.0 or later.
+1. Install [StarMap](https://github.com/StarMapLoader/StarMap) 0.5.3 or later.
 2. Download the latest release from the [GitHub Releases](https://github.com/Maximilian-Nesslauer/KSA-DeltaVMap/releases) tab or from [SpaceDock](https://spacedock.info/mod/4294/DeltaVMap).
 3. Extract into `Documents\My Games\Kitten Space Agency\mods\DeltaVMap\`.
 4. The game auto-discovers new mods and prompts you to enable them. Alternatively, add to `Documents\My Games\Kitten Space Agency\manifest.toml`:
@@ -87,7 +87,7 @@ Open the map from **Mods > Delta-V Map**, in flight and in the editor.
 
 | Package | Purpose | Tested version |
 | --- | --- | --- |
-| [StarMap](https://github.com/StarMapLoader/StarMap) | Mod loader, version 0.5.0 or later, required at runtime (see [Installation](#installation)) | 0.5.2 |
+| [StarMap](https://github.com/StarMapLoader/StarMap) | Mod loader, version 0.5.3 or later, required at runtime (see [Installation](#installation)) | 0.5.4 |
 
 ## Build dependencies
 
