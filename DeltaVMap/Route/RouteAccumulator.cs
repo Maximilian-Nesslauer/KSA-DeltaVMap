@@ -417,7 +417,7 @@ internal static class RouteAccumulator
         // bound end. A comet target is matched at its true perihelion speed; a star of a
         // multiple system moves at the speed of its own central mass; a planet keeps the plain
         // circular Hohmann arrive leg.
-        bool toOpen = orbiter != null && orbiter.Orbit.Eccentricity >= 1.0;
+        bool toOpen = orbiter != null && !orbiter.Orbit.IsBound();
         bool ownCentralMass = orbiter != null && OrbitalStates.HasOwnCentralMass(orbiter.Orbit, starMu);
         double depart;
         double arriveVinf;

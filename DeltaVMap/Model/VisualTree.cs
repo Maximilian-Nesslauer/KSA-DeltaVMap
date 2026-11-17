@@ -740,12 +740,12 @@ internal sealed class VisualTree
             return OrbitalStates.TransferRadius(orbit);
         }
 
-        // A transfer to or from an open orbit (comet, e >= 1) is flagged approximate,
-        // matching the sibling-transfer path in DvCache. The hub side of a direct
+        // A transfer to or from an open orbit (a comet, Unbound by Orbit.IsBound) is flagged
+        // approximate, matching the sibling-transfer path in DvCache. The hub side of a direct
         // transfer is always a bound body, so only the non-hub endpoint is checked.
         private static bool IsOpenOrbit(PhysicalNode body)
         {
-            return ((IOrbiter)body.Astro).Orbit.Eccentricity >= 1.0;
+            return !((IOrbiter)body.Astro).Orbit.IsBound();
         }
 
         // Eccentricity of a body's orbit, passed to DirectTransfer so an open (comet)

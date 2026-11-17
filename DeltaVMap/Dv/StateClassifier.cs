@@ -10,8 +10,8 @@ internal readonly struct ClassifiedState
     public readonly StateKind Kind;
     public readonly double Radius;
 
-    // The vehicle is on an open orbit (e >= 1) around a star or barycenter, so Radius is only its
-    // current distance and there is no orbit to transfer from.
+    // The vehicle is on an open orbit (Orbit.IsBound is false) around a star or barycenter, so
+    // Radius is only its current distance and there is no orbit to transfer from.
     public readonly bool IsOpenCruise;
 
     public ClassifiedState(StateKind kind, double radius, bool isOpenCruise = false)
@@ -46,11 +46,18 @@ internal static class StateClassifier
         Orbit orbit = vehicle.Orbit;
         double eccentricity = orbit.Eccentricity;
         double semiMajorAxis = orbit.SemiMajorAxis;
-        double apoapsis = orbit.Apoapsis;
 
-        // An escape trajectory is leaving through the SOI boundary.
-        if (eccentricity >= 1.0)
-            return new ClassifiedState(StateKind.SoiEdge, ladder.SoiRadius ?? apoapsis);
+        // An escape trajectory is leaving through the SOI boundary. The game type decides,
+        // because an orbit within 1e-6 of e = 1 is Unbound with e just below 1 too. An unbound
+        // orbit has a negative or infinite apoapsis, so without an SOI the vehicle is placed at
+        // its current distance, as ClassifyCruise does.
+        if (!orbit.IsBound())
+        {
+            double radius = ladder.SoiRadius ?? (vehicle.GetPositionEcl() - vehicle.Parent.GetPositionEcl()).Length();
+            return new ClassifiedState(StateKind.SoiEdge, radius);
+        }
+
+        double apoapsis = orbit.Apoapsis;
 
         // Snap a near-circular orbit onto a specific rung first. This has to come
         // before the fractional SOI-edge test below, because on a tight-SOI body
@@ -82,7 +89,7 @@ internal static class StateClassifier
     public static ClassifiedState ClassifyCruise(Vehicle vehicle)
     {
         Orbit orbit = vehicle.Orbit;
-        if (orbit.Eccentricity < 1.0 && orbit.SemiMajorAxis > 0.0)
+        if (orbit.IsBound() && orbit.SemiMajorAxis > 0.0)
             return new ClassifiedState(StateKind.YouAreHere, orbit.SemiMajorAxis);
         double distance = (vehicle.GetPositionEcl() - vehicle.Parent.GetPositionEcl()).Length();
         return new ClassifiedState(StateKind.YouAreHere, distance, isOpenCruise: true);

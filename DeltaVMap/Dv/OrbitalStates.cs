@@ -180,7 +180,8 @@ internal static class OrbitalStates
     }
 
     // The rendezvous radius to use for a transfer. For closed orbits this matches the
-    // EffectiveRadius the game itself uses. Open orbits (comets, e >= 1) have no apoapsis,
+    // EffectiveRadius the game itself uses. Open orbits (comets, Unbound by Orbit.IsBound,
+    // which includes a parabolic orbit within 1e-6 of e = 1 on either side) have no apoapsis,
     // so (Apoapsis + Periapsis) / 2 would be garbage (a hyperbolic apoapsis is negative);
     // their natural rendezvous point is the perihelion (closest approach to the hub).
     // DeltaVCalculator.ConicTransfer matches the comet's real (fast) perihelion speed there,
@@ -188,7 +189,7 @@ internal static class OrbitalStates
     // such transfers as approximate.
     public static double TransferRadius(Orbit orbit)
     {
-        if (orbit.Eccentricity >= 1.0)
+        if (!orbit.IsBound())
             return orbit.Periapsis;
         return DeltaVCalculator.EffectiveRadius(orbit.Eccentricity, orbit.SemiMajorAxis, orbit.Apoapsis, orbit.Periapsis);
     }

@@ -113,6 +113,8 @@ internal static class InterstellarLegs
     {
         state = default;
         Orbit orbit = vehicle.Orbit;
+        if (orbit.IsBound())
+            return false;
         double vInf = InterstellarMath.HyperbolicExcess(orbit.Mu, orbit.Periapsis, orbit.Eccentricity);
         if (!(vInf > 0.0) || !double.IsFinite(vInf))
             return false;
@@ -267,7 +269,7 @@ internal static class InterstellarLegs
     // the stars of a multiple system differs from the mass of the barycenter the vessel feels.
     private static double BodySpeed(Orbit orbit, double radius)
     {
-        return orbit.Eccentricity >= 1.0
+        return !orbit.IsBound()
             ? DeltaVCalculator.PeriapsisSpeed(orbit.Mu, radius, orbit.Eccentricity)
             : DeltaVCalculator.CircularSpeed(orbit.Mu, radius);
     }

@@ -89,8 +89,11 @@ internal sealed class DvCache
 
         // An open endpoint (a comet) is matched at its true perihelion speed; a bound pair
         // keeps the exact circular Hohmann, so stock planet-to-planet numbers are unchanged.
-        bool fromOpen = fromOrbit.Eccentricity >= 1.0;
-        bool toOpen = toOrbit.Eccentricity >= 1.0;
+        // The game type decides what is open: an orbit within Orbit.PARABOLIC_TOLERANCE of
+        // e = 1 is a Parabolic Unbound orbit whose semi-major axis is not usable, also with e
+        // just below 1, and its periapsis speed from that eccentricity is still valid.
+        bool fromOpen = !fromOrbit.IsBound();
+        bool toOpen = !toOrbit.IsBound();
         bool ownCentralMass = OrbitalStates.HasOwnCentralMass(fromOrbit, muHub) || OrbitalStates.HasOwnCentralMass(toOrbit, muHub);
         double departDv;
         double arriveDv;

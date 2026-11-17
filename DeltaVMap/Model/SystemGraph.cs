@@ -204,16 +204,17 @@ internal sealed class SystemGraph
 
         // Deterministic order, innermost first, with Id as a stable tie-breaker so
         // co-orbital bodies never reshuffle between rebuilds. Bound bodies sort by
-        // semi-major axis; open (hyperbolic / parabolic, e >= 1) orbits have a negative
-        // or undefined SMA, so they would otherwise sort to the very front. They are an
-        // odd, expensive special case (interstellar comets), so push them past every
-        // bound body and order them among themselves by periapsis (closest approach).
+        // semi-major axis; open orbits (Unbound by Orbit.IsBound: hyperbolic, or parabolic
+        // within 1e-6 of e = 1) have a negative or undefined SMA, so they would otherwise
+        // sort to the very front. They are an odd, expensive special case (interstellar
+        // comets), so push them past every bound body and order them among themselves by
+        // periapsis (closest approach).
         childBodies.Sort(static (a, b) =>
         {
             Orbit oa = a.Orbit;
             Orbit ob = b.Orbit;
-            bool aOpen = oa.Eccentricity >= 1.0;
-            bool bOpen = ob.Eccentricity >= 1.0;
+            bool aOpen = !oa.IsBound();
+            bool bOpen = !ob.IsBound();
             if (aOpen != bOpen)
                 return aOpen ? 1 : -1;
             double ka = aOpen ? oa.Periapsis : oa.SemiMajorAxis;
