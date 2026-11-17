@@ -1,6 +1,7 @@
 using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using DeltaVMap.Layout;
+using DeltaVMap.Mission;
 using DeltaVMap.Model;
 using DeltaVMap.Render;
 using Brutal.Logging;
@@ -91,6 +92,8 @@ public sealed class Mod
         // Drops the cached part tree and its private analyzer so a reload cannot keep a stale
         // vehicle alive through this mod.
         StagedDv.Reset();
+        MissionSupplyCheck.Reset();
+        ProbePower.Reset();
         LogHelper.Reset();
 #if DEBUG
         PerfTracker.Reset();

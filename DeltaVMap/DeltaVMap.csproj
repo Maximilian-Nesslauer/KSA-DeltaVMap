@@ -40,6 +40,12 @@
       <HintPath>..\..\..\refs\game\Brutal.Logging.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Provides LString, the type of an optional parameter of VehicleEditor.MarkHistoryStepFor;
+         needed to compile the call even when the parameter is left out. -->
+    <Reference Include="Brutal.Localization">
+      <HintPath>..\..\..\refs\game\Brutal.Localization.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Brutal.ImGui">
       <HintPath>..\..\..\refs\game\Brutal.ImGui.dll</HintPath>
       <Private>false</Private>
