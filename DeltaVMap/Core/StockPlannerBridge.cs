@@ -481,7 +481,8 @@ internal static class StockPlannerBridge
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("stock-planner-targets", $"[DvMap] Could not read the stock Hohmann destinations, the destination is left to stock: {ex}");
+            LogHelper.WarnOnce("stock-planner-targets",
+                $"[DvMap] Could not read the stock Hohmann destinations for '{destination.Id}', the destination is left to stock: {ex}");
             return false;
         }
     }

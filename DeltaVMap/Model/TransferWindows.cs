@@ -20,9 +20,10 @@ namespace DeltaVMap.Model;
 // is the pure Dv/TransferWindow kernel. The phase / synodic branch structure mirrors the
 // game's OrbitalTransfers.AlignmentTime, so if a future build changes that formula these
 // figures will silently diverge from the stock alignment planner; re-verify against
-// AlignmentTime when the game updates. The prograde countdown to an inner sibling differs from
-// AlignmentTime on purpose (TransferWindow.TimeToWindowSeconds says why). The wait for the return window is stock's own
-// MissionTiming.ComputeReturnWaitSeconds, so it agrees with the stock mission timing.
+// AlignmentTime when the game updates. The prograde countdown to an inner sibling differs
+// from AlignmentTime on purpose (the TransferWindow header says why). The wait for the return
+// window is stock's own MissionTiming.ComputeReturnWaitSeconds, so it agrees with the stock
+// mission timing.
 internal static class TransferWindows
 {
     // Above this relative inclination the sibling orbits the hub the opposite way, and the

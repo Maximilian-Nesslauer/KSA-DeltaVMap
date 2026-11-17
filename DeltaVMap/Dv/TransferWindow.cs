@@ -14,11 +14,11 @@ namespace DeltaVMap.Dv;
 // not: AlignmentTime folds the gap the same way for both signs of the synodic rate, so for a
 // target that moves faster than the source (an inner planet) it returns the part of the synodic
 // period since the last window instead of the part until the next one. The countdown here
-// returns the time until the next window for both signs. The ejection geometry is a separate patched-conic approximation (Bate-Mueller-
-// White / Curtis); AlignmentTime computes no ejection angle, and the game's own ejection
-// value is a numerical minimization that is not reproduced here. The angle wrapping
-// reproduces MathEx.ToOrbitAngle / ToDeviationAngle locally to keep the file free of any
-// game dependency.
+// returns the time until the next window for both signs. The ejection geometry is a separate
+// patched-conic approximation (Bate-Mueller-White / Curtis); AlignmentTime computes no
+// ejection angle, and the game's own ejection value is a numerical minimization that is not
+// reproduced here. The angle wrapping reproduces MathEx.ToOrbitAngle / ToDeviationAngle
+// locally to keep the file free of any game dependency.
 internal static class TransferWindow
 {
     public const double TwoPi = 2.0 * Math.PI;
