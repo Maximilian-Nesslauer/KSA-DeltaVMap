@@ -195,7 +195,8 @@ internal static class InterstellarMath
     // inward (stepsOuterToInner[0] is the level directly under the system root). An empty chain
     // means the parking orbit is around the root itself. When that orbit is the vessel's own,
     // with a plane fixed by AimSine, the vessel is the inner body of the last level and the burn
-    // is its relative excess.
+    // is its relative excess. A vessel on an open orbit can already move faster at its periapsis
+    // than the cruise needs, and then brakes there by the difference.
     public static double ChainBurn(double vInf, ReadOnlySpan<WellStep> stepsOuterToInner, in ParkingOrbit park)
     {
         if (stepsOuterToInner.IsEmpty && park.AimSine.HasValue)
@@ -204,7 +205,7 @@ internal static class InterstellarMath
         double excess = vInf;
         for (int i = 0; i < stepsOuterToInner.Length; i++)
             excess = ExcessAtBody(excess, in stepsOuterToInner[i]);
-        return Math.Max(0.0, SpeedForExcess(park.Mu, park.Radius, excess) - park.Speed);
+        return Math.Abs(SpeedForExcess(park.Mu, park.Radius, excess) - park.Speed);
     }
 
     // The capture burn into the park at the end of an arrival chain, where every level carries

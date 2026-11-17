@@ -597,6 +597,13 @@ static int RunInterstellarChecks()
         fails += Approx("empty chain == Oberth at the root",
             InterstellarMath.ChainBurn(v, ReadOnlySpan<WellStep>.Empty, ParkingOrbit.Circular(muSol, au)), DeltaVCalculator.OberthBurn(muSol, au, v), 1e-12);
 
+        // A vessel on an open orbit that already moves faster at its periapsis than the cruise
+        // needs brakes there by the difference, so a slower cruise is not free.
+        double needed = InterstellarMath.SpeedForExcess(muEarth, rLeo, 5000.0);
+        var fast = new ParkingOrbit(muEarth, rLeo, needed + 1500.0);
+        fails += Approx("an open orbit faster than the cruise brakes by the difference",
+            InterstellarMath.ChainBurn(5000.0, ReadOnlySpan<WellStep>.Empty, in fast), 1500.0, 1e-9);
+
         var tilted = new WellStep(muSol, aEarth, vEarth, aimSine);
         double plane = InterstellarMath.ChainBurn(100000.0, new[] { tilted }, in leo);
         fails += Check("plane-limited departure costs more", plane > leg.DepartBurn(100000.0, in leo));
