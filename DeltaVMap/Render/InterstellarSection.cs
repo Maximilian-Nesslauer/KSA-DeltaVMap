@@ -177,6 +177,10 @@ internal sealed class InterstellarSection
     // True when the last Update produced figures for the current route.
     public bool HasView { get; private set; }
 
+    // The cruise speed of the current view in m/s (the vessel's live excess while in transit), NaN
+    // without a view. Named apart from the CruiseSpeed type this class also uses.
+    public double CurrentCruiseSpeed { get; private set; } = double.NaN;
+
     // True when the leg or its figures could not be computed for the current inputs.
     public bool Failed { get; private set; }
 
@@ -227,8 +231,29 @@ internal sealed class InterstellarSection
         _hintStar = null;
         _hintText = "";
         HasView = false;
+        CurrentCruiseSpeed = double.NaN;
         Failed = false;
         Badge = null;
+    }
+
+    // Selects speed as the cruise speed, as picking a preset or dragging the slider does. A speed
+    // that equals a preset selects that preset. The next Update re-evaluates the figures, because
+    // the view key holds the speed.
+    public void SetCruiseSpeed(double speed)
+    {
+        if (double.IsNaN(speed))
+            return;
+        speed = Math.Clamp(speed, MinSpeedC * InterstellarMath.SpeedOfLight, SpeedCap);
+        for (int i = 0; i < CruiseSpeed.PresetFractions.Length; i++)
+        {
+            double preset = CruiseSpeed.PresetFractions[i] * InterstellarMath.SpeedOfLight;
+            if (Math.Abs(speed - preset) <= 1e-9 * preset)
+            {
+                _speed.SelectPreset(i);
+                return;
+            }
+        }
+        _speed.SetCustom(speed);
     }
 
     // Bring the leg, the limits and the figures up to date for this frame, in that order, so
@@ -252,6 +277,7 @@ internal sealed class InterstellarSection
         SystemGraph graph = _graph!;
         InterstellarRoute route = _route!;
         HasView = false;
+        CurrentCruiseSpeed = double.NaN;
         Failed = false;
 
         _failureText = GenericFailure;
@@ -364,12 +390,14 @@ internal sealed class InterstellarSection
                 ViewVersion++;
             }
             HasView = true;
+            CurrentCruiseSpeed = vInf;
         }
         catch (Exception ex)
         {
             LogHelper.ErrorOnce("interstellar-plan", $"[DvMap] Interstellar plan failed: {ex}");
             Failed = true;
             HasView = false;
+            CurrentCruiseSpeed = double.NaN;
         }
         return stale;
     }

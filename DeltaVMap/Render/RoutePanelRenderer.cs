@@ -25,9 +25,10 @@ internal readonly struct PanelResult
 
 // The right-hand route panel, in two parts. The body scrolls: the controls help, the legend,
 // the route toggles and the view section, each under a header that opens and closes, then the
-// per-segment breakdown, the interstellar leg when the route has one, the detail totals, and
-// for an interstellar route its fuel estimate and the stock planner button. The footer holds
-// the headline total and the vehicle dV bar, and the window pins it below the body so the
+// per-segment breakdown, the interstellar leg when the route has one, the detail totals, for
+// an interstellar route its verdict and fuel estimate, the mission block (MissionSection) and
+// last the stock planner button. The footer holds the headline total, the vehicle dV bar and
+// the mission's supplies or probe power line, and the window pins it below the body so the
 // answer stays in view whatever is open above it. Plain ImGui widgets carry the text; the
 // colored bar is drawn with DrawList primitives so its green/yellow/red is exact and
 // independent of the binding's styling helpers.
@@ -78,7 +79,8 @@ internal sealed class RoutePanelRenderer
         bool PlaneChange,
         bool ReturnTrip,
         int SectionVersion,
-        bool SectionView);
+        bool SectionView,
+        bool MissionTiming);
 
     public void Reset()
     {
@@ -99,11 +101,11 @@ internal sealed class RoutePanelRenderer
 
     // The height DrawFooter takes, with the item spacing in front of it, so the window can size
     // the scrolling body before the body is drawn. The bar row is at least one text line high,
-    // so the "n/a" line fits the same room.
-    public static float FooterHeight(int marginPercent)
+    // so the "n/a" line fits the same room. missionLine adds the line under the bar.
+    public static float FooterHeight(int marginPercent, bool missionLine)
     {
         float spacing = ImGui.GetStyle().ItemSpacing.Y;
-        int lines = marginPercent > 0 ? 2 : 1;
+        int lines = (marginPercent > 0 ? 2 : 1) + (missionLine ? 1 : 0);
         return spacing + (1f + spacing) + lines * ImGui.GetTextLineHeightWithSpacing() + BarRowHeight() + spacing;
     }
 
@@ -115,7 +117,7 @@ internal sealed class RoutePanelRenderer
     }
 
     public PanelResult DrawBody(RouteOptions options, ViewOptions view, RouteSummary? summary,
-        InterstellarSection? section, bool severalSystems, bool rowBreaks)
+        InterstellarSection? section, bool severalSystems, bool rowBreaks, MissionSection? mission)
     {
         bool changed = false;
         bool rebuild = false;
@@ -137,6 +139,7 @@ internal sealed class RoutePanelRenderer
         if (summary == null)
         {
             ImGui.TextDisabled(severalSystems ? "Click a body or a star system to plan a route." : "Click a body to plan a route.");
+            mission?.DrawNoRoute();
             return new PanelResult(changed, rebuild);
         }
         if (summary.IsEmpty)
@@ -146,7 +149,8 @@ internal sealed class RoutePanelRenderer
         }
 
         InterstellarSection? leg = interstellar ? section : null;
-        EnsureText(options, view, summary, leg);
+        bool missionTiming = mission?.HasTiming ?? false;
+        EnsureText(options, view, summary, leg, missionTiming);
 
         ImGui.SeparatorText("Breakdown"u8);
         DrawLineList(_breakdown);
@@ -155,7 +159,7 @@ internal sealed class RoutePanelRenderer
             leg.DrawControls();
             leg.DrawReadouts();
             // A control change re-evaluates the leg, so the totals follow at once.
-            EnsureText(options, view, summary, leg);
+            EnsureText(options, view, summary, leg, missionTiming);
         }
 
         if ((leg == null || leg.HasView) && _totals.Count > 0)
@@ -169,13 +173,17 @@ internal sealed class RoutePanelRenderer
             if (leg.HasView && leg.Feasibility != null)
                 ConsoleUi.StatusText(leg.Feasibility, leg.FeasibilityTone);
             leg.DrawFuel();
-            leg.DrawStockPlannerButton();
-        }
-        else
-        {
-            _plannerButton.Draw(summary);
         }
 
+        mission?.DrawBody();
+
+        if (leg != null)
+            leg.DrawStockPlannerButton();
+        else
+            _plannerButton.Draw(summary);
+
+        // The RETURN TRIP row of the mission block changes the route options like a toggle above.
+        changed |= mission is { OptionsChanged: true };
         return new PanelResult(changed, rebuild);
     }
 
@@ -183,18 +191,20 @@ internal sealed class RoutePanelRenderer
     // is false, so a route that went away while the body was drawn leaves an empty footer for
     // one frame instead of stale figures.
     public void DrawFooter(RouteOptions options, ViewOptions view, RouteSummary? summary,
-        InterstellarSection? section, double? availableDv)
+        InterstellarSection? section, double? availableDv, MissionSection? mission)
     {
         if (!HasFooter(summary, section))
             return;
         InterstellarSection? leg = summary!.Interstellar != null ? section : null;
-        EnsureText(options, view, summary, leg);
+        EnsureText(options, view, summary, leg, mission?.HasTiming ?? false);
 
         ImGui.Separator();
         ImGui.Text(_headline.Headline);
         if (_headline.MarginLine.Length > 0)
             ImGui.TextDisabled(_marginLineFormat);
         DrawVehicleBar(_headline.Needed, availableDv);
+        if (mission is { HasFooterLine: true })
+            mission.DrawFooterLine();
     }
 
     // A section header in the console look of the rest of the panel. It draws the title and a
@@ -260,7 +270,7 @@ internal sealed class RoutePanelRenderer
         {
             ImGui.TextDisabled("Aerobraking (not on an interstellar arrival)");
             ImGui.TextDisabled("Plane change (in the interstellar estimate)");
-            ImGui.TextDisabled("Return trip (not for interstellar routes)");
+            ImGui.TextDisabled("Return trip (mission time only, below)");
             return changed;
         }
 
@@ -320,10 +330,12 @@ internal sealed class RoutePanelRenderer
         return rebuild;
     }
 
-    private void EnsureText(RouteOptions options, ViewOptions view, RouteSummary summary, InterstellarSection? leg)
+    // missionTiming is true when the mission block shows the route's times, which replace the
+    // transfer time line of the totals.
+    private void EnsureText(RouteOptions options, ViewOptions view, RouteSummary summary, InterstellarSection? leg, bool missionTiming)
     {
         var key = new TextKey(summary, view.DvScale, view.PilotingMarginPercent, options.IncludePlaneChange,
-            options.ShowReturnTrip, leg?.ViewVersion ?? 0, leg?.HasView ?? false);
+            options.ShowReturnTrip, leg?.ViewVersion ?? 0, leg?.HasView ?? false, missionTiming);
         if (_textKey == key)
             return;
         _textKey = key;
@@ -352,7 +364,7 @@ internal sealed class RoutePanelRenderer
             OutboundDv: route != null && legView ? leg!.RouteTotal : summary.OutboundDv * scale,
             ReturnDv: summary.ReturnDv * scale,
             PlaneChangeDv: options.IncludePlaneChange ? summary.PlaneChangeDv * scale : 0.0,
-            TransferTimeSeconds: summary.TransferTimeSeconds,
+            TransferTimeSeconds: missionTiming ? 0.0 : summary.TransferTimeSeconds,
             AerobrakeBodyId: summary.AerobrakeApplied ? summary.AerobrakeBodyId : null,
             ReturnAerobrakeBodyId: summary.ReturnAerobrakeApplied ? summary.ReturnAerobrakeBodyId : null,
             ShowReturnTrip: options.ShowReturnTrip,

@@ -5,6 +5,7 @@ using Brutal.Numerics;
 using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using DeltaVMap.Layout;
+using DeltaVMap.Mission;
 using DeltaVMap.Model;
 using DeltaVMap.Route;
 using KSA;
@@ -119,6 +120,7 @@ internal sealed class MapWindow : ImGuiWindow
     private readonly CanvasRenderer _canvas = new();
     private readonly TooltipRenderer _tooltips = new();
     private readonly RoutePanelRenderer _routePanel = new();
+    private readonly MissionSection _mission = new();
     private readonly GroupListRenderer _groupList = new();
     private readonly TransferWindowRenderer _windowRenderer = new();
     private readonly TransferWindowMapOverlay _mapOverlay = new();
@@ -200,6 +202,17 @@ internal sealed class MapWindow : ImGuiWindow
     private RouteSummary? _routeSummary;
     private HashSet<string>? _routeNodeIds;
     private readonly RouteOptions _options = new();
+
+    // The vessel's mission. _missionKey is the mission the map last saw, _missionOpening is set
+    // until the first frame after the window opened or the system changed, and
+    // _selectionFromMission marks a selection the mission made, which another craft or an arrival
+    // may replace; a pick of the player clears it. _missionRevealFailedId is the mission body a
+    // reveal could not bring onto the map.
+    private MissionKey? _missionKey;
+    private bool _missionOpening;
+    private bool _selectionFromMission;
+    private MissionContext _missionContext;
+    private string? _missionRevealFailedId;
 
     // Transfer-window timing overlay, separate from the route / layout pipeline. The list is
     // rebuilt on root or visibility change (it mirrors the bodies the map shows); its two live
@@ -319,6 +332,7 @@ internal sealed class MapWindow : ImGuiWindow
     {
         _show = true;
         _reevaluateRoot = true;
+        _missionOpening = true;
     }
 
     public void Close()
@@ -461,6 +475,7 @@ internal sealed class MapWindow : ImGuiWindow
                 ImGui.TextDisabled("Delta-V map unavailable (no system loaded)."u8);
                 return;
             }
+            UpdateMissionRoute();
 
             float2 avail = ImGui.GetContentRegionAvail();
             // Wide enough that the longest breakdown line ("Capture at <body> (ellipse):
@@ -518,9 +533,9 @@ internal sealed class MapWindow : ImGuiWindow
     // region has to be sized before it is drawn, so the footer is decided from the route as it
     // stands at the start of the frame. A change made inside the region (a search pick that
     // changes the route, the margin slider leaving zero, an interstellar leg getting its first
-    // estimate) is sized for from the next frame, so for one frame the footer can be clipped or
-    // sit at the end of the region. A window too short for the footer and a usable region
-    // scrolls as one column with the footer at its end.
+    // estimate, a mission line that appears) is sized for from the next frame, so for one frame
+    // the footer can be clipped or sit at the end of the region. A window too short for the
+    // footer and a usable region scrolls as one column with the footer at its end.
     private void DrawPanel()
     {
 #if DEBUG
@@ -530,7 +545,8 @@ internal sealed class MapWindow : ImGuiWindow
 
         float availY = ImGui.GetContentRegionAvail().Y;
         bool footer = RoutePanelRenderer.HasFooter(_routeSummary, _routeSummary?.Interstellar != null ? _interstellar : null);
-        float footerH = footer ? RoutePanelRenderer.FooterHeight(_view.PilotingMarginPercent) : 0f;
+        bool missionLine = _mission.HasFooterLine;
+        float footerH = footer ? RoutePanelRenderer.FooterHeight(_view.PilotingMarginPercent, missionLine) : 0f;
         bool pinned = footer && availY - footerH >= MinPanelScrollRows * ImGui.GetFrameHeightWithSpacing();
 
         PanelResult result;
@@ -546,18 +562,19 @@ internal sealed class MapWindow : ImGuiWindow
                 routeStale = _interstellar.Update(_graph, leg, availableDv, _view.DvScale, _options.FromSurface);
                 section = _interstellar;
             }
+            _mission.Update(_routeSummary, _options, section, in _missionContext);
 
             result = _routePanel.DrawBody(_options, _view, _routeSummary, section, _graph?.HasSeveralSystems == true,
-                _scene != null && _rowLeftByHub.Count > 0);
+                _scene != null && _rowLeftByHub.Count > 0, _mission);
             if (!pinned)
-                _routePanel.DrawFooter(_options, _view, _routeSummary, section, availableDv);
+                _routePanel.DrawFooter(_options, _view, _routeSummary, section, availableDv, _mission);
         }
         finally
         {
             ImGui.EndChild();
         }
         if (pinned)
-            _routePanel.DrawFooter(_options, _view, _routeSummary, section, availableDv);
+            _routePanel.DrawFooter(_options, _view, _routeSummary, section, availableDv, _mission);
 
         // A visibility change rebuilds the tree (and re-resolves the selected route against
         // the new node set); a plain route-toggle change only re-accumulates the path, as does
@@ -566,6 +583,11 @@ internal sealed class MapWindow : ImGuiWindow
             RebuildPreservingSelection(_currentRootId);
         else if (result.RouteChanged || routeStale)
             RecomputeRoute();
+
+        if (_mission.MissionRouteRequested)
+            ApplyMissionRoute();
+        else if (_mission.MissionWritten)
+            AcceptMissionWrite();
     }
 
     // The Transfer-windows overlay, floated bottom-left inside the canvas (mirroring the top-
@@ -832,15 +854,25 @@ internal sealed class MapWindow : ImGuiWindow
         if (_currentRootId == null)
             return;
 
-        _listPickId = body.Id;
         _focusBodyId = body.Id;
-        // The pick replaces the selected route, so the rebuild has none to carry over.
-        _selectedId = null;
-        RebuildPreservingSelection(_currentRootId);
+        RevealListPick(body);
         _selectedId = BestBodyNode(body.Id)?.Id;
+        _selectionFromMission = false;
         RecomputeRoute();
         UpdateScene(anchorBodyId: body.Id);
         FocusOnBody(body.Id);
+    }
+
+    // Shows one body as its own lane, which a "+N" group or a star system past the shown ones
+    // otherwise hides. The pick replaces the selected route, so the rebuild has none to carry
+    // over.
+    private void RevealListPick(PhysicalNode body)
+    {
+        if (_currentRootId == null)
+            return;
+        _listPickId = body.Id;
+        _selectedId = null;
+        RebuildPreservingSelection(_currentRootId);
     }
 
     // Clamp a panel dimension into [min, max], except when the canvas is smaller than the minimum,
@@ -1559,6 +1591,7 @@ internal sealed class MapWindow : ImGuiWindow
                 {
                     bool selecting = hit.Id != _selectedId;
                     _selectedId = selecting ? hit.Id : null;
+                    _selectionFromMission = false;
                     // Selecting a surface implies you want to land there, so tick the
                     // toggle to match (it then reads correctly and the bar includes it).
                     if (selecting && hit.Kind == LayoutKind.Surface)
@@ -1711,6 +1744,115 @@ internal sealed class MapWindow : ImGuiWindow
         }
 
         return target;
+    }
+
+    // Reads the mission of the craft the map plans for, every frame (field reads and a few
+    // lookups), and selects the route it asks for when MissionRoutes.ShouldApply says so: on
+    // opening with nothing selected, when the mission itself changes, and when another craft or
+    // an arrival changes it while the selection is empty or came from the mission.
+    private void UpdateMissionRoute()
+    {
+        try
+        {
+            MissionHost? host = MissionReader.ResolveHost();
+            MissionSnapshot? snapshot = host is { } h ? MissionReader.Read(h.Tree) : null;
+            string? home = MissionReader.HomeBodyId();
+            MissionRouteGoal? goal = MissionRoutes.DefaultRoute(snapshot, home);
+            _missionContext = BuildMissionContext(host, snapshot, home, goal);
+            // Without a tree there is nothing to select, so the opening and a mission change wait
+            // for it.
+            if (_visualTree == null)
+                return;
+
+            MissionKey key = MissionRoutes.KeyOf(host?.Tree, snapshot);
+            bool apply = MissionRoutes.ShouldApply(_missionKey, key, _missionOpening, _selectedId != null, _selectionFromMission);
+            _missionKey = key;
+            _missionOpening = false;
+            if (apply)
+                ApplyMissionRoute();
+        }
+        catch (Exception ex)
+        {
+            LogHelper.WarnOnce("mission-route", $"[DvMap] Mission route failed: {ex}");
+        }
+    }
+
+    // GoalOnMap is also true for a body the map hides but MISSION ROUTE can reveal. A body that
+    // already has a node, such as the ego system's root star, has no route a reveal could add.
+    private MissionContext BuildMissionContext(MissionHost? host, MissionSnapshot? snapshot, string? home, MissionRouteGoal? goal)
+    {
+        RouteEnd? endOnMap = null;
+        bool onMap = false;
+        bool known = false;
+        if (goal is { } g)
+        {
+            if (_visualTree != null && MissionRouteResolver.Resolve(_visualTree, in g) is { } resolved)
+            {
+                endOnMap = resolved.EndOnMap;
+                onMap = true;
+            }
+            else
+            {
+                onMap = _visualTree != null
+                    && _graph?.Find(g.BodyId) != null
+                    && BestBodyNode(g.BodyId) == null
+                    && !string.Equals(_missionRevealFailedId, g.BodyId, StringComparison.Ordinal);
+            }
+            CelestialSystem? system = Universe.CurrentSystem;
+            known = system != null && system.All.TryGet(g.BodyId, out Astronomical? _);
+        }
+        return new MissionContext(host, snapshot, home, goal, endOnMap, onMap, known);
+    }
+
+    // Selects the route of the mission with its arrival and its trip, revealing a body the map
+    // hides first. A goal the map has no node for keeps the selection as it is.
+    private void ApplyMissionRoute()
+    {
+        if (_missionContext.Goal is not { } goal || _visualTree == null)
+            return;
+
+        (StateNode Node, RouteEnd EndOnMap)? resolved = MissionRouteResolver.Resolve(_visualTree, in goal);
+        if (resolved == null)
+        {
+            PhysicalNode? body = _graph?.Find(goal.BodyId);
+            if (body == null || BestBodyNode(goal.BodyId) != null || _currentRootId == null)
+                return;
+            RevealListPick(body);
+            resolved = _visualTree != null ? MissionRouteResolver.Resolve(_visualTree, in goal) : null;
+            if (resolved == null)
+            {
+                _missionRevealFailedId = goal.BodyId;
+                RefreshMissionContext();
+                return;
+            }
+        }
+
+        _options.LandAtDestination = goal.End == RouteEnd.Surface;
+        _options.ShowReturnTrip = goal.Return;
+        _selectedId = resolved.Value.Node.Id;
+        _selectionFromMission = true;
+        RecomputeRoute();
+        UpdateScene(anchorNodeId: null);
+        if (_routeSummary?.Interstellar != null && _missionContext.Mission is { } mission)
+            _interstellar.SetCruiseSpeed(mission.CruiseSpeedC * InterstellarMath.SpeedOfLight);
+        RefreshMissionContext();
+    }
+
+    private void RefreshMissionContext()
+    {
+        MissionContext c = _missionContext;
+        _missionContext = BuildMissionContext(c.Host, c.Mission, c.HomeBodyId, c.Goal);
+    }
+
+    // SET AS MISSION wrote the selected route into the mission. The write never re-routes, and
+    // the selection stays the player's: stock records the arrival again one frame after a flight
+    // write to the body the vessel is in, and a selection marked as the mission's would then jump
+    // to the way home.
+    private void AcceptMissionWrite()
+    {
+        if (_missionContext.Host is { } host)
+            _missionKey = MissionRoutes.KeyOf(host.Tree, MissionReader.Read(host.Tree));
+        _selectionFromMission = false;
     }
 
     // The vehicle's total staged dV for the comparison bar: the controlled vehicle in flight, else
@@ -1978,6 +2120,12 @@ internal sealed class MapWindow : ImGuiWindow
             _canvas.Reset();
             _tooltips.Reset();
             _routePanel.Reset();
+            // A new system clears the selection, so it counts as an opening for the mission route.
+            _mission.Reset();
+            _missionKey = null;
+            _selectionFromMission = false;
+            _missionOpening = true;
+            _missionRevealFailedId = null;
             _egoVehicle = null;
             _egoParent = null;
             _buildFailedRootId = null;
