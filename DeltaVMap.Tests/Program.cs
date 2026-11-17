@@ -4,6 +4,7 @@ using System.IO;
 using DeltaVMap.Core;
 using DeltaVMap.Dv;
 using DeltaVMap.Layout;
+using DeltaVMap.Mission;
 using DeltaVMap.Model;
 using DeltaVMap.Route;
 using DeltaVMap.Render;
@@ -141,6 +142,7 @@ failures += RunCruiseSpeedChecks();
 failures += RunSceneChecks(outDir);
 failures += RunFormatChecks();
 failures += RunRouteTotalsChecks();
+failures += RunMissionChecks();
 failures += RunEdgeGeometryChecks();
 failures += RunWrapConfigChecks();
 failures += RunWrapGates();
@@ -1774,6 +1776,174 @@ static int RunRouteTotalsChecks()
     fails += Check("the headline is never a detail line", neverRepeated);
 
     Console.WriteLine(fails == 0 ? "  totals: OK" : $"  totals: {fails} FAIL");
+    return fails;
+}
+
+// The mission policy: which route a mission asks for (the way home after the arrival of a return
+// mission), when that route replaces the selection, which shown route counts as the mission's, the
+// plan a route writes back, and every line the mission block shows.
+static int RunMissionChecks()
+{
+    int fails = 0;
+    Console.WriteLine();
+    Console.WriteLine("[mission] mission route, timing text, supplies and probe power");
+
+    static MissionSnapshot Plan(MissionGoal goal = MissionGoal.Body, string body = "Luna", RouteArrival arrival = RouteArrival.Orbit,
+        bool ret = true, bool custom = false, bool arrived = false)
+    {
+        return new MissionSnapshot(goal, body, arrival, ret, 86400.0, 0.1, custom, arrived);
+    }
+
+    fails += Check("a body landing with return asks for the surface and the return",
+        MissionRoutes.DefaultRoute(Plan(arrival: RouteArrival.Land), "Earth") == new MissionRouteGoal("Luna", RouteEnd.Surface, true, false));
+    fails += Check("a flyby asks for the flyby end",
+        MissionRoutes.DefaultRoute(Plan(arrival: RouteArrival.Flyby), "Earth") == new MissionRouteGoal("Luna", RouteEnd.Flyby, true, false));
+    fails += Check("a one-way orbit asks for the orbit without return",
+        MissionRoutes.DefaultRoute(Plan(ret: false), "Earth") == new MissionRouteGoal("Luna", RouteEnd.Orbit, false, false));
+    fails += Check("low orbit asks for the home body's orbit",
+        MissionRoutes.DefaultRoute(Plan(goal: MissionGoal.LowOrbit, body: ""), "Earth") == new MissionRouteGoal("Earth", RouteEnd.Orbit, true, false));
+    fails += Check("a custom mission asks for no route", MissionRoutes.DefaultRoute(Plan(custom: true), "Earth") == null);
+    fails += Check("no destination asks for no route", MissionRoutes.DefaultRoute(Plan(goal: MissionGoal.None), "Earth") == null);
+    fails += Check("no mission asks for no route", MissionRoutes.DefaultRoute(null, "Earth") == null);
+    fails += Check("an arrived return mission asks for the way home",
+        MissionRoutes.DefaultRoute(Plan(arrival: RouteArrival.Land, arrived: true), "Earth") == new MissionRouteGoal("Earth", RouteEnd.Orbit, false, true));
+    fails += Check("an arrived one-way mission keeps its destination",
+        MissionRoutes.DefaultRoute(Plan(arrival: RouteArrival.Land, ret: false, arrived: true), "Earth") == new MissionRouteGoal("Luna", RouteEnd.Surface, false, false));
+    fails += Check("low orbit without a home body asks for no route",
+        MissionRoutes.DefaultRoute(Plan(goal: MissionGoal.LowOrbit, body: ""), null) == null);
+    fails += Check("the way home without a home body is no route",
+        MissionRoutes.DefaultRoute(Plan(arrived: true), null) == null);
+
+    object treeA = new object();
+    object treeB = new object();
+    MissionKey key = MissionRoutes.KeyOf(treeA, Plan());
+    fails += Check("an opening without a selection applies", MissionRoutes.ShouldApply(null, key, true, false, false));
+    fails += Check("an opening keeps a selection", !MissionRoutes.ShouldApply(key, key, true, true, false));
+    fails += Check("the first read without an opening does not apply", !MissionRoutes.ShouldApply(null, key, false, false, false));
+    fails += Check("nothing changed does not apply", !MissionRoutes.ShouldApply(key, key, false, false, false));
+    MissionKey otherBody = MissionRoutes.KeyOf(treeA, Plan(body: "Mars"));
+    fails += Check("a plan change replaces a pick of the player", MissionRoutes.ShouldApply(key, otherBody, false, true, false));
+    fails += Check("an arrival change replaces a pick of the player",
+        MissionRoutes.ShouldApply(key, MissionRoutes.KeyOf(treeA, Plan(arrival: RouteArrival.Land)), false, true, false));
+    fails += Check("a trip change replaces a pick of the player",
+        MissionRoutes.ShouldApply(key, MissionRoutes.KeyOf(treeA, Plan(ret: false)), false, true, false));
+    fails += Check("a retarget that also clears the arrival replaces a pick of the player",
+        MissionRoutes.ShouldApply(MissionRoutes.KeyOf(treeA, Plan(arrived: true)), otherBody, false, true, false));
+    MissionKey otherTree = MissionRoutes.KeyOf(treeB, Plan());
+    fails += Check("another craft keeps a pick of the player", !MissionRoutes.ShouldApply(key, otherTree, false, true, false));
+    fails += Check("another craft replaces a mission pick", MissionRoutes.ShouldApply(key, otherTree, false, true, true));
+    fails += Check("another craft applies without a selection", MissionRoutes.ShouldApply(key, otherTree, false, false, false));
+    MissionKey arrivedKey = MissionRoutes.KeyOf(treeA, Plan(arrived: true));
+    fails += Check("an arrival keeps a pick of the player", !MissionRoutes.ShouldApply(key, arrivedKey, false, true, false));
+    fails += Check("an arrival replaces a mission pick", MissionRoutes.ShouldApply(key, arrivedKey, false, true, true));
+    fails += Check("the key of no mission is empty and compares the tree by reference",
+        MissionRoutes.KeyOf(treeA, null) == new MissionKey(treeA, MissionGoal.None, "", RouteArrival.Orbit, false, false, false)
+        && MissionRoutes.KeyOf(treeA, null) != MissionRoutes.KeyOf(treeB, null));
+
+    var landGoal = new MissionRouteGoal("Luna", RouteEnd.Surface, true, false);
+    var flybyGoal = new MissionRouteGoal("Luna", RouteEnd.Flyby, true, false);
+    fails += Check("the exact route is the mission route", MissionRoutes.IsMissionRoute(landGoal, RouteEnd.Surface, "Luna", RouteEnd.Surface, true));
+    fails += Check("a flyby resolved to an orbit counts as the mission route",
+        MissionRoutes.IsMissionRoute(flybyGoal, RouteEnd.Orbit, "Luna", RouteEnd.Orbit, true)
+        && !MissionRoutes.IsMissionRoute(flybyGoal, RouteEnd.Orbit, "Luna", RouteEnd.Flyby, true));
+    fails += Check("a landing on a body without a surface counts at its orbit",
+        MissionRoutes.IsMissionRoute(landGoal, RouteEnd.Orbit, "Luna", RouteEnd.Orbit, true));
+    fails += Check("without a resolved end the goal's end decides",
+        MissionRoutes.IsMissionRoute(landGoal, null, "Luna", RouteEnd.Surface, true)
+        && !MissionRoutes.IsMissionRoute(landGoal, null, "Luna", RouteEnd.Orbit, true));
+    fails += Check("another trip is not the mission route", !MissionRoutes.IsMissionRoute(landGoal, RouteEnd.Surface, "Luna", RouteEnd.Surface, false));
+    fails += Check("another body is not the mission route", !MissionRoutes.IsMissionRoute(landGoal, RouteEnd.Surface, "Mars", RouteEnd.Surface, true));
+    fails += Check("no goal is no mission route", !MissionRoutes.IsMissionRoute(null, null, "Luna", RouteEnd.Surface, true));
+
+    fails += Check("the home body writes low orbit",
+        MissionRoutes.PlanFor("Earth", "Earth", RouteEnd.Surface, true, false, 3600.0, 0.1) == new MissionWrite(MissionGoal.LowOrbit, "", RouteArrival.Orbit, true, 3600.0, null));
+    fails += Check("an in-system route writes no cruise speed",
+        MissionRoutes.PlanFor("Luna", "Earth", RouteEnd.Surface, false, false, 3600.0, 0.3) == new MissionWrite(MissionGoal.Body, "Luna", RouteArrival.Land, false, 3600.0, null));
+    fails += Check("a flyby route writes a flyby", MissionRoutes.PlanFor("Luna", "Earth", RouteEnd.Flyby, true, false, 0.0, 0.1).Arrival == RouteArrival.Flyby);
+    fails += Check("a slow cruise is clamped up", MissionRoutes.PlanFor("Star", "Earth", RouteEnd.Orbit, true, true, 0.0, 1e-6).CruiseSpeedC == MissionRoutes.MinCruiseSpeedC);
+    fails += Check("a fast cruise is clamped down", MissionRoutes.PlanFor("Star", "Earth", RouteEnd.Orbit, true, true, 0.0, 0.99).CruiseSpeedC == MissionRoutes.MaxCruiseSpeedC);
+    fails += Check("a NaN cruise is the stock default", MissionRoutes.PlanFor("Star", "Earth", RouteEnd.Orbit, true, true, 0.0, double.NaN).CruiseSpeedC == 0.1);
+    fails += Check("a negative stay is zero", MissionRoutes.PlanFor("Luna", "Earth", RouteEnd.Orbit, true, false, -5.0, 0.1).StaySeconds == 0.0);
+    fails += Check("a NaN or infinite stay is the stock default",
+        MissionRoutes.PlanFor("Luna", "Earth", RouteEnd.Orbit, true, false, double.NaN, 0.1).StaySeconds == MissionRoutes.DefaultStaySeconds
+        && MissionRoutes.PlanFor("Luna", "Earth", RouteEnd.Orbit, true, false, double.PositiveInfinity, 0.1).StaySeconds == MissionRoutes.DefaultStaySeconds);
+    fails += Check("the arrival follows the route end",
+        MissionRoutes.ArrivalOf(RouteEnd.Surface) == RouteArrival.Land && MissionRoutes.ArrivalOf(RouteEnd.Flyby) == RouteArrival.Flyby
+        && MissionRoutes.ArrivalOf(RouteEnd.Orbit) == RouteArrival.Orbit);
+
+    const double day = 86400.0;
+    var rows = new List<MissionRow>();
+    static string Keys(List<MissionRow> list) => string.Join("|", list.ConvertAll(r => r.Key));
+
+    MissionText.TimeRows(new MissionTimes(MissionTimesStatus.Planned, 4 * day, 30 * day, 4 * day, 20 * day, 3 * day, false), rows);
+    fails += Check("a planned return lists out, stay, return window, back, total and both notes",
+        Keys(rows) == "OUT|STAY|RETURN WINDOW|BACK|TOTAL|THE STAY WAITS FOR THE NEXT RETURN WINDOW|HOHMANN TRANSFER TIMES");
+    fails += Check("the readouts are durations",
+        rows[0].Value == "4.0 d" && rows[1].Value == "30.0 d" && rows[2].Value == "20.0 d after arrival" && rows[4].Value == "38.0 d"
+        && rows[0].Kind == MissionRowKind.Readout && rows[5].Kind == MissionRowKind.Status);
+    bool noPercent = true;
+    foreach (MissionRow row in rows)
+        noPercent &= !row.Key.Contains('%') && !row.Value.Contains('%');
+    MissionText.TimeRows(new MissionTimes(MissionTimesStatus.Planned, 4 * day, 3 * day, 0.0, 0.0, 3 * day, false), rows);
+    fails += Check("a one-way plan has no back and no wait note", Keys(rows) == "OUT|STAY|TOTAL|HOHMANN TRANSFER TIMES");
+    MissionText.TimeRows(new MissionTimes(MissionTimesStatus.Planned, 4 * day, 0.0, 4 * day, 0.0, 0.0, false), rows);
+    fails += Check("zero legs are hidden", Keys(rows) == "OUT|BACK|TOTAL|HOHMANN TRANSFER TIMES");
+    MissionText.TimeRows(new MissionTimes(MissionTimesStatus.Planned, 0.0, day, 0.0, 0.0, day, false), rows);
+    fails += Check("no transfer note without an outbound leg", Keys(rows) == "STAY|TOTAL");
+    MissionText.TimeRows(new MissionTimes(MissionTimesStatus.Planned, 10 * 365.25 * day, 0.0, 10 * 365.25 * day, 0.0, 0.0, true), rows);
+    fails += Check("an interstellar plan names the straight line", rows[^1].Key == "STRAIGHT LINE AT CRUISE SPEED");
+    MissionText.TimeRows(new MissionTimes(MissionTimesStatus.FlybyReturnUnavailable, 4 * day, 0.0, 0.0, 20 * day, 0.0, false), rows);
+    fails += Check("a flyby return that is not possible says so",
+        Keys(rows) == "OUT|A FLYBY CANNOT COME STRAIGHT BACK: PICK ORBIT, LAND OR ONE WAY" && rows[1].Tone == MissionTone.Pending);
+    foreach (MissionRow row in rows)
+        noPercent &= !row.Key.Contains('%') && !row.Value.Contains('%');
+    MissionText.TimeRows(MissionTimes.Unknown, rows);
+    fails += Check("an unknown timing says so", Keys(rows) == "NO MISSION TIME FOR THIS ROUTE");
+    fails += Check("no timing text holds a percent sign", noPercent);
+
+    fails += Check("enough supplies", MissionText.SupplyLine(new SupplyVerdict(false, SupplyKind.Food, 0.0, 1, 1)) == ("SUPPLIES ENOUGH", MissionTone.Positive));
+    fails += Check("short in the only zone",
+        MissionText.SupplyLine(new SupplyVerdict(true, SupplyKind.Water, 2 * day, 1, 1)) == ("WATER SHORT BY 2.0 d", MissionTone.Danger));
+    fails += Check("short in one of several zones",
+        MissionText.SupplyLine(new SupplyVerdict(true, SupplyKind.Food, 3600.0 * 5, 2, 3)) == ("FOOD SHORT BY 5.0 h, ZONE 2", MissionTone.Danger));
+    fails += Check("the scrubber name is ASCII",
+        MissionText.SupplyLine(new SupplyVerdict(true, SupplyKind.Scrubber, day, 1, 1)).Text == "CO2 SCRUBBER SHORT BY 1.0 d"
+        && MissionText.SupplyName(SupplyKind.Air) == "AIR");
+
+    static ProbeReading Probe(ProbeState state, DrainKind drain = DrainKind.Draining, double remaining = 0.0) => new(state, drain, remaining);
+    fails += Check("no probe core shows nothing", MissionText.ProbeLine(Probe(ProbeState.None), null).Text.Length == 0);
+    fails += Check("the probe core states",
+        MissionText.ProbeLine(Probe(ProbeState.Failed), null) == ("PROBE CORE FAILED", MissionTone.Danger)
+        && MissionText.ProbeLine(Probe(ProbeState.SwitchedOff), null) == ("PROBE CORE SWITCHED OFF", MissionTone.Pending)
+        && MissionText.ProbeLine(Probe(ProbeState.StormStandby), null) == ("PROBE CORE IN STORM STANDBY", MissionTone.Pending)
+        && MissionText.ProbeLine(Probe(ProbeState.Rebooting), null) == ("PROBE CORE REBOOTING", MissionTone.Pending)
+        && MissionText.ProbeLine(Probe(ProbeState.Unpowered), null) == ("PROBE CORE UNPOWERED", MissionTone.Danger));
+    fails += Check("a probe core without a battery",
+        MissionText.ProbeLine(Probe(ProbeState.Powered, DrainKind.NoBattery), 10 * day) == ("PROBE CORE HAS NO BATTERY, IT LIVES ON ITS POWER SUPPLY", MissionTone.Pending));
+    fails += Check("empty probe batteries", MissionText.ProbeLine(Probe(ProbeState.Powered, DrainKind.Empty), 10 * day) == ("PROBE BATTERIES EMPTY", MissionTone.Danger));
+    fails += Check("probe power that does not drain",
+        MissionText.ProbeLine(Probe(ProbeState.Powered, DrainKind.NotDraining, double.PositiveInfinity), 10 * day) == ("PROBE POWER NOT DRAINING", MissionTone.Positive)
+        && MissionText.ProbeLine(Probe(ProbeState.Powered, DrainKind.Draining, double.PositiveInfinity), 10 * day).Text == "PROBE POWER NOT DRAINING");
+    fails += Check("probe power shorter than the mission",
+        MissionText.ProbeLine(Probe(ProbeState.Powered, DrainKind.Draining, 2 * day), 10 * day) == ("PROBE POWER LASTS 2.0 d OF 10.0 d", MissionTone.Danger));
+    fails += Check("probe power longer than the mission",
+        MissionText.ProbeLine(Probe(ProbeState.Powered, DrainKind.Draining, 20 * day), 10 * day) == ("PROBE POWER LASTS 20.0 d", MissionTone.Positive));
+    fails += Check("probe power without a mission time",
+        MissionText.ProbeLine(Probe(ProbeState.Powered, DrainKind.Draining, 20 * day), null) == ("PROBE POWER LASTS 20.0 d", MissionTone.Muted));
+
+    fails += Check("the mission summaries",
+        MissionText.Summary(new MissionRouteGoal("Luna", RouteEnd.Surface, true, false), RouteArrival.Land, false) == "LUNA, LAND, RETURN"
+        && MissionText.Summary(new MissionRouteGoal("Luna", RouteEnd.Flyby, false, false), RouteArrival.Flyby, false) == "LUNA, FLYBY, ONE WAY"
+        && MissionText.Summary(new MissionRouteGoal("Earth", RouteEnd.Orbit, false, true), RouteArrival.Orbit, false) == "BACK TO EARTH"
+        && MissionText.Summary(new MissionRouteGoal("Earth", RouteEnd.Orbit, true, false), RouteArrival.Orbit, true) == "EARTH LOW ORBIT, RETURN");
+
+    fails += Check("no battery wins over a covered draw", PowerMath.Forecast(false, 100.0, 1.0, 5.0) == (DrainKind.NoBattery, 0.0));
+    fails += Check("a covered draw does not drain", PowerMath.Forecast(true, 100.0, 5.0, 5.0) == (DrainKind.NotDraining, double.PositiveInfinity));
+    fails += Check("a covered draw wins over an empty battery", PowerMath.Forecast(true, 0.0, 1.0, 5.0).Drain == DrainKind.NotDraining);
+    fails += Check("an empty battery", PowerMath.Forecast(true, 0.0, 5.0, 1.0) == (DrainKind.Empty, 0.0));
+    fails += Check("a draining battery lasts charge over net draw", PowerMath.Forecast(true, 1000.0, 15.0, 5.0) == (DrainKind.Draining, 100.0));
+
+    Console.WriteLine(fails == 0 ? "  mission: OK" : $"  mission: {fails} FAIL");
     return fails;
 }
 

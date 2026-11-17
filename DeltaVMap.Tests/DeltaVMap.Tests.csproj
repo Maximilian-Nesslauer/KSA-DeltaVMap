@@ -52,6 +52,13 @@
     <Compile Include="..\DeltaVMap\Model\MinorFold.cs" />
     <Compile Include="..\DeltaVMap\Model\BuildOptions.cs" />
     <Compile Include="..\DeltaVMap\Render\GroupListFilter.cs" />
+    <!-- The mission route policy, the mission timing text and the power balance are pure too, so
+         the harness locks which route a mission asks for, when it replaces the selection, the plan
+         a route writes back, and every line the mission block shows. -->
+    <Compile Include="..\DeltaVMap\Mission\MissionRoutes.cs" />
+    <Compile Include="..\DeltaVMap\Mission\MissionTimes.cs" />
+    <Compile Include="..\DeltaVMap\Mission\MissionText.cs" />
+    <Compile Include="..\DeltaVMap\Mission\PowerMath.cs" />
   </ItemGroup>
 
 </Project>
