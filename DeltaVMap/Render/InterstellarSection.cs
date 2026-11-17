@@ -282,7 +282,7 @@ internal sealed class InterstellarSection
 
         _failureText = GenericFailure;
 
-        Vehicle? vehicle = ControlledVehicle();
+        Vehicle? vehicle = ControlledCraft.VehicleWithParent();
         RefreshVessel(vehicle);
 
         bool inTransit = route.InTransit;
@@ -499,7 +499,7 @@ internal sealed class InterstellarSection
     {
         if (Program.Editor != null || _route == null)
             return;
-        Vehicle? vehicle = ControlledVehicle();
+        Vehicle? vehicle = ControlledCraft.VehicleWithParent();
         if (vehicle == null)
             return;
         ImGui.Separator();
@@ -921,20 +921,5 @@ internal sealed class InterstellarSection
             InterstellarBurnEnd.Vessel => "VESSEL BURNED AWAY",
             _ => end.ToString().ToUpperInvariant()
         };
-    }
-
-    // Reading the controlled vehicle can throw for a vehicle mid transition; treat that as none.
-    private static Vehicle? ControlledVehicle()
-    {
-        try
-        {
-            Vehicle? vehicle = Program.ControlledVehicle;
-            return vehicle?.Parent != null ? vehicle : null;
-        }
-        catch (Exception ex)
-        {
-            LogHelper.WarnOnce("interstellar-vehicle", $"[DvMap] Could not read the controlled vehicle: {ex.Message}");
-            return null;
-        }
     }
 }

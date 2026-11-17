@@ -24,7 +24,7 @@ internal sealed class StockPlannerButton
         {
             if (Program.Editor != null || summary.IsEmpty || summary.Interstellar != null)
                 return;
-            Vehicle? vehicle = ControlledVehicle();
+            Vehicle? vehicle = ControlledCraft.VehicleWithParent();
             if (vehicle == null)
                 return;
             Astronomical target = summary.Target.Body;
@@ -56,22 +56,6 @@ internal sealed class StockPlannerButton
         catch (Exception ex)
         {
             LogHelper.WarnOnce("stock-planner-button", $"[DvMap] Could not draw the stock planner button: {ex.Message}");
-        }
-    }
-
-    // Reading the parent walks the vessel's orbit, which can throw for a vessel without a
-    // materialized patch, so it is read in a try like MapWindow does.
-    private static Vehicle? ControlledVehicle()
-    {
-        try
-        {
-            Vehicle? vehicle = Program.ControlledVehicle;
-            return vehicle?.Parent != null ? vehicle : null;
-        }
-        catch (Exception ex)
-        {
-            LogHelper.WarnOnce("stock-planner-vehicle", $"[DvMap] Could not read the controlled vehicle: {ex.Message}");
-            return null;
         }
     }
 }

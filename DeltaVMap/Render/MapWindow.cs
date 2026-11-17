@@ -1678,7 +1678,7 @@ internal sealed class MapWindow : ImGuiWindow
     // direction on an open orbit) is read by the interstellar section on every vessel refresh.
     private RouteContext BuildRouteContext(RoutePath path)
     {
-        Vehicle? vehicle = TryGetControlledVehicle();
+        Vehicle? vehicle = ControlledCraft.VehicleWithParent();
         PhysicalNode? originBody = _graph?.Find(path.Origin.Body.Id);
         if (vehicle == null || originBody == null)
             return RouteContext.None;
@@ -2255,20 +2255,6 @@ internal sealed class MapWindow : ImGuiWindow
             _selectedId = selected;
             RecomputeRoute();
             UpdateScene(anchorNodeId: null);
-        }
-    }
-
-    private static Vehicle? TryGetControlledVehicle()
-    {
-        try
-        {
-            Vehicle? vehicle = Program.ControlledVehicle;
-            return vehicle?.Parent != null ? vehicle : null;
-        }
-        catch (Exception ex)
-        {
-            LogHelper.WarnOnce("controlled-vehicle", $"[DvMap] Could not read the controlled vehicle: {ex.Message}");
-            return null;
         }
     }
 

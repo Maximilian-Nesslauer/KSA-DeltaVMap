@@ -72,7 +72,8 @@ internal static class StagedDv
     {
         try
         {
-            PartTree? tree = ResolveTree(out bool inFlight);
+            PartTree? tree = ControlledCraft.ResolveTree(out Vehicle? vehicle);
+            bool inFlight = vehicle != null;
             if (tree == null || tree.Count == 0)
             {
                 Forget();
@@ -157,15 +158,6 @@ internal static class StagedDv
         for (int i = 0; i < states.Length; i++)
             mass += states[i].Mass;
         return mass;
-    }
-
-    private static PartTree? ResolveTree(out bool inFlight)
-    {
-        Vehicle? vehicle = Program.ControlledVehicle;
-        inFlight = vehicle != null;
-        if (vehicle != null)
-            return vehicle.Parts;
-        return Program.Editor?.EditingSpace.Parts;
     }
 
     private static double Compute(SequencePerformanceList analyzer, PartTree tree, bool inFlight)

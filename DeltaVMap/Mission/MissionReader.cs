@@ -11,24 +11,12 @@ internal readonly record struct MissionHost(PartTree Tree, Vehicle? Vehicle, boo
 // Reads the mission plan of a craft (PartTree.Mission) into a snapshot free of game types.
 internal static class MissionReader
 {
-    // The same order as the staged delta-v readout resolves its tree, so the mission and the
-    // delta-v bar describe one craft. Opening the editor clears Program.ControlledVehicle.
+    // The craft of the staged delta-v readout, so the mission and the delta-v bar describe one
+    // craft.
     internal static MissionHost? ResolveHost()
     {
-        try
-        {
-            Vehicle? vehicle = Program.ControlledVehicle;
-            if (vehicle != null)
-                return vehicle.Parts is { } parts ? new MissionHost(parts, vehicle, false) : null;
-
-            PartTree? tree = Program.Editor?.EditingSpace?.Parts;
-            return tree != null ? new MissionHost(tree, null, true) : null;
-        }
-        catch (Exception ex)
-        {
-            LogHelper.WarnOnce("mission-read", $"[DvMap] Mission read failed: {ex}");
-            return null;
-        }
+        PartTree? tree = ControlledCraft.ResolveTree(out Vehicle? vehicle);
+        return tree != null ? new MissionHost(tree, vehicle, vehicle == null) : null;
     }
 
     // Null when the craft has no mission plan.
@@ -67,23 +55,14 @@ internal static class MissionReader
         }
         catch (Exception ex)
         {
-            LogHelper.WarnOnce("mission-read", $"[DvMap] Mission read failed: {ex}");
+            LogHelper.WarnOnce("mission-read-plan", $"[DvMap] Mission read failed: {ex}");
             return null;
         }
     }
 
-    internal static string? HomeBodyId()
-    {
-        try
-        {
-            return Universe.CurrentSystem?.HomeBody?.Id;
-        }
-        catch (Exception ex)
-        {
-            LogHelper.WarnOnce("mission-read", $"[DvMap] Mission read failed: {ex}");
-            return null;
-        }
-    }
+    internal static IParentBody? HomeBody() => Universe.CurrentSystem?.HomeBody;
+
+    internal static string? HomeBodyId() => HomeBody()?.Id;
 
     internal static RouteArrival ToRoute(MissionArrival arrival)
     {
