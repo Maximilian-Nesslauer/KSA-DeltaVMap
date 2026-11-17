@@ -1,0 +1,112 @@
+using DeltaVMap.Dv;
+using DeltaVMap.Model;
+using HeadlessHarness.Core;
+using HeadlessHarness.Harness;
+using KSA;
+
+namespace DeltaVMap.HarnessTests;
+
+// Checks the wait for the return window in the transfer window list against the stock mission
+// timing. For every sibling window of the home body, the transfer time must equal
+// OrbitalTransfers.HohmannSeconds between the stock circular radii of the two orbits, and the
+// return wait must equal MissionTiming.ComputeReturnWaitSeconds for that time. The wait is a
+// remainder of the synodic period, so it is compared on the circle of that period: a wait just
+// below one period and a wait just above zero are the same window.
+public sealed class ReturnWindowTest : IHarnessTest
+{
+    private const string Tag = "[dvmap-return-window]";
+
+    // Relative to the synodic period, which is the scale of the wait.
+    private const double WaitTolerance = 1e-6;
+
+    private const double TransferTolerance = 1e-9;
+
+    public string Name => "dvmap-return-window";
+
+    public bool OptIn => false;
+
+    public int Run(HeadlessSession session)
+    {
+        try
+        {
+            CelestialSystem system = session.System;
+            SystemGraph? graph = SystemGraph.Build(system);
+            PhysicalNode? home = graph != null && system.HomeBody != null ? graph.Find(system.HomeBody.Id) : null;
+            if (graph == null || home == null)
+            {
+                HarnessLog.Line($"{Tag} FAIL: no graph or home body for system '{system.Id}'.");
+                return 1;
+            }
+
+            ReRootResult reroot = ReRooter.ReRoot(home);
+            if (reroot.Spine.Count == 0 || home.Astro is not IOrbiter)
+            {
+                HarnessLog.Line($"{Tag} SKIP: the home body '{home.Id}' has no hub above it.");
+                return 0;
+            }
+
+            var siblings = new HashSet<string>();
+            foreach (PhysicalNode sibling in reroot.Spine[0].OtherChildren)
+                siblings.Add(sibling.Id);
+
+            List<TransferWindowInfo> windows = TransferWindows.Build(new DvCache(), home, siblings, Universe.GetElapsedTime());
+            if (windows.Count == 0)
+            {
+                HarnessLog.Line($"{Tag} SKIP: no sibling window from '{home.Id}'.");
+                return 0;
+            }
+
+            var problems = new List<string>();
+            foreach (TransferWindowInfo window in windows)
+                CheckWindow(window, problems);
+
+            foreach (string problem in problems)
+                HarnessLog.Line($"{Tag} FAIL: {problem}");
+            if (problems.Count == 0)
+                HarnessLog.Line($"{Tag} PASS ({windows.Count} windows from '{home.Id}')");
+            return problems.Count == 0 ? 0 : 1;
+        }
+        catch (Exception ex)
+        {
+            HarnessLog.Line($"{Tag} FAIL: {ex}");
+            return 1;
+        }
+    }
+
+    private static void CheckWindow(TransferWindowInfo window, List<string> problems)
+    {
+        if (window.Source is not IOrbiter source || window.Target is not IOrbiter target)
+        {
+            problems.Add($"window '{window.SourceId}' -> '{window.TargetId}' is not between two orbiters");
+            return;
+        }
+
+        Orbit home = source.Orbit;
+        Orbit destination = target.Orbit;
+        double transfer = OrbitalTransfers.HohmannSeconds(
+            home.Parent.Mu, OrbitalTransfers.GetCircularRadius(home), OrbitalTransfers.GetCircularRadius(destination));
+        double wait = MissionTiming.ComputeReturnWaitSeconds(home, destination, transfer);
+        double synodic = PatchedConic.CalculateSynodicPeriod(home, destination);
+
+        HarnessLog.Line(FormattableString.Invariant(
+            $"{Tag} {window.SourceId} -> {window.TargetId}: transfer {window.TransferTimeSeconds:F0} s (stock {transfer:F0}), wait {window.ReturnWaitSeconds:F0} s (stock {wait:F0}), synodic {synodic:F0} s"));
+
+        if (!(Math.Abs(window.TransferTimeSeconds - transfer) <= TransferTolerance * Math.Abs(transfer)))
+            problems.Add(FormattableString.Invariant(
+                $"'{window.TargetId}': transfer time {window.TransferTimeSeconds} s, stock Hohmann {transfer} s"));
+
+        double gap = CircularGap(window.ReturnWaitSeconds, wait, synodic);
+        if (!(gap <= WaitTolerance * synodic))
+            problems.Add(FormattableString.Invariant(
+                $"'{window.TargetId}': return wait {window.ReturnWaitSeconds} s, stock {wait} s (synodic {synodic} s)"));
+    }
+
+    // The distance of two remainders on a circle of the given period.
+    private static double CircularGap(double a, double b, double period)
+    {
+        double d = Math.Abs(a - b);
+        if (double.IsFinite(period) && period > 0.0)
+            d = Math.Min(d % period, period - d % period);
+        return d;
+    }
+}
