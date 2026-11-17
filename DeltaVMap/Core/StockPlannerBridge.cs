@@ -56,9 +56,13 @@ namespace DeltaVMap.Core;
 //
 // A TransferObject keeps only an index into the current system, and TransferObject.Body (with
 // GetKey over it) throws an ArgumentOutOfRangeException in CelestialSystem.GetIndex once that
-// index is past the end, after a vessel was removed or a smaller save was loaded. Stock writes a
-// new source on the appearing draw of its window (TransferPlanner.DrawPlanWindow) without reading
-// the old one, so a stale selection is no failure here, and KeyOf and BodyOf read it as none.
+// index is past the end, after a vessel was removed or a smaller save was loaded. Stock resets
+// neither selection then (TransferPlanner.ResetPlanner keeps both). KeyOf and BodyOf read such an
+// index as none. The bridge writes a new source before anything reads the old one, but the
+// TransferPlanner.Destination getter in SetTransferInfo reads the destination, so a stale
+// destination is cleared after the type write and before the source write, with the writes of
+// stock's own destination reset. Stock's next draw then picks its first entry, as for no
+// destination, where it would have thrown on the stale index itself.
 internal static class StockPlannerBridge
 {
     internal const string InterstellarKey = "Interstellar";
@@ -176,6 +180,7 @@ internal static class StockPlannerBridge
         if (Missing.Count > 0 || !TryFindType(InterstellarKey, out TransferType interstellar) || !TryFindTimeUnit(TimeUnit.Years, out TimeObject years))
             return false;
         SelectType(interstellar, years);
+        ClearStaleDestination();
         SelectSource(vehicle);
         Astronomical? destination = StockDestination(vehicle, departureRoot, destinationStar);
         if (destination != null)
@@ -193,6 +198,7 @@ internal static class StockPlannerBridge
         if (!IsHohmannAvailable || !TryFindType(HohmannKey, out TransferType hohmann) || !TryFindTimeUnit(TimeUnit.Minutes, out TimeObject minutes))
             return false;
         SelectType(hohmann, minutes);
+        ClearStaleDestination();
         SelectSource(vehicle);
         // Stock then shows its first entry, or the mission destination, as when the player opens
         // it, and the button's hint has said to pick the destination there.
@@ -356,6 +362,29 @@ internal static class StockPlannerBridge
         TransferCalculatedRef!() = false;
     }
 
+    // The writes of stock's reset of a missing destination (TransferPlanner.DrawPlanWindow and
+    // TransferPlanner.DrawInterstellarPlan), for an index past the end of the current system.
+    private static void ClearStaleDestination()
+    {
+        if (!IsStale(DestinationBodyRef!()))
+            return;
+        DestinationBodyRef!() = new TransferObject(-1);
+        TransferCalculatedRef!() = false;
+    }
+
+    private static bool IsStale(TransferObject selection)
+    {
+        try
+        {
+            _ = selection.Body;
+            return false;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return true;
+        }
+    }
+
     // The key of a stock selection as TransferObject.GetKey gives it, "N/A" for a stale index too.
     private static string KeyOf(TransferObject selection) => BodyOf(selection)?.Id ?? "N/A";
 
@@ -432,19 +461,29 @@ internal static class StockPlannerBridge
 
     // Whether stock's Hohmann DESTINATION list holds destination for its current source, from
     // TransferPlanner.PopulateWithTargets with the span size stock uses. Called on a click and
-    // while a pick is pending, never on every frame.
+    // while a pick is pending, never on every frame. The list reads the parent of every vehicle
+    // in frame, and a throw there writes nothing, so it only drops the pick and leaves the bridge
+    // working.
     private static bool IsStockTarget(Astronomical destination)
     {
-        int length = Universe.CurrentSystem!.All.AsSpan().Length;
-        Span<TransferObject> list = length <= 512 ? stackalloc TransferObject[length] : new TransferObject[length];
-        int count = 0;
-        TransferPlanner.PopulateWithTargets(list, ref count);
-        for (int i = 0; i < count; i++)
+        try
         {
-            if (list[i].GetKey() == destination.Id)
-                return true;
+            int length = Universe.CurrentSystem!.All.AsSpan().Length;
+            Span<TransferObject> list = length <= 512 ? stackalloc TransferObject[length] : new TransferObject[length];
+            int count = 0;
+            TransferPlanner.PopulateWithTargets(list, ref count);
+            for (int i = 0; i < count; i++)
+            {
+                if (list[i].GetKey() == destination.Id)
+                    return true;
+            }
+            return false;
         }
-        return false;
+        catch (Exception ex)
+        {
+            LogHelper.WarnOnce("stock-planner-targets", $"[DvMap] Could not read the stock Hohmann destinations, the destination is left to stock: {ex}");
+            return false;
+        }
     }
 
     // Whether stock lists destination as a Hohmann destination with vehicle as the source. Stock's

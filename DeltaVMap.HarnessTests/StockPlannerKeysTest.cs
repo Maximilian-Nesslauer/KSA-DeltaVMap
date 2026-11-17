@@ -21,7 +21,8 @@ namespace DeltaVMap.HarnessTests;
 // The Hohmann preselect of an in-system route is checked with a vessel too: the mirror of stock's
 // Hohmann destination list against stock's own list, the writes into a window that is already
 // shown, and the pending pick of a window that opens, which waits until stock has consumed its
-// mission destination pick and is dropped when the player changes or closes the window.
+// mission destination pick and is dropped when the player changes or closes the window. A
+// destination index left past the end of the system must not make either preselect throw.
 public sealed class StockPlannerKeysTest : IHarnessTest
 {
     private const string Tag = "[dvmap-stock-planner]";
@@ -353,6 +354,8 @@ public sealed class StockPlannerKeysTest : IHarnessTest
             StockPlannerBridge.Tick();
             ok &= Check($"{label}: closing the window drops the pending pick",
                 !StockPlannerBridge.HasPendingPick && StockPlannerBridge.Capture().Destination.GetKey() == "N/A");
+
+            ok &= CheckStaleDestination(system, vehicle, destination, start, interstellar, label);
         }
         finally
         {
@@ -387,6 +390,48 @@ public sealed class StockPlannerKeysTest : IHarnessTest
         ok &= Check($"{label}, opening window: the pick is written once stock consumed the flag",
             !StockPlannerBridge.HasPendingPick && after.Destination.GetKey() == destination.Id && after.ResetTarget);
         return ok;
+    }
+
+    // A destination index past the end of the system, as after a vessel was removed, with the plan
+    // type already set and a new source, so the source write runs SetTransferInfo. Stock's
+    // TransferPlanner.Destination throws on that index, so the bridge must clear it first.
+    private static bool CheckStaleDestination(CelestialSystem system, Vehicle vehicle, Astronomical destination,
+        StockPlannerBridge.PlannerState start, TransferType interstellar, string label)
+    {
+        StockPlannerBridge.PlannerState stale = start with
+        {
+            Source = new TransferObject(-1),
+            Destination = new TransferObject(system.Count + 3),
+            Calculated = true
+        };
+
+        StockPlannerBridge.Restore(in stale);
+        bool ok = Check($"{label}, stale destination: the preselect runs without a throw",
+            Runs(() => StockPlannerBridge.PreselectHohmann(vehicle, destination, windowShown: true)));
+        StockPlannerBridge.PlannerState after = StockPlannerBridge.Capture();
+        ok &= Check($"{label}, stale destination: the source is {vehicle.Id} and the destination is the pick",
+            after.Source.GetKey() == vehicle.Id && after.Destination.GetKey() == destination.Id && !after.Calculated);
+
+        StockPlannerBridge.Restore(stale with { Type = interstellar });
+        ok &= Check("Interstellar, stale destination: the preselect runs without a throw",
+            Runs(() => StockPlannerBridge.Preselect(vehicle, null, null)));
+        after = StockPlannerBridge.Capture();
+        ok &= Check("Interstellar, stale destination: the destination is cleared",
+            after.Source.GetKey() == vehicle.Id && after.Destination.GetKey() == "N/A" && !after.Calculated);
+        return ok;
+    }
+
+    private static bool Runs(Func<bool> preselect)
+    {
+        try
+        {
+            return preselect();
+        }
+        catch (Exception ex)
+        {
+            HarnessLog.Line($"{Tag} the preselect threw: {ex}");
+            return false;
+        }
     }
 
     // StockPlannerBridge.IsHohmannTarget against stock's own list for every body of the system.
