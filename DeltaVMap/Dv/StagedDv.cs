@@ -1,7 +1,5 @@
 using System;
-using System.Reflection;
 using DeltaVMap.Core;
-using HarmonyLib;
 using KSA;
 
 namespace DeltaVMap.Dv;
@@ -28,9 +26,10 @@ namespace DeltaVMap.Dv;
 // before Program.OnFrame draws. Stock marks a flight tree dirty only on the main thread before that
 // flush, so a tree that is clean at the draw stays clean while the batch runs and EnsureDerived only
 // reads it. A flight recompute therefore waits while the tree has pending derived work, instead of
-// racing the solver's own EnsureDerived in PhysicsBubble.RunVehiclePostWorkInner. Re-verify on each
-// game update the flush order, the main-thread-only dirtying, the private PartTree._derivedDirty
-// field, and that no SequencePerformanceList scratch field has moved to a static.
+// racing the solver's own EnsureDerived in PhysicsBubble.RunVehiclePostWorkInner. DerivedGate holds
+// that wait for every flight read of the map. Re-verify on each game update the flush order, the
+// main-thread-only dirtying, the private PartTree._derivedDirty field, and that no
+// SequencePerformanceList scratch field has moved to a static.
 internal static class StagedDv
 {
     // A stock recompute costs single-digit milliseconds, far too much to run per frame on the draw
@@ -45,8 +44,6 @@ internal static class StagedDv
 
     private const DerivedData RecomputeInputs =
         DerivedData.SubstanceStores | DerivedData.SolidMotorStacks | DerivedData.Sequences;
-
-    private static readonly AccessTools.FieldRef<PartTree, DerivedData>? DerivedDirty = BindDerivedDirty();
 
     private static PartTree? _tree;
     private static SequencePerformanceList? _analyzer;
@@ -106,7 +103,7 @@ internal static class StagedDv
             {
                 // Pending work clears at the next PrepareFrame, so the readout keeps its last
                 // value, or shows n/a for a frame on a fresh tree.
-                if (inFlight && HasPendingDerivedWork(tree))
+                if (inFlight && DerivedGate.HasPending(tree, RecomputeInputs))
                     return _totalDv;
 
                 // The baseline is the state the cached total was computed from, so it moves only
@@ -160,25 +157,6 @@ internal static class StagedDv
         for (int i = 0; i < states.Length; i++)
             mass += states[i].Mass;
         return mass;
-    }
-
-    private static bool HasPendingDerivedWork(PartTree tree)
-    {
-        if (DerivedDirty == null)
-        {
-            LogHelper.WarnOnce("staged-dv-derived-dirty",
-                "[DvMap] PartTree._derivedDirty not found, staged dV no longer waits for the derived-data flush.");
-            return false;
-        }
-        return (DerivedDirty(tree) & RecomputeInputs) != DerivedData.None;
-    }
-
-    private static AccessTools.FieldRef<PartTree, DerivedData>? BindDerivedDirty()
-    {
-        FieldInfo? field = AccessTools.DeclaredField(typeof(PartTree), "_derivedDirty");
-        return field != null && field.FieldType == typeof(DerivedData) && !field.IsStatic
-            ? AccessTools.FieldRefAccess<PartTree, DerivedData>(field)
-            : null;
     }
 
     private static PartTree? ResolveTree(out bool inFlight)
