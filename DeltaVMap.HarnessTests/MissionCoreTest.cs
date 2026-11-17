@@ -414,7 +414,7 @@ public sealed class MissionCoreTest : IHarnessTest
     // The bodies MissionPicker.DrawDestinationOptions lists: under each parent of the home root,
     // every star and every body on a bound orbit other than the home body, then the root star of
     // every other system with its children (or the children of a root that is no star).
-    private static List<Astronomical> PickerBodies(IParentBody home)
+    internal static List<Astronomical> PickerBodies(IParentBody home)
     {
         var list = new List<Astronomical>();
         IParentBody homeRoot = home;
