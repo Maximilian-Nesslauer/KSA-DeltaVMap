@@ -47,10 +47,9 @@ internal static class StateClassifier
         double eccentricity = orbit.Eccentricity;
         double semiMajorAxis = orbit.SemiMajorAxis;
 
-        // An escape trajectory is leaving through the SOI boundary. The game type decides,
-        // because an orbit within 1e-6 of e = 1 is Unbound with e just below 1 too. An unbound
-        // orbit has a negative or infinite apoapsis, so without an SOI the vehicle is placed at
-        // its current distance, as ClassifyCruise does.
+        // An escape trajectory is leaving through the SOI boundary (the open-orbit rule is at
+        // OrbitalStates.TransferRadius). An open orbit has no usable apoapsis, so without an SOI
+        // the vehicle is placed at its current distance, as ClassifyCruise does.
         if (!orbit.IsBound())
         {
             double radius = ladder.SoiRadius ?? (vehicle.GetPositionEcl() - vehicle.Parent.GetPositionEcl()).Length();

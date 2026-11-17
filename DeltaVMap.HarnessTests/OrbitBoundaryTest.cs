@@ -7,11 +7,10 @@ using KSA;
 namespace DeltaVMap.HarnessTests;
 
 // The map decides open or bound by the game's own orbit type (Orbit.IsBound), not by the
-// eccentricity, because an orbit within 1e-6 of e = 1 is a Parabolic Unbound orbit also with e
-// just below 1. For every body of the loaded system this test checks that the graph sorts open
-// orbits after every bound sibling, and that the transfer radius is the periapsis of an open
-// orbit and a finite, positive radius for a bound one. A system without an open orbit logs a SKIP
-// for the open part.
+// eccentricity; OrbitalStates.TransferRadius says how the game decides it. For every body of the
+// loaded system this test checks that the graph sorts open orbits after every bound sibling, and
+// that the transfer radius is the periapsis of an open orbit and a finite, positive radius for a
+// bound one. A system without an open orbit logs a SKIP for the open part.
 public sealed class OrbitBoundaryTest : IHarnessTest
 {
     private const string Tag = "[dvmap-orbit-boundary]";

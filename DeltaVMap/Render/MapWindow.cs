@@ -622,9 +622,12 @@ internal sealed class MapWindow : ImGuiWindow
         const float listMinH = 90f;
         const float clockMin = 180f;
 
-        // List width: the user's dragged width if set, else 30% of the canvas (the original auto
-        // rule), clamped to the canvas.
-        float autoWidth = Math.Clamp(size.X * 0.34f, 380f, 520f);
+        // List width: the user's dragged width if set, else a share of the canvas width between a
+        // floor and a cap, clamped to the canvas.
+        const float listAutoShare = 0.34f;
+        const float listAutoMinW = 380f;
+        const float listAutoMaxW = 520f;
+        float autoWidth = Math.Clamp(size.X * listAutoShare, listAutoMinW, listAutoMaxW);
         float width = ClampSize(_listWidthOverride ?? autoWidth, listMinW, canvasMaxW);
         if (width < 220f || size.Y < 160f)
             return false;

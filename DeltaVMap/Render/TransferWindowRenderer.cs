@@ -31,8 +31,9 @@ internal readonly struct OverlayResult
 // and the rest of the figures are one hover away on each row. The separate clock panel beside
 // it holds the live polar clock-face: a top-down schematic of the hub and its bodies at their
 // current phase, where the soonest (or hovered) window gets a required-position marker, an arc
-// to the body's current position and the countdown. It reuses the shared time formatting and the per-system color palette. The
-// list panel's markers toggle controls the on-map window badges, which the canvas draws.
+// to the body's current position and the countdown. It reuses the shared time formatting and
+// the per-system color palette. The list panel's markers toggle controls the on-map window
+// badges, which the canvas draws.
 //
 // An instance owned by the map window: every string it shows is kept until the number it
 // shows changes, so an open overlay draws without allocating.

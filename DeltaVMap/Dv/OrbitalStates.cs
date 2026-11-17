@@ -180,13 +180,19 @@ internal static class OrbitalStates
     }
 
     // The rendezvous radius to use for a transfer. For closed orbits this matches the
-    // EffectiveRadius the game itself uses. Open orbits (comets, Unbound by Orbit.IsBound,
-    // which includes a parabolic orbit within 1e-6 of e = 1 on either side) have no apoapsis,
-    // so (Apoapsis + Periapsis) / 2 would be garbage (a hyperbolic apoapsis is negative);
-    // their natural rendezvous point is the perihelion (closest approach to the hub).
-    // DeltaVCalculator.ConicTransfer matches the comet's real (fast) perihelion speed there,
-    // so the perihelion is the rendezvous radius, not a circular stand-in. The caller flags
-    // such transfers as approximate.
+    // EffectiveRadius the game itself uses. Open orbits (comets) have no usable apoapsis, so
+    // (Apoapsis + Periapsis) / 2 would be garbage; their natural rendezvous point is the
+    // perihelion (closest approach to the hub). DeltaVCalculator.ConicTransfer matches the
+    // comet's real (fast) perihelion speed there, so the perihelion is the rendezvous radius,
+    // not a circular stand-in. The caller flags such transfers as approximate.
+    //
+    // Open or bound is the game's own orbit type (Orbit.IsBound, and a Parabolic orbit is
+    // Unbound), never the eccentricity, for every open-orbit test of the map. A vessel's orbit
+    // type comes from the relative energy test of Orbit.GetOrbitType, which is no fixed band
+    // around e = 1. A celestial defined by its periapsis is parabolic within 1e-6 of e = 1 on
+    // either side, because OrbitTemplate then gives it an infinite semi-major axis
+    // (Orbit.IsParabolic). Orbit.CreateFromStateCci sets the apoapsis of a parabolic orbit to NaN
+    // and that of a hyperbolic one to a negative value.
     public static double TransferRadius(Orbit orbit)
     {
         if (!orbit.IsBound())
