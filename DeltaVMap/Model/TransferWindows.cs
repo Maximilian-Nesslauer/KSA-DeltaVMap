@@ -20,8 +20,8 @@ namespace DeltaVMap.Model;
 // is the pure Dv/TransferWindow kernel. The phase / synodic branch structure mirrors the
 // game's OrbitalTransfers.AlignmentTime, so if a future build changes that formula these
 // figures will silently diverge from the stock alignment planner; re-verify against
-// AlignmentTime when the game updates. The wait for the return window follows
-// MissionTiming.ComputeReturnWaitSeconds in the same way and is re-verified with it.
+// AlignmentTime when the game updates. The wait for the return window is stock's own
+// MissionTiming.ComputeReturnWaitSeconds, so it agrees with the stock mission timing.
 internal static class TransferWindows
 {
     // Above this relative inclination the sibling orbits the hub the opposite way, and the
@@ -80,9 +80,8 @@ internal static class TransferWindows
             Orbit targetOrbit = targetOrbiter.Orbit;
 
             // The closed-form lead angle and synodic period are only defined for two bound
-            // orbits. The game type decides, not the eccentricity, because an orbit within
-            // Orbit.PARABOLIC_TOLERANCE of e = 1 is a parabolic Unbound orbit with no usable
-            // semi-major axis or period. Open-orbit comets fall out here.
+            // orbits (the open-orbit rule is at OrbitalStates.TransferRadius). Open-orbit comets
+            // fall out here.
             if (!sourceOrbit.IsBound() || !targetOrbit.IsBound())
                 return null;
 
@@ -134,7 +133,7 @@ internal static class TransferWindows
                 SynodicRate = synodicRate,
                 SynodicPeriodSeconds = synodicPeriod,
                 TransferTimeSeconds = transferTime,
-                ReturnWaitSeconds = TransferWindow.ReturnWaitSeconds(periodSource, periodTarget, transferTime),
+                ReturnWaitSeconds = MissionTiming.ComputeReturnWaitSeconds(sourceOrbit, targetOrbit, transferTime),
                 EjectionAngle = ejectionAngle,
                 EjectionAhead = ejectionAhead,
                 Retrograde = retrograde,

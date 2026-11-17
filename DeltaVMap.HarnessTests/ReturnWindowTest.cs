@@ -7,17 +7,13 @@ using KSA;
 namespace DeltaVMap.HarnessTests;
 
 // Checks the wait for the return window in the transfer window list against the stock mission
-// timing. For every sibling window of the home body, the transfer time must equal
-// OrbitalTransfers.HohmannSeconds between the stock circular radii of the two orbits, and the
-// return wait must equal MissionTiming.ComputeReturnWaitSeconds for that time. The wait is a
-// remainder of the synodic period, so it is compared on the circle of that period: a wait just
-// below one period and a wait just above zero are the same window.
+// timing. The list takes the wait from MissionTiming.ComputeReturnWaitSeconds with the transfer
+// time of the map's dV cache, so for every sibling window of the home body that time must equal
+// the one stock times a mission with: OrbitalTransfers.HohmannSeconds between the stock circular
+// radii of the two orbits.
 public sealed class ReturnWindowTest : IHarnessTest
 {
     private const string Tag = "[dvmap-return-window]";
-
-    // Relative to the synodic period, which is the scale of the wait.
-    private const double WaitTolerance = 1e-6;
 
     private const double TransferTolerance = 1e-9;
 
@@ -85,28 +81,12 @@ public sealed class ReturnWindowTest : IHarnessTest
         Orbit destination = target.Orbit;
         double transfer = OrbitalTransfers.HohmannSeconds(
             home.Parent.Mu, OrbitalTransfers.GetCircularRadius(home), OrbitalTransfers.GetCircularRadius(destination));
-        double wait = MissionTiming.ComputeReturnWaitSeconds(home, destination, transfer);
-        double synodic = PatchedConic.CalculateSynodicPeriod(home, destination);
 
         HarnessLog.Line(FormattableString.Invariant(
-            $"{Tag} {window.SourceId} -> {window.TargetId}: transfer {window.TransferTimeSeconds:F0} s (stock {transfer:F0}), wait {window.ReturnWaitSeconds:F0} s (stock {wait:F0}), synodic {synodic:F0} s"));
+            $"{Tag} {window.SourceId} -> {window.TargetId}: transfer {window.TransferTimeSeconds:F0} s (stock {transfer:F0}), wait {window.ReturnWaitSeconds:F0} s"));
 
         if (!(Math.Abs(window.TransferTimeSeconds - transfer) <= TransferTolerance * Math.Abs(transfer)))
             problems.Add(FormattableString.Invariant(
                 $"'{window.TargetId}': transfer time {window.TransferTimeSeconds} s, stock Hohmann {transfer} s"));
-
-        double gap = CircularGap(window.ReturnWaitSeconds, wait, synodic);
-        if (!(gap <= WaitTolerance * synodic))
-            problems.Add(FormattableString.Invariant(
-                $"'{window.TargetId}': return wait {window.ReturnWaitSeconds} s, stock {wait} s (synodic {synodic} s)"));
-    }
-
-    // The distance of two remainders on a circle of the given period.
-    private static double CircularGap(double a, double b, double period)
-    {
-        double d = Math.Abs(a - b);
-        if (double.IsFinite(period) && period > 0.0)
-            d = Math.Min(d % period, period - d % period);
-        return d;
     }
 }
