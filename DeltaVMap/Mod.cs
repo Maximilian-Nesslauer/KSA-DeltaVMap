@@ -57,6 +57,7 @@ public sealed class Mod
     [StarMapAfterGui]
     public void Draw(double dt)
     {
+        StockPlannerBridge.Tick();
         MapWindow.DrawActive(Program.MainViewport);
 
         if (_validationDumped || !DebugConfig.ValidationDump)
@@ -86,6 +87,7 @@ public sealed class Mod
         _validationDumped = false;
 
         MapWindow.ResetStatic();
+        StockPlannerBridge.Reset();
         // Drops the cached part tree and its private analyzer so a reload cannot keep a stale
         // vehicle alive through this mod.
         StagedDv.Reset();

@@ -52,6 +52,7 @@ internal sealed class RoutePanelRenderer
 
     private readonly List<(string Text, bool Disabled)> _breakdown = new();
     private readonly List<(string Text, bool Disabled)> _totals = new();
+    private readonly StockPlannerButton _plannerButton = new();
     private TextKey? _textKey;
     private RouteTotalsText _headline;
     // ImGui.TextDisabled reads its text as a printf format, so the "%" of the margin note is
@@ -169,6 +170,10 @@ internal sealed class RoutePanelRenderer
                 ConsoleUi.StatusText(leg.Feasibility, leg.FeasibilityTone);
             leg.DrawFuel();
             leg.DrawStockPlannerButton();
+        }
+        else
+        {
+            _plannerButton.Draw(summary);
         }
 
         return new PanelResult(changed, rebuild);
