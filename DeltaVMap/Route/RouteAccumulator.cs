@@ -75,6 +75,10 @@ internal sealed class InterstellarRoute
 // and has no return, plane change or aerobrake.
 internal sealed class RouteSummary
 {
+    // The two nodes the route was accumulated between.
+    public required StateNode Origin { get; init; }
+    public required StateNode Target { get; init; }
+
     // Outbound burns total, after the outbound aerobrake. Excludes plane change, which
     // is additive and folded into the displayed total by the panel.
     public double OutboundDv { get; set; }
@@ -126,7 +130,7 @@ internal static class RouteAccumulator
             return AccumulateInterstellar(path, graph, legStart, in context);
 
         Func<string, BodyLadder?> ladderFor = graph.LadderFor;
-        var summary = new RouteSummary();
+        var summary = new RouteSummary { Origin = path.Origin, Target = path.Target };
 
         // When rooted at a star or barycenter the vehicle is in cruise around it: the hub
         // links to its children carry no dV in the tree, so derive a real transfer around the
@@ -255,7 +259,7 @@ internal static class RouteAccumulator
 
     private static RouteSummary AccumulateInterstellar(RoutePath path, SystemGraph graph, int legStart, in RouteContext context)
     {
-        var summary = new RouteSummary();
+        var summary = new RouteSummary { Origin = path.Origin, Target = path.Target };
         Func<string, BodyLadder?> ladderFor = graph.LadderFor;
 
         // The Approach run ends at the last Approach step: the node after it is the anchor the
