@@ -27,7 +27,8 @@ The delta-v figures are the idealized optimal values, so they assume a well-time
 - **Every star system.** The other star systems sit apart from your map as small graphs of their own, joined to your star by a dashed interstellar line (not to scale). Click one to open it and plan a trip there; the **System** menu roots the map in any of them.
 - **Accurate budgets.** Closed-form Hohmann transfers with Oberth-combined ejection and capture, a per-body state ladder (surface, low orbit, stationary, SOI edge, intercept) and a "you are here" marker at your actual orbit.
 - **Route planning.** Click any body to highlight the exact route from your current state, with a per-segment breakdown. The route total stays pinned at the bottom of the side panel, below everything that scrolls. Toggles for from-surface, landing, aerobraking, plane change and a return trip, plus a piloting-margin percentage to budget for non-optimal flying.
-- **Vehicle comparison.** A bar under the pinned total compares the selected route against your ship's available delta-v.
+- **Vehicle comparison.** A bar under the pinned total compares the selected route against your ship's available delta-v. Under the bar, a crewed vessel shows whether its supplies last the mission, and an uncrewed one shows how long its probe core power lasts.
+- **Bound and open orbits.** An orbit counts as open or bound the way the game does, so an orbit very close to parabolic is handled the same in every part of the map.
 - **Readable at scale.** Node-symbol vocabulary with a legend, collapsible side-panel sections, search / focus / isolate, and automatic minor-body aggregation so a dense system (thousands of asteroids) stays usable. A planet with hundreds of small moons keeps its inner moons as lanes and groups the outer ones. Click any "+N" group to list its members with their size and orbit, and click one to put it on the map and plan the route to it. Wide moon fans and long planet rows continue in rows below, joined by a dashed line that carries no delta-v. The **Wrap wide systems** toggle in **Options > Layout** turns this on or off, and it is on by default.
 - **Three layout modes**, switched from the on-canvas toggle or the Options menu. Gravity-well wraps a wide system into shelves, one below the other, so it is the best mode for a tall window:
 
@@ -44,11 +45,22 @@ A trip to another star system is a route like any other: click the system, or a 
 - the total against your vessel's delta-v,
 - a fuel estimate: the game's own interstellar burn model for an antimatter drive, the rocket equation otherwise.
 
-Like the stock planner it is Newtonian. A button opens the stock Transfer Planner on its Interstellar plan for the trip.
+Like the stock planner it is Newtonian. A button opens the stock Transfer Planner on its Interstellar plan for the trip. The mission block below (return trip, stay, mission time, Set as mission) works for these routes too, with the mission time counted at the cruise speed.
+
+### Missions and life support
+
+The map reads the mission of your vessel, set in the vehicle editor or in flight, and plans with it. In the editor it reads the mission of the vehicle you are editing.
+
+- **Mission route.** When the map opens and nothing is selected, the mission destination is selected with the mission's arrival (flyby, orbit or land) and trip (one way or return). After the vessel has arrived on a return mission, the route is the way home. Your own pick is never overridden: the mission route is applied again only when the mission itself changes, or when you press **MISSION ROUTE**.
+- **Mission time.** The route panel shows the stock mission timing: out, stay, back and total. The stay is rounded up to the next return window, and the time to wait for that window is shown as its own row. For the mission route the stay comes from the mission; for any other route, set the **STAY AT DESTINATION** field in days.
+- **Supplies.** For a crewed vessel, when the universe uses life support, a line under the vehicle bar compares the air, water, food and CO2 scrubbers aboard against the whole mission time. It says either that supplies are enough, or which supply is short, by how long, and in which habitat zone. It uses the game's life support forecast.
+- **Probe power.** For an uncrewed vessel, a line shows how long the probe core power lasts, compared with the mission time. It is a snapshot of the current power balance, so sunlight, attitude and the loads you switch on change it.
+- **Set as mission.** The **SET AS MISSION** button writes the selected route into the vessel's mission: destination, arrival, trip, stay and, for an interstellar route, the cruise speed. It works in flight and in the editor, and only for a body the stock mission picker can target. A mission to the home body is low orbit only.
+- **Stock Transfer Planner.** In flight, an in-system route has a button that opens the stock Transfer Planner on its Hohmann plan with your vessel as the source and the route target as the destination, when the planner lists that target.
 
 ### Transfer windows
 
-The timing companion to the map. For the root body and every sibling sharing its parent, it shows the optimal phase angle, the live current phase, a countdown to the next window, the synodic period, the ejection angle and the transfer time, in a compact list plus a live polar phase-clock.
+The timing companion to the map. For the root body and every sibling sharing its parent, it shows the optimal phase angle, the live current phase, a countdown to the next window, the synodic period, the ejection angle and the transfer time, in a compact list plus a live polar phase-clock. A **Stay** column and the row tooltip show how long to wait at the destination for the return window, and the shortest round trip.
 
 ![The transfer-window list and phase clock](images/transfer-windows.png)
 
