@@ -78,14 +78,20 @@ internal static class TransferWindows
                 return null;
             Orbit targetOrbit = targetOrbiter.Orbit;
 
+            // The closed-form lead angle and synodic period are only defined for two bound
+            // orbits. The game type decides, not the eccentricity, because an orbit within
+            // Orbit.PARABOLIC_TOLERANCE of e = 1 is a parabolic Unbound orbit with no usable
+            // semi-major axis or period. Open-orbit comets fall out here.
+            if (!sourceOrbit.IsBound() || !targetOrbit.IsBound())
+                return null;
+
             double aSource = sourceOrbit.SemiMajorAxis;
             double aTarget = targetOrbit.SemiMajorAxis;
             double periodSource = sourceOrbit.Period;
             double periodTarget = targetOrbit.Period;
 
-            // The closed-form lead angle and synodic period are only defined for two bound
-            // orbits, so skip a sibling (or a source) whose semi-major axis or period is open
-            // or otherwise non-finite. Open-orbit comets fall out here.
+            // A bound orbit can still carry a degenerate semi-major axis or period; skip a pair
+            // where either is non-finite or not positive.
             if (!IsFinitePositive(aSource) || !IsFinitePositive(aTarget))
                 return null;
             if (!IsFinitePositive(periodSource) || !IsFinitePositive(periodTarget))
