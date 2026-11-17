@@ -428,7 +428,7 @@ internal sealed class TransferWindowRenderer
         {
             ImGui.TableSetupColumn("Target"u8, ImGuiTableColumnFlags.WidthStretch, 1.6f, 0);
             ImGui.TableSetupColumn("In"u8, ImGuiTableColumnFlags.WidthStretch, 1.0f, 1);
-            ImGui.TableSetupColumn("Wait"u8, ImGuiTableColumnFlags.WidthStretch, 1.0f, 2);
+            ImGui.TableSetupColumn("Stay"u8, ImGuiTableColumnFlags.WidthStretch, 1.0f, 2);
             ImGui.TableSetupColumn("Eject"u8, ImGuiTableColumnFlags.WidthStretch, 0.8f, 3);
             // Keep the header visible while the body scrolls.
             ImGui.TableSetupScrollFreeze(0, 1);

@@ -47,9 +47,10 @@ internal sealed class MissionSection
     private const string StayTooltip =
         "How long the vessel stays at the destination. A return waits at least for the next return window.";
     private const string SuppliesTooltip =
-        "Air, water, food and CO2 scrubbers aboard now against this route's mission time, out, stay and back, "
-        + "for the crew planned on each leg (the crew plan of the vehicle editor, else the kittens seated). "
-        + "The same check as the stock life support window.";
+        "Air, water, food and CO2 scrubbers aboard now against the whole mission time of this route from where "
+        + "the vessel is now, out, stay and back, for the crew planned on each leg (the crew plan of the vehicle "
+        + "editor, else the kittens seated). It uses the stock life support forecast. The stock windows time a "
+        + "mission in flight from its launch at the home body, so their figures can differ.";
     private const string ProbeTooltip =
         "A snapshot of the power balance now: the charge stored aboard over the draw minus the supply. "
         + "Sunlight, attitude and the loads switched on change it. Every battery aboard counts.";
@@ -191,9 +192,9 @@ internal sealed class MissionSection
         IsMissionRoute = MissionRoutes.IsMissionRoute(context.Goal, context.GoalEndOnMap, summary.Target.Body.Id, _end, options.ShowReturnTrip)
             && CruiseMatches(context.Mission);
 
-        // On the mission's route the timing is the stock plan's, with its arrival and its stay,
-        // even where the map fell back to another node of the body. The way home has no stay,
-        // as stock's Home leg has none.
+        // On the mission's route the timing takes the plan's arrival and stay, even where the map
+        // fell back to another node of the body. The legs still start where the vessel is now. The
+        // way home has no stay, as stock's Home leg has none.
         RouteArrival arrival = MissionRoutes.ArrivalOf(_end);
         double stay = _staySeconds;
         if (IsMissionRoute && wayHome)

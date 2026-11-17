@@ -43,9 +43,14 @@ internal static class MissionSupplyCheck
                 return _verdict;
 
             // Pending work clears at the next PrepareFrame. The editor does not wait, because no
-            // job touches the editor tree during the draw.
+            // job touches the editor tree during the draw. Until then the craft keeps its last
+            // verdict, also for new times, so the line under the vehicle bar does not flicker; the
+            // key stays old, so the next read computes the new times.
             if (!host.InEditor && DerivedGate.HasPending(host.Tree, DerivedData.HabitatZones))
-                return sameKey ? _verdict : null;
+            {
+                bool sameCraft = _key is { } last && ReferenceEquals(last.Tree, host.Tree) && !last.InEditor;
+                return sameCraft && times.Status == MissionTimesStatus.Planned ? _verdict : null;
+            }
 
             _key = key;
             _lastComputeTime = now;
