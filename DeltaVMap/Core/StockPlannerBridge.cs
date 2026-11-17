@@ -47,12 +47,18 @@ namespace DeltaVMap.Core;
 // next draw is no appearing one, so the bridge clears the flag and writes the destination the way
 // the Hohmann DESTINATION combo does, which ends in the state of a consumed pick followed by the
 // player's own pick. A window that is not shown yet appears later in the same frame, and that draw
-// sets the source to the controlled vehicle, arms the flag, picks its first entry and then the
-// mission destination. So the bridge arms the flag as stock does, writes no destination, and
-// keeps the pick pending. Stock clears the flag only in the Hohmann branch, so a cleared flag is
-// proof that stock has drawn that branch since, and Tick writes the pick on the next frame, before
-// stock draws the window again. The keys only the Hohmann preselect needs are kept apart, so their
-// loss leaves the interstellar preselect working.
+// sets the source to the controlled vehicle, arms the flag, keeps or picks a destination, and
+// then picks the mission destination. So the bridge arms the flag as stock does, writes no
+// destination, and keeps the pick pending. Stock clears the flag only in the Hohmann branch, so a
+// cleared flag is proof that stock has drawn that branch since, and Tick writes the pick on the
+// next frame, before stock draws the window again. The keys only the Hohmann preselect needs are
+// kept apart, so their loss leaves the interstellar preselect working.
+//
+// A TransferObject keeps only an index into the current system, and TransferObject.Body (with
+// GetKey over it) throws an ArgumentOutOfRangeException in CelestialSystem.GetIndex once that
+// index is past the end, after a vessel was removed or a smaller save was loaded. Stock writes a
+// new source on the appearing draw of its window (TransferPlanner.DrawPlanWindow) without reading
+// the old one, so a stale selection is no failure here, and KeyOf and BodyOf read it as none.
 internal static class StockPlannerBridge
 {
     internal const string InterstellarKey = "Interstellar";
@@ -89,7 +95,7 @@ internal static class StockPlannerBridge
     private static readonly Action? SetTransferInfo = BindSetTransferInfo();
 
     // Set when a write threw. The planner state is then unknown, so later clicks only open the
-    // window.
+    // window until the mod unloads.
     private static bool _broken;
 
     // A Hohmann destination that waits for stock's first draw of the Hohmann branch.
@@ -135,15 +141,11 @@ internal static class StockPlannerBridge
         try
         {
             if (!Preselect(vehicle, departureRoot, destinationStar))
-            {
-                LogHelper.WarnOnce("stock-planner-keys",
-                    $"[DvMap] The stock Transfer Planner opens without a preselected plan. Missing: {string.Join(", ", MissingKeys())}.");
-            }
+                WarnMissingKeys();
         }
         catch (Exception ex)
         {
-            _broken = true;
-            LogHelper.WarnOnce("stock-planner-write", $"[DvMap] Could not preselect the stock Transfer Planner, the button only opens it from now on: {ex}");
+            MarkBroken(ex);
         }
     }
 
@@ -159,15 +161,11 @@ internal static class StockPlannerBridge
         try
         {
             if (!PreselectHohmann(vehicle, destination, shown))
-            {
-                LogHelper.WarnOnce("stock-planner-keys",
-                    $"[DvMap] The stock Transfer Planner opens without a preselected plan. Missing: {string.Join(", ", MissingKeys())}.");
-            }
+                WarnMissingKeys();
         }
         catch (Exception ex)
         {
-            _broken = true;
-            LogHelper.WarnOnce("stock-planner-write", $"[DvMap] Could not preselect the stock Transfer Planner, the button only opens it from now on: {ex}");
+            MarkBroken(ex);
         }
     }
 
@@ -228,7 +226,7 @@ internal static class StockPlannerBridge
             if (Universe.CurrentSystem == null || !ReferenceEquals(Universe.CurrentSystem, pick.System)
                 || !TransferPlanner.ShowPlanWindow
                 || TransferTypeRef!().GetKey() != HohmannKey
-                || SourceBodyRef!().GetKey() != pick.Vehicle.Id)
+                || KeyOf(SourceBodyRef!()) != pick.Vehicle.Id)
             {
                 _pending = null;
                 return;
@@ -246,12 +244,15 @@ internal static class StockPlannerBridge
         catch (Exception ex)
         {
             _pending = null;
-            _broken = true;
-            LogHelper.WarnOnce("stock-planner-write", $"[DvMap] Could not preselect the stock Transfer Planner, the button only opens it from now on: {ex}");
+            MarkBroken(ex);
         }
     }
 
-    internal static void Reset() => _pending = null;
+    internal static void Reset()
+    {
+        _pending = null;
+        _broken = false;
+    }
 
     internal static bool HasPendingPick => _pending != null;
 
@@ -297,7 +298,7 @@ internal static class StockPlannerBridge
 
     private static void SelectSource(Vehicle vehicle)
     {
-        if (SourceBodyRef!().GetKey() == vehicle.Id)
+        if (KeyOf(SourceBodyRef!()) == vehicle.Id)
             return;
         SourceBodyRef!() = new TransferObject(vehicle);
         TransferCalculatedRef!() = false;
@@ -320,7 +321,7 @@ internal static class StockPlannerBridge
 
     private static void SelectDestination(Astronomical? destination)
     {
-        if (destination == null || DestinationBodyRef!().GetKey() == destination.Id)
+        if (destination == null || KeyOf(DestinationBodyRef!()) == destination.Id)
             return;
         DestinationBodyRef!() = new TransferObject(destination);
         TransferCalculatedRef!() = false;
@@ -332,7 +333,7 @@ internal static class StockPlannerBridge
     // with it off, exactly as after the player's own pick.
     private static void SelectHohmannDestination(Astronomical destination)
     {
-        if (DestinationBodyRef!().GetKey() == destination.Id)
+        if (KeyOf(DestinationBodyRef!()) == destination.Id)
             return;
         DestinationBodyRef!() = new TransferObject(destination);
         TransferCalculatedRef!() = false;
@@ -349,10 +350,37 @@ internal static class StockPlannerBridge
     // and stock then shows and plans the same first entry. The writes are those of that stock reset.
     private static void ClearUnlistedStar(Vehicle vehicle)
     {
-        if (DestinationBodyRef!().Body is not StellarBody star || IsListed(vehicle, star))
+        if (BodyOf(DestinationBodyRef!()) is not StellarBody star || IsListed(vehicle, star))
             return;
         DestinationBodyRef!() = new TransferObject(-1);
         TransferCalculatedRef!() = false;
+    }
+
+    // The key of a stock selection as TransferObject.GetKey gives it, "N/A" for a stale index too.
+    private static string KeyOf(TransferObject selection) => BodyOf(selection)?.Id ?? "N/A";
+
+    private static Astronomical? BodyOf(TransferObject selection)
+    {
+        try
+        {
+            return selection.Body;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
+    private static void MarkBroken(Exception ex)
+    {
+        _broken = true;
+        LogHelper.WarnOnce("stock-planner-write", $"[DvMap] Could not preselect the stock Transfer Planner, the button only opens it from now on: {ex}");
+    }
+
+    private static void WarnMissingKeys()
+    {
+        LogHelper.WarnOnce("stock-planner-keys",
+            $"[DvMap] The stock Transfer Planner opens without a preselected plan. Missing: {string.Join(", ", MissingKeys())}.");
     }
 
     // Stock cancels only while a calculation runs, and disposes the source only after it cleared
@@ -489,33 +517,38 @@ internal static class StockPlannerBridge
 
     private static AccessTools.FieldRef<T>? Bind<T>(string name) => Bind<T>(name, Missing);
 
+    // A binding that threw names its exception in the missing entry.
     private static AccessTools.FieldRef<T>? Bind<T>(string name, List<string> missing)
     {
+        string error = "";
         try
         {
             FieldInfo? field = AccessTools.DeclaredField(typeof(TransferPlanner), name);
             if (field != null && field.IsStatic && field.FieldType == typeof(T))
                 return AccessTools.StaticFieldRefAccess<T>(field);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            error = ": " + ex.Message;
         }
-        missing.Add($"TransferPlanner.{name} ({typeof(T).Name})");
+        missing.Add($"TransferPlanner.{name} ({typeof(T).Name}){error}");
         return null;
     }
 
     private static Action? BindSetTransferInfo()
     {
+        string error = "";
         try
         {
             MethodInfo? method = AccessTools.DeclaredMethod(typeof(TransferPlanner), "SetTransferInfo", Type.EmptyTypes);
             if (method != null && method.IsStatic && method.ReturnType == typeof(void))
                 return method.CreateDelegate<Action>();
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            error = ": " + ex.Message;
         }
-        Missing.Add("TransferPlanner.SetTransferInfo()");
+        Missing.Add($"TransferPlanner.SetTransferInfo(){error}");
         return null;
     }
 
