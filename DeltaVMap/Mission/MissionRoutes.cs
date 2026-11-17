@@ -38,7 +38,8 @@ internal readonly record struct MissionKey(
     bool Arrived);
 
 // The fields a route writes into a stock mission plan. CruiseSpeedC is null for an in-system
-// route, which leaves the plan's cruise speed alone.
+// route and for an interstellar route without a known cruise speed, which leaves the plan's cruise
+// speed alone.
 internal readonly record struct MissionWrite(
     MissionGoal Destination,
     string BodyId,
@@ -148,19 +149,17 @@ internal static class MissionRoutes
 
     // The plan a route writes. The home body as the target is the stock LOW ORBIT mission. A stay
     // that is not finite falls back to the stock default, and the cruise speed of an interstellar
-    // route is clamped to the range a stock mission accepts.
+    // route is clamped to the range a stock mission accepts. A NaN cruise speed is one the panel
+    // does not show, so the plan keeps its own.
     public static MissionWrite PlanFor(string targetBodyId, string? homeBodyId, RouteEnd end, bool returnTrip, bool interstellar, double staySeconds, double cruiseSpeedC)
     {
         double stay = double.IsFinite(staySeconds) ? Math.Max(0.0, staySeconds) : DefaultStaySeconds;
         if (!string.IsNullOrEmpty(homeBodyId) && string.Equals(targetBodyId, homeBodyId, StringComparison.Ordinal))
             return new MissionWrite(MissionGoal.LowOrbit, "", RouteArrival.Orbit, returnTrip, stay, null);
 
-        double? cruise = null;
-        if (interstellar)
-        {
-            double c = double.IsNaN(cruiseSpeedC) ? DefaultCruiseSpeedC : cruiseSpeedC;
-            cruise = Math.Clamp(c, MinCruiseSpeedC, MaxCruiseSpeedC);
-        }
+        double? cruise = interstellar && !double.IsNaN(cruiseSpeedC)
+            ? Math.Clamp(cruiseSpeedC, MinCruiseSpeedC, MaxCruiseSpeedC)
+            : null;
         return new MissionWrite(MissionGoal.Body, targetBodyId, ArrivalOf(end), returnTrip, stay, cruise);
     }
 }

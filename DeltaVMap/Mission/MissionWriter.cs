@@ -10,8 +10,9 @@ namespace DeltaVMap.Mission;
 internal static class MissionWriter
 {
     // Why a stock mission cannot name target, or null when it can. The accepted set is the one
-    // MissionPicker lists: the home body (as the LOW ORBIT mission), every star, and every other
-    // body on a bound orbit; never a barycenter, a root that is no star, or a vessel.
+    // MissionPicker lists: the home body (as the LOW ORBIT mission), every star except the root
+    // of the home system, and every other body on a bound orbit; never a barycenter, a root that
+    // is no star, or a vessel.
     internal static string? RefusalFor(Astronomical target, IParentBody? home)
     {
         if (home != null && ReferenceEquals(target, home))
@@ -21,7 +22,7 @@ internal static class MissionWriter
             case Vehicle:
                 return "A VESSEL CANNOT BE A MISSION DESTINATION";
             case StellarBody:
-                return null;
+                return home != null && ReferenceEquals(target, RootOf(home)) ? "STOCK MISSIONS CANNOT TARGET THE HOME STAR" : null;
             case Celestial celestial:
                 if (celestial.Orbit == null)
                     return "STOCK MISSIONS CANNOT TARGET THIS BODY";
@@ -29,6 +30,14 @@ internal static class MissionWriter
             default:
                 return "STOCK MISSIONS CANNOT TARGET A BARYCENTER, PICK ONE OF ITS STARS";
         }
+    }
+
+    // The top of body's parent chain, as MissionPicker.FindRoot walks it.
+    private static IParentBody RootOf(IParentBody body)
+    {
+        while (body is IOrbiter orbiter && orbiter.Parent is { } parent)
+            body = parent;
+        return body;
     }
 
     // False when the write failed. The caller checks RefusalFor first.

@@ -1862,7 +1862,7 @@ static int RunMissionChecks()
     fails += Check("a flyby route writes a flyby", MissionRoutes.PlanFor("Luna", "Earth", RouteEnd.Flyby, true, false, 0.0, 0.1).Arrival == RouteArrival.Flyby);
     fails += Check("a slow cruise is clamped up", MissionRoutes.PlanFor("Star", "Earth", RouteEnd.Orbit, true, true, 0.0, 1e-6).CruiseSpeedC == MissionRoutes.MinCruiseSpeedC);
     fails += Check("a fast cruise is clamped down", MissionRoutes.PlanFor("Star", "Earth", RouteEnd.Orbit, true, true, 0.0, 0.99).CruiseSpeedC == MissionRoutes.MaxCruiseSpeedC);
-    fails += Check("a NaN cruise is the stock default", MissionRoutes.PlanFor("Star", "Earth", RouteEnd.Orbit, true, true, 0.0, double.NaN).CruiseSpeedC == 0.1);
+    fails += Check("a NaN cruise keeps the plan's cruise speed", MissionRoutes.PlanFor("Star", "Earth", RouteEnd.Orbit, true, true, 0.0, double.NaN).CruiseSpeedC == null);
     fails += Check("a negative stay is zero", MissionRoutes.PlanFor("Luna", "Earth", RouteEnd.Orbit, true, false, -5.0, 0.1).StaySeconds == 0.0);
     fails += Check("a NaN or infinite stay is the stock default",
         MissionRoutes.PlanFor("Luna", "Earth", RouteEnd.Orbit, true, false, double.NaN, 0.1).StaySeconds == MissionRoutes.DefaultStaySeconds
