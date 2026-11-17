@@ -20,7 +20,8 @@ namespace DeltaVMap.Model;
 // is the pure Dv/TransferWindow kernel. The phase / synodic branch structure mirrors the
 // game's OrbitalTransfers.AlignmentTime, so if a future build changes that formula these
 // figures will silently diverge from the stock alignment planner; re-verify against
-// AlignmentTime when the game updates.
+// AlignmentTime when the game updates. The wait for the return window follows
+// MissionTiming.ComputeReturnWaitSeconds in the same way and is re-verified with it.
 internal static class TransferWindows
 {
     // Above this relative inclination the sibling orbits the hub the opposite way, and the
@@ -133,6 +134,7 @@ internal static class TransferWindows
                 SynodicRate = synodicRate,
                 SynodicPeriodSeconds = synodicPeriod,
                 TransferTimeSeconds = transferTime,
+                ReturnWaitSeconds = TransferWindow.ReturnWaitSeconds(periodSource, periodTarget, transferTime),
                 EjectionAngle = ejectionAngle,
                 EjectionAhead = ejectionAhead,
                 Retrograde = retrograde,

@@ -26,12 +26,12 @@ internal readonly struct OverlayResult
 // The content of the "Transfer windows" overlay (the floating frames are positioned by
 // MapWindow, bottom-left in the canvas). The list panel holds a footer toggle (a real arrow)
 // pinned at the bottom so it does not move when the overlay expands upward, a markers toggle,
-// and a narrow per-sibling list of the target, the countdown to the next window and the
-// ejection angle; its soonest window is highlighted and the rest of the figures are one hover
-// away on each row. The separate clock panel beside it holds the live polar clock-face: a top-
-// down schematic of the hub and its bodies at their current phase, where the soonest (or
-// hovered) window gets a required-position marker, an arc to the body's current position and
-// the countdown. It reuses the shared time formatting and the per-system color palette. The
+// and a narrow per-sibling list of the target, the countdown to the next window, the wait at
+// the target for the return window and the ejection angle; its soonest window is highlighted
+// and the rest of the figures are one hover away on each row. The separate clock panel beside
+// it holds the live polar clock-face: a top-down schematic of the hub and its bodies at their
+// current phase, where the soonest (or hovered) window gets a required-position marker, an arc
+// to the body's current position and the countdown. It reuses the shared time formatting and the per-system color palette. The
 // list panel's markers toggle controls the on-map window badges, which the canvas draws.
 //
 // An instance owned by the map window: every string it shows is kept until the number it
@@ -53,6 +53,7 @@ internal sealed class TransferWindowRenderer
     {
         public readonly CachedText Name = new();
         public readonly CachedText Time = new();
+        public readonly CachedText Wait = new();
         public readonly CachedText Eject = new();
     }
 
@@ -421,13 +422,14 @@ internal sealed class TransferWindowRenderer
         // internally when a dense hub has more siblings than fit.
         var outer = new float2(0f, Math.Max(height, ImGui.GetFrameHeight() * 2f));
 
-        if (!ImGui.BeginTable("##dvtwlist"u8, 3, TableFlags, (float2?)outer))
+        if (!ImGui.BeginTable("##dvtwlist"u8, 4, TableFlags, (float2?)outer))
             return null;
         try
         {
-            ImGui.TableSetupColumn("Target"u8, ImGuiTableColumnFlags.WidthStretch, 1.7f, 0);
-            ImGui.TableSetupColumn("In"u8, ImGuiTableColumnFlags.WidthStretch, 1.1f, 1);
-            ImGui.TableSetupColumn("Eject"u8, ImGuiTableColumnFlags.WidthStretch, 0.9f, 2);
+            ImGui.TableSetupColumn("Target"u8, ImGuiTableColumnFlags.WidthStretch, 1.6f, 0);
+            ImGui.TableSetupColumn("In"u8, ImGuiTableColumnFlags.WidthStretch, 1.0f, 1);
+            ImGui.TableSetupColumn("Wait"u8, ImGuiTableColumnFlags.WidthStretch, 1.0f, 2);
+            ImGui.TableSetupColumn("Eject"u8, ImGuiTableColumnFlags.WidthStretch, 0.8f, 3);
             // Keep the header visible while the body scrolls.
             ImGui.TableSetupScrollFreeze(0, 1);
             ImGui.TableHeadersRow();
@@ -484,6 +486,11 @@ internal sealed class TransferWindowRenderer
             : texts.Time.Text);
 
         ImGui.TableNextColumn();
+        ImGui.Text(texts.Wait.IsStale(w, 0)
+            ? texts.Wait.Set(w, 0, "~" + Format.Duration(w.ReturnWaitSeconds))
+            : texts.Wait.Text);
+
+        ImGui.TableNextColumn();
         ImGui.Text(texts.Eject.IsStale(w, 0)
             ? texts.Eject.Set(w, 0, Format.Degrees(w.EjectionAngle) + (w.EjectionAhead ? " >" : " <"))
             : texts.Eject.Text);
@@ -507,6 +514,9 @@ internal sealed class TransferWindowRenderer
             _tooltip.Add(("Window in: ~" + Format.Duration(w.TimeToWindowSeconds), false));
             _tooltip.Add(("Recurs every: ~" + Format.Duration(w.SynodicPeriodSeconds), false));
             _tooltip.Add(("Transfer time: ~" + Format.Duration(w.TransferTimeSeconds), false));
+            _tooltip.Add(("Return window: ~" + Format.Duration(w.ReturnWaitSeconds) + " after arrival", false));
+            _tooltip.Add(("Shortest round trip: ~"
+                + Format.Duration(2.0 * w.TransferTimeSeconds + w.ReturnWaitSeconds), false));
             _tooltip.Add(("Ejection angle: " + Format.Degrees(w.EjectionAngle) + " deg "
                 + (w.EjectionAhead ? "ahead of" : "behind") + " prograde", false));
             _tooltip.Add(("Relative inclination: " + Format.Degrees(w.RelativeInclination) + " deg", false));

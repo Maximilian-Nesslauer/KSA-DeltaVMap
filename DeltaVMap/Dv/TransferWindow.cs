@@ -51,6 +51,31 @@ internal static class TransferWindow
         return TwoPi / Math.Abs(SynodicRate(periodSource, periodTarget, retrograde));
     }
 
+    // The synodic period in the convention of PatchedConic.CalculateSynodicPeriod for two bound
+    // orbits. Unlike SynodicPeriod it has no retrograde branch, so it agrees with the stock
+    // mission timing for every pair.
+    public static double StockSynodicPeriod(double periodFirst, double periodSecond)
+    {
+        return Math.Abs(1.0 / (1.0 / periodSecond - 1.0 / periodFirst));
+    }
+
+    // The shortest wait at the destination after arrival until a Hohmann return reaches the home
+    // body, in seconds and in [0, synodic period). This is the formula of the stock mission timing
+    // (MissionTiming.ComputeReturnWaitSeconds). With n the home body's mean motion and T the
+    // transfer time, the destination leads the home body by PI - n T at arrival, and a return
+    // departs when it leads by n T - PI, so the relative angle has to turn by 2 n T - 2 PI at the
+    // relative rate d, folded into one synodic period. Zero for two co-orbital bodies, which never
+    // realign.
+    public static double ReturnWaitSeconds(double periodHome, double periodDestination, double transferSeconds)
+    {
+        double n = TwoPi / periodHome;
+        double d = TwoPi / periodDestination - n;
+        if (Math.Abs(d) < 1e-15)
+            return 0.0;
+        double synodic = StockSynodicPeriod(periodHome, periodDestination);
+        return ((2.0 * n * transferSeconds - TwoPi) / d % synodic + synodic) % synodic;
+    }
+
     // Seconds until the next departure window, given the current and target phase angles and
     // the synodic rate. The gap is the angle the configuration still has to close; the wrap
     // folds it into a single relative revolution so the result is the soonest window, never a

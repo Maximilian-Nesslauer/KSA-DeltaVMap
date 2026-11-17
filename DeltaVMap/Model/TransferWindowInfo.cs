@@ -23,6 +23,9 @@ internal sealed class TransferWindowInfo
     public required double SynodicPeriodSeconds { get; init; }
     // Hohmann time of flight around the hub (seconds).
     public required double TransferTimeSeconds { get; init; }
+    // The wait at the target after arrival until the return window (seconds), in the stock
+    // mission timing convention, which has no retrograde branch.
+    public required double ReturnWaitSeconds { get; init; }
     // Ejection angle from the parking-orbit prograde direction (radians, magnitude).
     public required double EjectionAngle { get; init; }
     // True when the burn sits ahead of prograde (outbound, target outer), false when behind.

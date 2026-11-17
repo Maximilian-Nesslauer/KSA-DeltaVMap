@@ -602,7 +602,7 @@ internal sealed class MapWindow : ImGuiWindow
 
         // List width: the user's dragged width if set, else 30% of the canvas (the original auto
         // rule), clamped to the canvas.
-        float autoWidth = Math.Clamp(size.X * 0.30f, 340f, 480f);
+        float autoWidth = Math.Clamp(size.X * 0.34f, 380f, 520f);
         float width = ClampSize(_listWidthOverride ?? autoWidth, listMinW, canvasMaxW);
         if (width < 220f || size.Y < 160f)
             return false;

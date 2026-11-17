@@ -1672,6 +1672,30 @@ static int RunTransferWindowChecks()
         fails += Approx("time-to-window matches AlignmentTime", time, refTime, 1e-9);
     }
 
+    // The stock synodic convention is symmetric in its two periods and has no retrograde branch.
+    {
+        fails += Check("stock synodic period of 1 and 2 is 2", TransferWindow.StockSynodicPeriod(1.0, 2.0) == 2.0);
+        fails += Check("stock synodic period is symmetric", TransferWindow.StockSynodicPeriod(2.0, 1.0) == 2.0);
+        fails += Check("co-orbital bodies wait 0 for the return", TransferWindow.ReturnWaitSeconds(3.0e7, 3.0e7, 1.0e7) == 0.0);
+    }
+
+    // The wait at the destination for the return window, in the formula of
+    // MissionTiming.ComputeReturnWaitSeconds: Earth to Mars (outer) and Earth to Venus (inner),
+    // with periods and Hohmann times in days. Expected values worked out independently.
+    {
+        const double day = 86400.0;
+        double sMars = TransferWindow.StockSynodicPeriod(365.25 * day, 686.98 * day);
+        double wMars = TransferWindow.ReturnWaitSeconds(365.25 * day, 686.98 * day, 258.9 * day);
+        double sVenus = TransferWindow.StockSynodicPeriod(365.25 * day, 224.70 * day);
+        double wVenus = TransferWindow.ReturnWaitSeconds(365.25 * day, 224.70 * day, 146.0 * day);
+        fails += Check($"Earth/Mars stock synodic period ~779.907 d (got {sMars / day:F3})", Math.Abs(sMars / day - 779.907) <= 0.01);
+        fails += Check($"Earth->Mars return wait ~454.172 d (got {wMars / day:F3})", Math.Abs(wMars / day - 454.172) <= 0.01);
+        fails += Check($"Earth/Venus stock synodic period ~583.932 d (got {sVenus / day:F3})", Math.Abs(sVenus / day - 583.932) <= 0.01);
+        fails += Check($"Earth->Venus return wait ~466.826 d (got {wVenus / day:F3})", Math.Abs(wVenus / day - 466.826) <= 0.01);
+        fails += Check("return waits fall in [0, synodic period)",
+            wMars >= 0.0 && wMars < sMars && wVenus >= 0.0 && wVenus < sVenus);
+    }
+
     Console.WriteLine(fails == 0 ? "  window: OK" : $"  window: {fails} FAIL");
     return fails;
 }
