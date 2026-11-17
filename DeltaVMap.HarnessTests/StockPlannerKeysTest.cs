@@ -17,6 +17,11 @@ namespace DeltaVMap.HarnessTests;
 // roots and a vessel in the system it also runs the full button path, source included, checks
 // which departure root and which destinations get through, and checks the star a route
 // preselects.
+//
+// The Hohmann preselect of an in-system route is checked with a vessel too: the mirror of stock's
+// Hohmann destination list against stock's own list, the writes into a window that is already
+// shown, and the pending pick of a window that opens, which waits until stock has consumed its
+// mission destination pick and is dropped when the player changes or closes the window.
 public sealed class StockPlannerKeysTest : IHarnessTest
 {
     private const string Tag = "[dvmap-stock-planner]";
@@ -39,6 +44,8 @@ public sealed class StockPlannerKeysTest : IHarnessTest
             }
 
             ok &= CheckSelection(null);
+            ok &= Check("the Hohmann preselect is available", StockPlannerBridge.IsHohmannAvailable);
+            ok &= CheckHohmann(session.System);
 
             IIndependentRoot? home = session.System.HomeBody != null ? IIndependentRoot.RootOf(session.System.HomeBody) : null;
             StellarBody? destination = FirstStarOutside(home);
@@ -269,6 +276,184 @@ public sealed class StockPlannerKeysTest : IHarnessTest
         StateNode? target = tree.FindBodyNode(bodyId, StateKind.LowOrbit);
         RoutePath? path = origin != null && target != null ? RouteFinder.FindPath(origin, target) : null;
         return path != null ? RouteAccumulator.Accumulate(path, graph, new RouteOptions(), RouteContext.None).Interstellar : null;
+    }
+
+    // The Hohmann preselect with a real vessel. Each case starts from the stock state with no
+    // destination, so every write is visible, and the stock state, the window flag and the pending
+    // pick are put back afterwards. The window flag is set back only when it changed, because its
+    // false setter clears the selected transfer.
+    private static bool CheckHohmann(CelestialSystem system)
+    {
+        Vehicle? vehicle = FirstVehicle(system);
+        if (vehicle == null || vehicle.Parent == null)
+        {
+            HarnessLog.Line($"{Tag} SKIP Hohmann preselect: system '{system.Id}' has no vessel with a parent.");
+            return true;
+        }
+        if (!TryFindType(StockPlannerBridge.HohmannKey, out TransferType hohmann) || !TryFindType(StockPlannerBridge.InterstellarKey, out TransferType interstellar))
+            return Check("the Hohmann and Interstellar plan types exist", false);
+
+        StockPlannerBridge.PlannerState before = StockPlannerBridge.Capture();
+        bool shown = TransferPlanner.ShowPlanWindow;
+        bool ok = true;
+        try
+        {
+            StockPlannerBridge.PlannerState start = before with
+            {
+                Type = hohmann,
+                Source = new TransferObject(vehicle),
+                Destination = new TransferObject(-1),
+                Entry = null,
+                PickMissionDestination = false,
+                ResetTarget = false
+            };
+
+            StockPlannerBridge.Restore(in start);
+            List<string> listed = StockTargets();
+            ok &= CheckMirror(vehicle, listed);
+            Astronomical? destination = FirstBody(listed);
+            if (destination == null)
+            {
+                HarnessLog.Line($"{Tag} SKIP Hohmann writes: stock lists no body for {vehicle.Id}.");
+                return ok;
+            }
+            string label = $"Hohmann to {destination.Id}";
+
+            StockPlannerBridge.Restore(in start);
+            ok &= Check($"{label}, shown window: the preselect runs", StockPlannerBridge.PreselectHohmann(vehicle, destination, windowShown: true));
+            StockPlannerBridge.PlannerState after = StockPlannerBridge.Capture();
+            ok &= Check($"{label}, shown window: PLAN TYPE is Hohmann", after.Type.GetKey() == StockPlannerBridge.HohmannKey);
+            ok &= Check($"{label}, shown window: the source is {vehicle.Id}", after.Source.GetKey() == vehicle.Id);
+            ok &= Check($"{label}, shown window: the destination is the pick", after.Destination.GetKey() == destination.Id);
+            ok &= Check($"{label}, shown window: the mission pick is cleared", !after.PickMissionDestination);
+            ok &= Check($"{label}, shown window: the vessel's target is reset", after.ResetTarget);
+            ok &= Check($"{label}, shown window: no stale transfer is shown", !after.Calculated && after.Entry == null);
+            ok &= Check($"{label}, shown window: no pick is pending", !StockPlannerBridge.HasPendingPick);
+
+            StockPlannerBridge.Restore(start with { Type = interstellar });
+            StockPlannerBridge.PreselectHohmann(vehicle, destination, windowShown: true);
+            after = StockPlannerBridge.Capture();
+            ok &= Check($"{label}, from Interstellar: PLAN TYPE is Hohmann and the destination is the pick",
+                after.Type.GetKey() == StockPlannerBridge.HohmannKey && after.Destination.GetKey() == destination.Id);
+
+            ok &= CheckPending(vehicle, destination, start, label);
+
+            StockPlannerBridge.Restore(in start);
+            StockPlannerBridge.PreselectHohmann(vehicle, destination, windowShown: false);
+            TransferPlanner.ShowPlanWindow = true;
+            StockPlannerBridge.Restore(StockPlannerBridge.Capture() with { Type = interstellar, PickMissionDestination = false });
+            StockPlannerBridge.Tick();
+            ok &= Check($"{label}: a type change drops the pending pick",
+                !StockPlannerBridge.HasPendingPick && StockPlannerBridge.Capture().Destination.GetKey() == "N/A");
+
+            StockPlannerBridge.Restore(in start);
+            StockPlannerBridge.PreselectHohmann(vehicle, destination, windowShown: false);
+            TransferPlanner.ShowPlanWindow = false;
+            StockPlannerBridge.Restore(StockPlannerBridge.Capture() with { PickMissionDestination = false });
+            StockPlannerBridge.Tick();
+            ok &= Check($"{label}: closing the window drops the pending pick",
+                !StockPlannerBridge.HasPendingPick && StockPlannerBridge.Capture().Destination.GetKey() == "N/A");
+        }
+        finally
+        {
+            if (TransferPlanner.ShowPlanWindow != shown)
+                TransferPlanner.ShowPlanWindow = shown;
+            StockPlannerBridge.Reset();
+            StockPlannerBridge.Restore(in before);
+        }
+        ok &= Check("Hohmann preselect: stock state restored", StockPlannerBridge.Capture() == before);
+        return ok;
+    }
+
+    // A window that opens: the bridge arms stock's mission pick and keeps its own pick pending,
+    // writes nothing while the flag is armed, and writes the pick once stock has consumed the flag.
+    private static bool CheckPending(Vehicle vehicle, Astronomical destination, StockPlannerBridge.PlannerState start, string label)
+    {
+        StockPlannerBridge.Restore(in start);
+        bool ok = Check($"{label}, opening window: the preselect runs", StockPlannerBridge.PreselectHohmann(vehicle, destination, windowShown: false));
+        StockPlannerBridge.PlannerState after = StockPlannerBridge.Capture();
+        ok &= Check($"{label}, opening window: no destination is written", after.Destination.GetKey() == "N/A");
+        ok &= Check($"{label}, opening window: the mission pick is armed", after.PickMissionDestination);
+        ok &= Check($"{label}, opening window: a pick is pending", StockPlannerBridge.HasPendingPick);
+
+        TransferPlanner.ShowPlanWindow = true;
+        StockPlannerBridge.Tick();
+        ok &= Check($"{label}, opening window: the pick waits while the flag is armed",
+            StockPlannerBridge.HasPendingPick && StockPlannerBridge.Capture().Destination.GetKey() == "N/A");
+
+        StockPlannerBridge.Restore(StockPlannerBridge.Capture() with { PickMissionDestination = false });
+        StockPlannerBridge.Tick();
+        after = StockPlannerBridge.Capture();
+        ok &= Check($"{label}, opening window: the pick is written once stock consumed the flag",
+            !StockPlannerBridge.HasPendingPick && after.Destination.GetKey() == destination.Id && after.ResetTarget);
+        return ok;
+    }
+
+    // StockPlannerBridge.IsHohmannTarget against stock's own list for every body of the system.
+    // Stock's list also holds the vessels in frame, which the mirror does not cover.
+    private static bool CheckMirror(Vehicle vehicle, List<string> listed)
+    {
+        bool ok = true;
+        int compared = 0;
+        ReadOnlySpan<Astronomical> all = Universe.CurrentSystem!.All.AsSpan();
+        for (int i = 0; i < all.Length; i++)
+        {
+            Astronomical body = all[i];
+            if (body is Vehicle)
+                continue;
+            compared++;
+            bool expected = listed.Contains(body.Id);
+            if (StockPlannerBridge.IsHohmannTarget(vehicle, body) != expected)
+                ok &= Check($"Hohmann list for {vehicle.Id}: {body.Id} is {(expected ? "listed" : "not listed")} by stock", false);
+        }
+        HarnessLog.Line($"{Tag} Hohmann list for {vehicle.Id} at {vehicle.Parent?.Id}: {listed.Count} entries, {compared} bodies compared.");
+        return Check($"the Hohmann list mirror matches stock for {vehicle.Id}", ok);
+    }
+
+    // The keys of stock's Hohmann DESTINATION list for its current source.
+    private static List<string> StockTargets()
+    {
+        var list = new TransferObject[Universe.CurrentSystem!.All.AsSpan().Length];
+        int count = 0;
+        TransferPlanner.PopulateWithTargets(list, ref count);
+        var keys = new List<string>(count);
+        for (int i = 0; i < count; i++)
+            keys.Add(list[i].GetKey());
+        return keys;
+    }
+
+    private static Astronomical? FirstBody(List<string> keys)
+    {
+        foreach (string key in keys)
+        {
+            if (Universe.CurrentSystem!.All.TryGet(key, out Astronomical? body) && body is not Vehicle)
+                return body;
+        }
+        return null;
+    }
+
+    private static Vehicle? FirstVehicle(CelestialSystem system)
+    {
+        for (int i = 0; i < system.Count; i++)
+        {
+            if (system.GetIndex(i) is Vehicle v)
+                return v;
+        }
+        return null;
+    }
+
+    private static bool TryFindType(string key, out TransferType type)
+    {
+        foreach (TransferType candidate in TransferPlanner.TransferTypes)
+        {
+            if (candidate.GetKey() == key)
+            {
+                type = candidate;
+                return true;
+            }
+        }
+        type = default;
+        return false;
     }
 
     private static bool Check(string what, bool pass)
