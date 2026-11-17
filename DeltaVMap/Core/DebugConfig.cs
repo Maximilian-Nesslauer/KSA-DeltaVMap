@@ -12,7 +12,11 @@ internal static class DebugConfig
 
     public static bool Any => Performance || ValidationDump;
 
-    // Local dev directory for the layout debug dump (in-game LayoutDump and the test
-    // harness); debug-only scaffolding, so a hardcoded source-tree path is fine.
-    public const string LayoutDumpDir = @"F:\Coding\KSA Modding\private\temp\deltav-layout";
+    // The folder of the layout debug dump (the in-game LayoutDump and the test harness).
+    // DELTAVMAP_LAYOUT_DIR names it on a developer machine, and without it the dump goes
+    // to the temp folder, so the source names no local path.
+    public static string LayoutDumpDir =>
+        Environment.GetEnvironmentVariable("DELTAVMAP_LAYOUT_DIR") is { Length: > 0 } folder
+            ? folder
+            : Path.Combine(Path.GetTempPath(), "DeltaVMap", "layout");
 }
