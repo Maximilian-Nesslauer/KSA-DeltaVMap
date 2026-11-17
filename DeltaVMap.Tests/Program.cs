@@ -1570,7 +1570,8 @@ static ForestTestNode? DestinationStarOf(ForestTestNode target)
 // Assertions on the closed-form transfer-window formulas, run offline (no game state). Locks
 // the Hohmann lead angle against the stock Earth->Mars (+44 deg) and
 // Earth->Venus (-54 deg) values, the synodic period (Earth/Mars ~2.14 yr), the time-to-window
-// wrap (zero at alignment, a full synodic period a hair before it), the ejection geometry
+// wrap (zero at alignment, a full synodic period a hair after it, the remaining wait toward an
+// outer and an inner planet), the ejection geometry
 // (hyperbolic, rising with v_inf, in (0,90) deg), the retrograde SUM rate, and a hand
 // evaluation of the AlignmentTime formula for one stock pair.
 static int RunTransferWindowChecks()
@@ -1613,9 +1614,9 @@ static int RunTransferWindowChecks()
         fails += Check("time-to-window is 0 at alignment", t == 0.0);
     }
 
-    // A hair before alignment the countdown wraps to a full synodic period: just past the
+    // A hair past alignment the countdown wraps to a full synodic period: just past the
     // window, you must wait one whole recurrence. Earth/Mars has a negative rate (target
-    // outer), so a tiny negative gap folds up to nearly 2*PI.
+    // outer), so the phase shrinks, and a phase a hair below the target is a hair past it.
     {
         double rate = TransferWindow.SynodicRate(tEarth, tMars, false);
         double synodic = TransferWindow.SynodicPeriod(tEarth, tMars, false);
@@ -1672,6 +1673,36 @@ static int RunTransferWindowChecks()
         double time = TransferWindow.TimeToWindowSeconds(currentPhase, target, refRate);
         fails += Approx("target phase matches AlignmentTime", target, refTarget, 1e-12);
         fails += Approx("time-to-window matches AlignmentTime", time, refTime, 1e-9);
+    }
+
+    // The countdown against the motion of the phase itself, for both signs of the synodic rate.
+    // Mars is slower than Earth, so the phase (Mars minus Earth) shrinks: 10 deg above the target
+    // phase the window is 10 deg of relative motion away, 10 deg below it 350 deg. Venus is
+    // faster, so the phase grows and the two cases swap. A simulation of the two circular orbits
+    // gives 21.7 d and 758.6 d for Mars and 567.5 d and 16.2 d for Venus. AlignmentTime gives the
+    // Mars values but swaps the Venus ones.
+    {
+        double tVenus = 2.0 * Math.PI * Math.Sqrt(aVenus * aVenus * aVenus / muSun);
+        double deg = Math.PI / 180.0;
+        double day = 86400.0;
+        double[] periods = { tMars, tVenus };
+        double[] axes = { aMars, aVenus };
+        string[] names = { "Mars", "Venus" };
+        double[,] expectedDays = { { 21.7, 758.6 }, { 567.5, 16.2 } };
+        for (int i = 0; i < 2; i++)
+        {
+            double rate = TransferWindow.SynodicRate(tEarth, periods[i], false);
+            double synodic = TransferWindow.SynodicPeriod(tEarth, periods[i], false);
+            double target = TransferWindow.TargetPhaseAngle(aEarth, axes[i], false);
+            double above = TransferWindow.TimeToWindowSeconds(target + 10.0 * deg, target, rate);
+            double below = TransferWindow.TimeToWindowSeconds(target - 10.0 * deg, target, rate);
+            double shortWait = rate < 0.0 ? above : below;
+            double longWait = rate < 0.0 ? below : above;
+            fails += Approx($"Earth->{names[i]}: 10 deg before the window", shortWait, synodic * 10.0 / 360.0, 1e-9);
+            fails += Approx($"Earth->{names[i]}: 10 deg after the window", longWait, synodic * 350.0 / 360.0, 1e-9);
+            fails += Approx($"Earth->{names[i]}: 10 deg above the target phase, in days", above / day, expectedDays[i, 0], 4e-3);
+            fails += Approx($"Earth->{names[i]}: 10 deg below the target phase, in days", below / day, expectedDays[i, 1], 4e-3);
+        }
     }
 
     Console.WriteLine(fails == 0 ? "  window: OK" : $"  window: {fails} FAIL");

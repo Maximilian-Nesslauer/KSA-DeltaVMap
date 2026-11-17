@@ -20,7 +20,8 @@ namespace DeltaVMap.Model;
 // is the pure Dv/TransferWindow kernel. The phase / synodic branch structure mirrors the
 // game's OrbitalTransfers.AlignmentTime, so if a future build changes that formula these
 // figures will silently diverge from the stock alignment planner; re-verify against
-// AlignmentTime when the game updates. The wait for the return window is stock's own
+// AlignmentTime when the game updates. The prograde countdown to an inner sibling differs from
+// AlignmentTime on purpose (TransferWindow.TimeToWindowSeconds says why). The wait for the return window is stock's own
 // MissionTiming.ComputeReturnWaitSeconds, so it agrees with the stock mission timing.
 internal static class TransferWindows
 {
@@ -164,7 +165,7 @@ internal static class TransferWindows
     // current phase is the target's phase angle minus the source's, wrapped with the game's
     // own MathEx.ToOrbitAngle so the figure agrees with the stock alignment planner; the
     // retrograde branch measures it the other way round. The countdown then folds that gap
-    // through the synodic rate (without the wrap on the retrograde branch, matching the game).
+    // through the synodic rate (without the wrap on the retrograde branch, as the game does).
     public static void Refresh(TransferWindowInfo info, UniverseTime now)
     {
         try

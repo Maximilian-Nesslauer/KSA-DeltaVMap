@@ -9,9 +9,12 @@ namespace DeltaVMap.Dv;
 // semi-major axes, periods, phase angles and v_inf off the live celestials lives in the
 // game-typed builder.
 //
-// The phase-angle, synodic-rate and countdown formulas mirror the game's
-// OrbitalTransfers.AlignmentTime so those figures agree with the stock "Show Alignment"
-// planner. The ejection geometry is a separate patched-conic approximation (Bate-Mueller-
+// The phase-angle and synodic-rate formulas mirror the game's OrbitalTransfers.AlignmentTime
+// so those figures agree with the stock "Show Alignment" planner. The prograde countdown does
+// not: AlignmentTime folds the gap the same way for both signs of the synodic rate, so for a
+// target that moves faster than the source (an inner planet) it returns the part of the synodic
+// period since the last window instead of the part until the next one. The countdown here
+// returns the time until the next window for both signs. The ejection geometry is a separate patched-conic approximation (Bate-Mueller-
 // White / Curtis); AlignmentTime computes no ejection angle, and the game's own ejection
 // value is a numerical minimization that is not reproduced here. The angle wrapping
 // reproduces MathEx.ToOrbitAngle / ToDeviationAngle locally to keep the file free of any
@@ -52,20 +55,20 @@ internal static class TransferWindow
     }
 
     // Seconds until the next departure window, given the current and target phase angles and
-    // the synodic rate. The gap is the angle the configuration still has to close; the wrap
-    // folds it into a single relative revolution so the result is the soonest window, never a
-    // past one. The wrap flag is true for the prograde and same-SOI cases (the game normalizes
-    // the gap there) and false for retrograde, where the game divides the raw gap directly
-    // without normalizing; passing it through faithfully keeps the result equal to the stock
-    // planner. The optional offset shifts the target phase, exposed by the game as a degrees
-    // offset and kept at zero by default.
+    // the synodic rate. The current phase (target minus source) moves at the synodic rate, so it
+    // grows toward the target phase when the rate is positive and shrinks toward it when the
+    // rate is negative. With wrap set, the angle still to go in that direction is folded into
+    // one relative revolution, so the result is the soonest window, never a past one, in
+    // [0, synodic period). Wrap is true for the prograde case and false for retrograde, where
+    // the game divides the raw gap directly without normalizing, and that branch is kept equal
+    // to the stock planner. The optional offset shifts the target phase, exposed by the game as
+    // a degrees offset and kept at zero by default.
     public static double TimeToWindowSeconds(double currentPhase, double targetPhase, double synodicRate, double offset = 0.0, bool wrap = true)
     {
         double gap = currentPhase - (targetPhase + offset);
         if (wrap)
         {
-            if (gap > 0.0 && synodicRate > 0.0)
-                gap -= TwoPi;
+            gap = (synodicRate > 0.0 ? -gap : gap) % TwoPi;
             if (gap < 0.0)
                 gap += TwoPi;
         }
