@@ -19,6 +19,8 @@ All numbers are closed-form patched-conic estimates (Hohmann transfers with Ober
 
 The delta-v figures are the idealized optimal values, so they assume a well-timed, well-flown transfer. A "piloting-margin percentage" slider is available.
 
+Retrograde transfer-window countdowns use the stock timing rule and have not been validated independently. Plane-change costs between stars orbiting a barycenter are approximate because they use orbital speeds derived from the hub's mass.
+
 ## Features
 
 ### Delta-v subway map
