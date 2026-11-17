@@ -141,6 +141,10 @@ internal sealed class MapWindow : ImGuiWindow
     private Vehicle? _egoVehicle;
     private IParentBody? _egoParent;
 
+    // The controlled vehicle the last build classified, so a switch to another vessel around the
+    // same root rebuilds the "you are here" node and the route start too.
+    private Vehicle? _builtForVehicle;
+
     // Detail toggle: full ladder on every body instead of core rungs on distant ones.
     private bool _fullLadder;
 
@@ -2132,6 +2136,7 @@ internal sealed class MapWindow : ImGuiWindow
             _missionRevealFailedId = null;
             _egoVehicle = null;
             _egoParent = null;
+            _builtForVehicle = null;
             _buildFailedRootId = null;
             _selectedId = null;
             _routeSummary = null;
@@ -2170,6 +2175,10 @@ internal sealed class MapWindow : ImGuiWindow
             if ((!_built || desired != _currentRootId) && desired != _buildFailedRootId)
                 RebuildAt(desired);
         }
+
+        if (_built && _currentRootId != null && _currentRootId != _buildFailedRootId
+            && !ReferenceEquals(_builtForVehicle, Program.ControlledVehicle))
+            RebuildPreservingSelection(_currentRootId);
 
         return _built;
     }
@@ -2346,6 +2355,7 @@ internal sealed class MapWindow : ImGuiWindow
 
         ClassifiedState? egoState = null;
         Vehicle? vehicle = Program.ControlledVehicle;
+        _builtForVehicle = vehicle;
         if (vehicle != null && TryGetEgoParentId() == node.Id)
         {
             try
