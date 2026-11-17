@@ -26,10 +26,12 @@ internal sealed class TransferWindowInfo
     // The wait at the target after arrival until the return window (seconds), in the stock
     // mission timing convention, which has no retrograde branch.
     public required double ReturnWaitSeconds { get; init; }
-    // Ejection angle from the parking-orbit prograde direction (radians, magnitude).
+    // Ejection angle (radians) from the reference direction to the burn point, against the
+    // orbital motion (TransferWindow.EjectionAngle).
     public required double EjectionAngle { get; init; }
-    // True when the burn sits ahead of prograde (outbound, target outer), false when behind.
-    public required bool EjectionAhead { get; init; }
+    // True when the target is outer, so the ejection angle is measured from prograde; false
+    // when it is inner and the angle is measured from retrograde.
+    public required bool EjectionOutward { get; init; }
     // True when the sibling orbits the hub the opposite way (relative inclination over 90 deg).
     public required bool Retrograde { get; init; }
     // Relative inclination between the two orbits (radians), context only.

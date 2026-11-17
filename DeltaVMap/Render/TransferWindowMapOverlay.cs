@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
 using DeltaVMap.Core;
+using DeltaVMap.Dv;
 using DeltaVMap.Model;
 using KSA;
 
@@ -21,7 +22,8 @@ internal sealed class TransferWindowMapOverlay
     // timing layer reads as one vocabulary across the panel, the metro map and the 3D map.
     private static readonly byte4 MarkerColor = new byte4(240, 200, 90, 255);
     private static readonly byte4 MarkerFaint = new byte4(240, 200, 90, 130);
-    // The prograde reference arm: a cool cyan, the usual velocity-vector hue, distinct from amber.
+    // The prograde or retrograde reference arm: a cool cyan, the usual velocity-vector hue,
+    // distinct from amber.
     private static readonly byte4 ProgradeColor = new byte4(120, 200, 235, 235);
     // The hub-to-body angle lines and arc (the planet-star-planet geometry): a neutral steel, dim
     // enough not to fight the amber markers, matching the clock-face's angle-line hue.
@@ -39,13 +41,6 @@ internal sealed class TransferWindowMapOverlay
     // direction; this value is just large enough for a numerically stable screen delta and small
     // enough that the probe rarely falls behind the camera.
     private const double DirectionProbeFraction = 0.05;
-
-    // The rotation sense for the ejection arm. With this sign an outbound (target outer) ejection
-    // swings the prograde reference toward the outward radial, so it points out toward the target's
-    // orbit, and an inbound one swings it toward the hub; confirmed in map mode (an Earth->Mars
-    // ejection points out past Earth's orbit rather than sunward). Flip this single constant if a
-    // later check shows the arm on the wrong side.
-    private const double EjectionSign = -1.0;
 
     private string _markerLabel = "";
     private string? _markerTarget;
@@ -132,12 +127,14 @@ internal sealed class TransferWindowMapOverlay
         }
     }
 
-    // The ejection-angle gizmo at the departure body: a prograde reference arm (the body's
-    // heliocentric velocity direction) and an ejection arm rotated from it by the ejection angle,
-    // ahead or behind, in the body's orbital plane. Drawn at a fixed screen length with the angle
-    // labeled. The arms' directions are the true projected orbit-plane directions in the (possibly
-    // tilted) map view; the angle drawn between them is therefore the projected angle, so the
-    // numeric label carries the exact value.
+    // The ejection-angle gizmo at the departure body: a reference arm along the body's velocity
+    // around the hub (prograde for an outer target, retrograde for an inner one) and an arm to
+    // the burn point, the ejection angle from it against the orbital motion, in the body's
+    // orbital plane. For an outer target the burn arm points away from the hub, for an inner
+    // one toward it. Drawn at a fixed screen length with the angle labeled. The arms' directions
+    // are the true projected orbit-plane directions in the (possibly tilted) map view; the angle
+    // drawn between them is therefore the projected angle, so the numeric label carries the
+    // exact value.
     private void DrawEjectionGizmo(
         ImDrawListPtr dl, Camera camera, float2 vpPos, TransferWindowInfo w, UniverseTime now)
     {
@@ -156,41 +153,42 @@ internal sealed class TransferWindowMapOverlay
         double3 rHat = pCce * (1.0 / rLen);
         // NormalizeOrZero (not Normalized) so a degenerate radial state cannot inject NaN; real
         // orbits never hit it (open orbits are filtered upstream), matching the stock guard.
+        // The orbit normal r x v makes a positive Rotate angle turn with the orbital motion.
         double3 nHat = double3.Cross(rHat, vHat).NormalizeOrZero();
-        double angle = EjectionSign * (w.EjectionAhead ? 1.0 : -1.0) * w.EjectionAngle;
-        double3 ejDir = Rotate(vHat, nHat, angle);
+        double3 refDir = w.EjectionOutward ? vHat : vHat * -1.0;
+        double3 ejDir = Rotate(vHat, nHat, TransferWindow.EjectionBurnOffset(w.EjectionAngle, w.EjectionOutward));
 
         double probe = rLen * DirectionProbeFraction;
         float2 s0 = CceToScreen(orbit, pCce, camera, vpPos);
-        float2 sPro = CceToScreen(orbit, pCce + vHat * probe, camera, vpPos);
+        float2 sRef = CceToScreen(orbit, pCce + refDir * probe, camera, vpPos);
         float2 sEj = CceToScreen(orbit, pCce + ejDir * probe, camera, vpPos);
-        if (!Valid(s0) || !Valid(sPro) || !Valid(sEj))
+        if (!Valid(s0) || !Valid(sRef) || !Valid(sEj))
             return;
 
-        float2 uPro = Unit(sPro - s0);
+        float2 uRef = Unit(sRef - s0);
         float2 uEj = Unit(sEj - s0);
-        if (IsZero(uPro) || IsZero(uEj))
+        if (IsZero(uRef) || IsZero(uEj))
             return;
 
-        var proEnd = new float2(s0.X + uPro.X * RayPx, s0.Y + uPro.Y * RayPx);
+        var refEnd = new float2(s0.X + uRef.X * RayPx, s0.Y + uRef.Y * RayPx);
         var ejEnd = new float2(s0.X + uEj.X * RayPx, s0.Y + uEj.Y * RayPx);
-        dl.AddLine(in s0, in proEnd, ProgradeColor, 1.8f);
+        dl.AddLine(in s0, in refEnd, ProgradeColor, 1.8f);
         dl.AddLine(in s0, in ejEnd, MarkerColor, 2.2f);
         dl.AddCircleFilled(in s0, 3f, MarkerColor);
 
-        ScreenArc(dl, s0, ArcPx, uPro, uEj, MarkerColor, 1.6f);
+        ScreenArc(dl, s0, ArcPx, uRef, uEj, MarkerColor, 1.6f);
 
-        var proTag = new float2(proEnd.X + 3f, proEnd.Y - 6f);
-        dl.AddText(in proTag, ProgradeColor, "prograde");
+        var refTag = new float2(refEnd.X + 3f, refEnd.Y - 6f);
+        dl.AddText(in refTag, ProgradeColor, w.EjectionOutward ? "prograde" : "retrograde");
 
-        long ejectKey = (long)Math.Round(w.EjectionAngle * 180.0 / Math.PI) * 2 + (w.EjectionAhead ? 1 : 0);
+        long ejectKey = (long)Math.Round(w.EjectionAngle * 180.0 / Math.PI) * 2 + (w.EjectionOutward ? 1 : 0);
         if (ejectKey != _ejectKey)
         {
-            _ejectLabel = "eject " + Format.Degrees(w.EjectionAngle) + " deg " + (w.EjectionAhead ? "ahead" : "behind");
+            _ejectLabel = "eject " + Format.Degrees(w.EjectionAngle) + " deg from " + (w.EjectionOutward ? "prograde" : "retrograde");
             _ejectKey = ejectKey;
         }
         string label = _ejectLabel;
-        float2 mid = Unit(new float2(uPro.X + uEj.X, uPro.Y + uEj.Y));
+        float2 mid = Unit(new float2(uRef.X + uEj.X, uRef.Y + uEj.Y));
         if (IsZero(mid))
             mid = uEj;
         var lp = new float2(s0.X + mid.X * (ArcPx + 10f), s0.Y + mid.Y * (ArcPx + 10f));

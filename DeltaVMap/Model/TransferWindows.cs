@@ -120,7 +120,7 @@ internal static class TransferWindows
             double muSource = root.Body.Mu;
             double rPark = root.Ladder.LowOrbitRadius;
             double ejectionAngle = TransferWindow.EjectionAngle(vInf, rPark, muSource);
-            bool ejectionAhead = aTarget > aSource;
+            bool ejectionOutward = aTarget > aSource;
 
             bool approximate = edge.IsApproximate
                 || sourceOrbit.Eccentricity > EccentricThreshold
@@ -136,7 +136,7 @@ internal static class TransferWindows
                 TransferTimeSeconds = transferTime,
                 ReturnWaitSeconds = MissionTiming.ComputeReturnWaitSeconds(sourceOrbit, targetOrbit, transferTime),
                 EjectionAngle = ejectionAngle,
-                EjectionAhead = ejectionAhead,
+                EjectionOutward = ejectionOutward,
                 Retrograde = retrograde,
                 RelativeInclination = relInc,
                 IsApproximate = approximate,

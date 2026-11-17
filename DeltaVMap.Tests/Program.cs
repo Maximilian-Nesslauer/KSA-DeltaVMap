@@ -1572,7 +1572,8 @@ static ForestTestNode? DestinationStarOf(ForestTestNode target)
 // Earth->Venus (-54 deg) values, the synodic period (Earth/Mars ~2.14 yr), the time-to-window
 // wrap (zero at alignment, a full synodic period a hair after it, the remaining wait toward an
 // outer and an inner planet), the ejection geometry
-// (hyperbolic, rising with v_inf, in (0,90) deg), the retrograde SUM rate, and a hand
+// (hyperbolic, falling with v_inf, in (90,180) deg, the asymptote along the reference), the
+// retrograde SUM rate, and a hand
 // evaluation of the AlignmentTime formula for one stock pair.
 static int RunTransferWindowChecks()
 {
@@ -1625,10 +1626,12 @@ static int RunTransferWindowChecks()
         fails += Approx("time-to-window ~ synodic period just before alignment", t, synodic, 1e-6);
     }
 
-    // Ejection geometry: the departure conic is hyperbolic (e > 1), and ejectionAngle =
-    // PI - acos(-1/e) is in (0,90) deg and rises with v_inf. This convention has no stock
-    // anchor (AlignmentTime computes no ejection angle), so it is a chosen approximation to be
-    // re-checked against the in-game planner when the builder wires the angle to the UI.
+    // Ejection geometry: the departure conic is hyperbolic (e > 1), and the ejection angle
+    // acos(-1/e) is in (90,180) deg and falls with v_inf. At v_inf equal to the circular speed
+    // e is 2 and the angle 120 deg. The burn point then has to send the outgoing asymptote along
+    // prograde for an outer target and along retrograde for an inner one. That is checked with
+    // the perifocal velocity direction near the asymptote, atan2(e + cos nu, -sin nu) from the
+    // periapsis, which does not use acos(-1/e).
     {
         double muEarth = 3.986e14;
         double rPark = 6.671e6;        // ~200 km circular parking orbit
@@ -1639,8 +1642,23 @@ static int RunTransferWindowChecks()
 
         double angLow = TransferWindow.EjectionAngle(1000.0, rPark, muEarth) * rad2deg;
         double angHigh = TransferWindow.EjectionAngle(3000.0, rPark, muEarth) * rad2deg;
-        fails += Check("ejection angle in (0,90) deg", angLow > 0.0 && angLow < 90.0 && angHigh > 0.0 && angHigh < 90.0);
-        fails += Check("ejection angle rises with v_inf", angHigh > angLow);
+        fails += Check("ejection angle in (90,180) deg", angLow > 90.0 && angLow < 180.0 && angHigh > 90.0 && angHigh < 180.0);
+        fails += Check("ejection angle falls with v_inf", angHigh < angLow);
+
+        double vCircular = Math.Sqrt(muEarth / rPark);
+        fails += Approx("ejection angle at e = 2 is 120 deg", TransferWindow.EjectionAngle(vCircular, rPark, muEarth) * rad2deg, 120.0, 1e-9);
+
+        foreach (double vInf in new[] { 1000.0, vCircular, 3000.0 })
+        {
+            double e = TransferWindow.EjectionEccentricity(vInf, rPark, muEarth);
+            double angle = TransferWindow.EjectionAngle(vInf, rPark, muEarth);
+            double nu = angle - 1e-7;
+            double asymptote = Math.Atan2(e + Math.Cos(nu), -Math.Sin(nu));
+            double outward = ToOrbitAngleLocal(TransferWindow.EjectionBurnOffset(angle, true) + asymptote);
+            double inward = ToOrbitAngleLocal(TransferWindow.EjectionBurnOffset(angle, false) + asymptote - Math.PI);
+            fails += Check($"v_inf {vInf:F0} m/s: an outward burn leaves along prograde", Math.Abs(outward) < 1e-5);
+            fails += Check($"v_inf {vInf:F0} m/s: an inward burn leaves along retrograde", Math.Abs(inward) < 1e-5);
+        }
     }
 
     // Retrograde uses the SUM of the rates, not the difference, so it is larger in magnitude

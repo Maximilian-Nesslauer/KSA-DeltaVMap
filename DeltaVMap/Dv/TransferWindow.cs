@@ -83,17 +83,27 @@ internal static class TransferWindow
         return 1.0 + rPark * vInf * vInf / muBody;
     }
 
-    // The angle from the parking-orbit prograde direction at which the ejection burn's
-    // periapsis must sit so the outgoing hyperbolic asymptote ends up parallel to the body's
-    // velocity around the hub. acos(-1/e) is the true anomaly of the outgoing asymptote, in
-    // (PI/2, PI); the burn point sits PI minus that ahead of (or behind) prograde, in
-    // (0, PI/2), and rises toward 90 deg as vInf grows. This is the analytical patched-conic
-    // value (Bate-Mueller-White / Curtis); the exact game value additionally accounts for the
-    // finite SOI, which is not needed here.
+    // The ejection angle: the angle at the departure body from the reference direction to the
+    // burn point (the periapsis of the departure hyperbola), measured against the orbital
+    // motion. The reference is prograde (the body's velocity around the hub) for a target
+    // outside the source's orbit and retrograde for one inside it. acos(-1/e) is the true
+    // anomaly of the outgoing asymptote, in (PI/2, PI), and falls toward 90 deg as vInf grows.
+    // With the burn that far behind the reference, the asymptote points along the reference,
+    // which is the direction each transfer needs its excess speed in. This is the analytical
+    // patched-conic value (Bate-Mueller-White / Curtis); the exact game value additionally
+    // accounts for the finite SOI, which is not needed here.
     public static double EjectionAngle(double vInf, double rPark, double muBody)
     {
         double e = EjectionEccentricity(vInf, rPark, muBody);
-        return Math.PI - Math.Acos(-1.0 / e);
+        return Math.Acos(-1.0 / e);
+    }
+
+    // Where the burn point sits, as an angle in the departure body's orbital plane from the
+    // body's velocity around the hub, positive in the sense of the orbital motion. The parking
+    // orbit is taken to turn the same way as the body.
+    public static double EjectionBurnOffset(double ejectionAngle, bool outward)
+    {
+        return (outward ? 0.0 : Math.PI) - ejectionAngle;
     }
 
     // Local reimplementation of MathEx.ToOrbitAngle, which delegates to ToDeviationAngle.

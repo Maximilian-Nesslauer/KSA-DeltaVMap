@@ -349,6 +349,12 @@ internal sealed class TransferWindowRenderer
         return (long)Math.Round(radians * 180.0 / Math.PI) & 0xFFF;
     }
 
+    // The body the source and the target orbit, which the ejection side refers to.
+    private static string HubName(TransferWindowInfo w)
+    {
+        return (w.Source as IOrbiter)?.Orbit.Parent?.Id ?? "the hub";
+    }
+
     private static float2 Polar(float2 center, float r, double angle)
     {
         return new float2(center.X + r * (float)Math.Cos(angle), center.Y - r * (float)Math.Sin(angle));
@@ -493,7 +499,7 @@ internal sealed class TransferWindowRenderer
 
         ImGui.TableNextColumn();
         ImGui.Text(texts.Eject.IsStale(w, 0)
-            ? texts.Eject.Set(w, 0, Format.Degrees(w.EjectionAngle) + (w.EjectionAhead ? " >" : " <"))
+            ? texts.Eject.Set(w, 0, Format.Degrees(w.EjectionAngle) + (w.EjectionOutward ? " P" : " R"))
             : texts.Eject.Text);
 
         return isHovered ? w.TargetId : null;
@@ -518,8 +524,9 @@ internal sealed class TransferWindowRenderer
             _tooltip.Add(("Return window: ~" + Format.Duration(w.ReturnWaitSeconds) + " after arrival", false));
             _tooltip.Add(("Shortest round trip: ~"
                 + Format.Duration(2.0 * w.TransferTimeSeconds + w.ReturnWaitSeconds), false));
-            _tooltip.Add(("Ejection angle: " + Format.Degrees(w.EjectionAngle) + " deg "
-                + (w.EjectionAhead ? "ahead of" : "behind") + " prograde", false));
+            _tooltip.Add(("Ejection angle: " + Format.Degrees(w.EjectionAngle) + " deg from "
+                + (w.EjectionOutward ? "prograde, burn on the side away from " : "retrograde, burn on the side toward ")
+                + HubName(w), false));
             _tooltip.Add(("Relative inclination: " + Format.Degrees(w.RelativeInclination) + " deg", false));
             if (w.Retrograde)
                 _tooltip.Add(("Retrograde sibling (orbits the hub the opposite way)", true));
