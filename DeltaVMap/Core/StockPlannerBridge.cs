@@ -18,16 +18,28 @@ namespace DeltaVMap.Core;
 // TransferPlanner.DrawInterstellarPlan runs after both when its DESTINATION combo changes. With
 // the type first, the source change sees no destination, so its SetTransferInfo never builds a
 // transfer for the plan type that is about to go. The writes happen on the main thread from the
-// AfterGui draw, which is after stock drew the window for this frame, so stock never sees half of
-// them.
+// AfterGui draw. StarMap runs that draw as a postfix of Program.OnDrawUiViewports, and
+// Program.OnFrame calls Program.OnDrawUiThreadSafe, which draws the planner window, after it in
+// the same frame. So stock never sees half of the writes, and its next draw of the window comes
+// later in this same frame.
 //
 // The destination is always a star, because stock offers only stars (TransferPlanner.PopulateWithStars).
 // A FixedStar is no IOrbiter, so for it TransferPlanner.Destination is null and SetTransferInfo
 // only clears the transfer info. An OrbitingStar (a star of a multiple system) is an IOrbiter, so
 // SetTransferInfo builds a Hohmann TransferInfo for it and can pick a new _selectedTimeUnit in
-// place of Years. Stock runs SetTransferInfo when the window appears on the next frame and on a
-// SOURCE change, and it does so after the player's own pick of such a star too, so the bridge
+// place of Years. Stock runs SetTransferInfo when the window appears, later in the same frame, and
+// on a SOURCE change, and it does so after the player's own pick of such a star too, so the bridge
 // still ends in the state that pick ends in.
+//
+// When the window appears, or its source is N/A, stock arms the private
+// TransferPlanner._pickMissionDestination. Only the Hohmann branch of
+// TransferPlanner.DrawPlanWindow consumes it, in the same draw, through
+// TransferPlanner.PickMissionDestination, which replaces the destination with the vessel's
+// mission destination when stock lists it (MissionTransfer.FindDestinationId: the Life Support
+// rule is on and the mission goes to a body and is not custom). The interstellar preselect is not
+// affected, because the interstellar branch never reads the flag. The flag stays armed then, so a
+// later switch of PLAN TYPE to Hohmann in stock picks the mission destination, as after any
+// opening of the window.
 internal static class StockPlannerBridge
 {
     internal const string InterstellarKey = "Interstellar";
