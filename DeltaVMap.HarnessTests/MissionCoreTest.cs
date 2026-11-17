@@ -1,5 +1,6 @@
 using DeltaVMap.Core;
 using DeltaVMap.Mission;
+using DeltaVMap.Model;
 using HeadlessHarness.Core;
 using HeadlessHarness.Harness;
 using KSA;
@@ -129,7 +130,24 @@ public sealed class MissionCoreTest : IHarnessTest
         }
 
         HarnessLog.Line($"{Tag} timing compared for {compared} plans, {skipped} bodies skipped.");
-        return ok & Check("the route timing was compared for at least one body", compared > 2);
+        ok &= Check("the route timing was compared for at least one body", compared > 2);
+        return ok & CheckHubOrigin(home);
+    }
+
+    // A route that starts at the home star is a vessel in cruise around it. Stock would time it from
+    // a parking orbit just above the star, so the route has no mission time.
+    private static bool CheckHubOrigin(Astronomical home)
+    {
+        IParentBody? hub = (home as IOrbiter)?.Parent;
+        while (hub is Astronomical a && !SystemGraph.IsHubOnlyBody(a) && hub is IOrbiter o)
+            hub = o.Parent;
+        if (hub is not Astronomical star || !SystemGraph.IsHubOnlyBody(star))
+        {
+            HarnessLog.Line($"{Tag} skip the hub origin check: the home body has no star or barycenter above it.");
+            return true;
+        }
+        MissionTimes times = MissionTimingBridge.Compute(star, home, RouteArrival.Orbit, true, Day, double.NaN);
+        return Check($"a route from '{star.Id}' to the home body has no mission time", times.Status == MissionTimesStatus.Unknown);
     }
 
     private static bool CompareTiming(Astronomical home, Astronomical body, MissionPlan plan, RouteArrival arrival, bool ret)

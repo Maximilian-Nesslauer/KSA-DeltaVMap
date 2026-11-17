@@ -53,10 +53,12 @@ internal static class MissionReader
                 MissionDestination.Body => MissionGoal.Body,
                 _ => MissionGoal.None,
             };
+            // Stock times a LOW ORBIT mission as an orbit (MissionTiming.Compute) and keeps the
+            // arrival the plan had before, which can be a flyby or a landing elsewhere.
             return new MissionSnapshot(
                 destination,
                 mission.BodyId ?? "",
-                ToRoute(mission.Arrival),
+                destination == MissionGoal.LowOrbit ? RouteArrival.Orbit : ToRoute(mission.Arrival),
                 mission.Trip == MissionTrip.Return,
                 mission.Stay.Seconds(),
                 mission.CruiseSpeedC,

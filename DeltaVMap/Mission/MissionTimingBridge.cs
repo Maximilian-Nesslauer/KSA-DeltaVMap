@@ -1,12 +1,13 @@
 using System;
 using DeltaVMap.Core;
+using DeltaVMap.Model;
 using KSA;
 
 namespace DeltaVMap.Mission;
 
 // The mission legs of a route through stock's own mission timing (MissionTiming.ComputeLegs and
-// ComputeInterstellarLegs), so the map shows the times the stock mission planner and life support
-// plan with.
+// ComputeInterstellarLegs), so the map times a route with the formulas the stock mission planner
+// and life support plan with.
 internal static class MissionTimingBridge
 {
     // launch and destination are the bodies of the route's two ends. cruiseSpeedC is read only for
@@ -17,6 +18,14 @@ internal static class MissionTimingBridge
         {
             if (launch is not IParentBody from || destination is not IParentBody to)
                 return MissionTimes.Unknown;
+            bool interstellar = MissionTiming.IsInterstellar(from, to);
+            // A star or barycenter at the start of a route is a vessel in cruise around it. Stock
+            // times a mission from a launch body and would start from a parking orbit just above
+            // the hub (OrbitalTransfers.SafeOrbitRadius) instead of the vessel's orbit, with no
+            // return window, so the times would be far too short. The totals then keep the
+            // transfer time from the cruise orbit.
+            if (!interstellar && SystemGraph.IsHubOnlyBody(launch))
+                return MissionTimes.Unknown;
             // Stock takes OrbitalTransfers.GetCircularRadius of the orbits on both parent chains,
             // which means nothing for an open orbit.
             if (!ChainIsBound(from) || !ChainIsBound(to))
@@ -25,7 +34,6 @@ internal static class MissionTimingBridge
             double requested = double.IsFinite(staySeconds) ? Math.Max(0.0, staySeconds) : MissionRoutes.DefaultStaySeconds;
             MissionArrival gameArrival = MissionReader.ToGame(arrival);
             MissionTrip trip = returnTrip ? MissionTrip.Return : MissionTrip.OneWay;
-            bool interstellar = MissionTiming.IsInterstellar(from, to);
             MissionLegs legs;
             if (interstellar)
             {
