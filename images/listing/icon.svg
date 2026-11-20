@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 120 120" role="img" aria-labelledby="title description">
   <title id="title">DeltaVMap Selected Route</title>
   <desc id="description">A bright selected landing route crosses a faded planetary branch above the Delta-V Map wordmark.</desc>
-  <rect id="tile" width="120" height="120" rx="19" fill="#12161D"/>
+  <rect id="tile" width="120" height="120" fill="#12161D"/>
   <g id="inactive-branches" fill="none" stroke="#674B48" stroke-width="1.8" stroke-linejoin="round">
     <path d="M59 32L50 41V65M76 32H88L102 46V63"/>
     <circle cx="50" cy="64" r="3.55"/>
