@@ -65,24 +65,11 @@ internal static class MissionWriter
             }
             else
             {
-                // Stock's flight UI only retargets an existing plan; a vessel without one gets a
-                // new plan, as the editor's picker creates one. Clearing ArrivedAt is what
-                // MissionTransfer.Retarget does; stock records the arrival again on the next
-                // vessel update when the vessel is already inside the new destination. No undo
-                // history and no unsaved mark exist in flight.
                 MissionPlan mission = tree.Mission ?? new MissionPlan();
-                if (plan.Destination == MissionGoal.LowOrbit)
-                {
+                bool lowOrbit = plan.Destination == MissionGoal.LowOrbit;
+                MissionTransfer.Retarget(mission, lowOrbit ? "" : plan.BodyId);
+                if (lowOrbit)
                     mission.Destination = MissionDestination.LowOrbit;
-                    mission.BodyId = "";
-                    mission.Custom = false;
-                    mission.ArrivedAt = null;
-                    mission.LeftAt = null;
-                }
-                else
-                {
-                    MissionTransfer.Retarget(mission, plan.BodyId);
-                }
                 WritePlan(mission, in plan);
                 tree.Mission = mission;
             }
