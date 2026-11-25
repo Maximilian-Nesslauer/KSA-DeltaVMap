@@ -455,9 +455,13 @@ public sealed class StockPlannerKeysTest : IHarnessTest
         return Check($"the Hohmann list mirror matches stock for {vehicle.Id}", ok);
     }
 
-    // The keys of stock's Hohmann DESTINATION list for its current source.
+    // The keys of stock's Hohmann DESTINATION list for its current source. Stock fills the list
+    // while it draws, after Program.PrepareFrame refreshed Program.VehiclesInFrame. Outside a frame
+    // that span can still hold a vehicle that was removed since, and TransferObject.Body throws on
+    // its index, so the span is refreshed first.
     private static List<string> StockTargets()
     {
+        Program.RefreshVehiclesInFrame();
         var list = new TransferObject[Universe.CurrentSystem!.All.AsSpan().Length];
         int count = 0;
         TransferPlanner.PopulateWithTargets(list, ref count);
