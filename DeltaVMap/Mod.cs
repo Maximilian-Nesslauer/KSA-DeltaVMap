@@ -16,7 +16,7 @@ public sealed class Mod
 {
     private static bool _validationDumped;
 
-    private const string TestedGameVersion = "v2026.11.16.5901";
+    private const string TestedGameVersion = "v2026.11.25.5949";
 
     private readonly IModMenuService _modMenu;
     private IDisposable? _modMenuItem;
