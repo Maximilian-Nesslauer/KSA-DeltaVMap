@@ -19,15 +19,21 @@ public sealed class StagedDvTest : IHarnessTest
     // the last kilogram.
     private const double MassTolerance = 1e-3;
 
+    // The game's own default vehicle, which ships with every build and so keeps its staging when
+    // a part changes. A vehicle save written by an older build can lose it: its module data names
+    // no module (empty InstanceOf), so ModuleList.ApplySaveData matches it only to the sole module
+    // of its type. Once a part gains a second decoupler, the saved sequence of its first decoupler
+    // is dropped, and that decoupler then drops the rest of the vehicle in sequence 0.
+    private const string SaveId = "Gemini7";
+
     public string Name => "dvmap-staged-dv";
 
     public int Run(HeadlessSession session)
     {
-        string? saveId = Environment.GetEnvironmentVariable(TestSupport.VehicleEnvVar);
-        if (string.IsNullOrEmpty(saveId))
+        if (DefaultVehicleSaves.FindSave(SaveId) is not VehicleSave save)
         {
-            HarnessLog.Line($"[dvmap-staged-dv] SKIP: {TestSupport.VehicleEnvVar} not set.");
-            return 0;
+            HarnessLog.Line($"[dvmap-staged-dv] FAIL: the game has no default vehicle '{SaveId}'.");
+            return 1;
         }
 
         CelestialSystem system = session.System;
@@ -42,7 +48,9 @@ public sealed class StagedDvTest : IHarnessTest
         try
         {
             Orbit orbit = VehicleSpawner.CircularCci(home, body.MeanRadius + 500_000.0, Universe.GetElapsedTime());
-            Vehicle vehicle = VehicleSpawner.SpawnFromSave(saveId, system, home, "DvMapStagedDvTest", orbit);
+            // FillTanks fills a tank the save leaves empty, as the launch menu does before a launch.
+            Vehicle vehicle = VehicleSpawner.SpawnFromSaveData(save.VehicleSaveData, system, home, "DvMapStagedDvTest", orbit,
+                SpawnOptions.Default with { FillTanks = true });
             Program.ControlledVehicle = vehicle;
             // Stands in for Program.PrepareFrame, which this headless run has no frame loop for.
             PartTree.FlushDirtyDerived();
@@ -56,7 +64,7 @@ public sealed class StagedDvTest : IHarnessTest
                 return 1;
             }
 
-            HarnessLog.Line(FormattableString.Invariant($"[dvmap-staged-dv] '{saveId}': staged dV {dv:F1} m/s"));
+            HarnessLog.Line(FormattableString.Invariant($"[dvmap-staged-dv] '{SaveId}': staged dV {dv:F1} m/s"));
 
             ok &= Check("staged dV is a positive, finite number", double.IsFinite(dv) && dv > 0.0);
             ok &= CheckAgainstOwnAnalyzer(vehicle, dv);
