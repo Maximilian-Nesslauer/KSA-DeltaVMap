@@ -21,7 +21,11 @@ internal readonly record struct MissionSnapshot(
     double StaySeconds,
     double CruiseSpeedC,
     bool Custom,
-    bool Arrived);
+    bool Arrived,
+    bool Returned = false)
+{
+    public bool Completed => Destination == MissionGoal.Body && !Custom && Return && Returned;
+}
 
 // The route a mission asks for. WayHome marks the trip back to the home body after the arrival.
 internal readonly record struct MissionRouteGoal(string BodyId, RouteEnd End, bool Return, bool WayHome);
@@ -35,7 +39,8 @@ internal readonly record struct MissionKey(
     RouteArrival Arrival,
     bool Return,
     bool Custom,
-    bool Arrived);
+    bool Arrived,
+    bool Completed);
 
 // The fields a route writes into a stock mission plan, normalized by MissionRoutes.PlanFor.
 // CruiseSpeedC is null for an in-system route and for an interstellar route without a known cruise
@@ -57,12 +62,11 @@ internal static class MissionRoutes
     public const double MaxCruiseSpeedC = 0.8999999999999999;
     public const double DefaultStaySeconds = 86400.0;
 
-    // The route the mission asks for, or null when it asks for none. After the arrival a return
-    // mission asks for the way home, which is the Home leg of MissionTransfer.ClassifyLeg; a
-    // one-way mission keeps its destination route, because a landing still has its descent to show.
+    // After arrival a return mission asks for the home leg until the vessel returns. A one-way
+    // mission keeps its destination route, because a landing still has its descent to show.
     public static MissionRouteGoal? DefaultRoute(MissionSnapshot? mission, string? homeBodyId)
     {
-        if (mission is not { } m || m.Custom || m.Destination == MissionGoal.None)
+        if (mission is not { } m || m.Custom || m.Destination == MissionGoal.None || m.Completed)
             return null;
 
         if (m.Arrived && m.Return)
@@ -116,19 +120,21 @@ internal static class MissionRoutes
     public static MissionKey KeyOf(object? tree, MissionSnapshot? mission)
     {
         if (mission is not { } m)
-            return new MissionKey(tree, MissionGoal.None, "", RouteArrival.Orbit, false, false, false);
-        return new MissionKey(tree, m.Destination, m.BodyId ?? "", m.Arrival, m.Return, m.Custom, m.Arrived);
+            return new MissionKey(tree, MissionGoal.None, "", RouteArrival.Orbit, false, false, false, false);
+        return new MissionKey(tree, m.Destination, m.BodyId ?? "", m.Arrival, m.Return, m.Custom, m.Arrived, m.Completed);
     }
 
-    // Whether the mission route replaces the selection now. Only while the Life Support rule is
+    // Whether the mission updates the selection now. Only while the Life Support rule is
     // on, because with the rule off stock plans with no mission (MissionTransfer.FindDestinationId).
     // A change of the mission itself replaces even a pick of the player, because the player
     // changed the mission. Another craft or an arrival replaces only no selection or a selection
-    // the mission made.
+    // the mission made. A completed return clears a selection the mission made.
     public static bool ShouldApply(MissionKey? previous, MissionKey current, bool opening, bool hasSelection, bool selectionFromMission, bool lifeSupport)
     {
         if (!lifeSupport)
             return false;
+        if (current.Completed)
+            return hasSelection && selectionFromMission;
         if (opening && !hasSelection)
             return true;
         if (previous is not { } p)
@@ -144,7 +150,7 @@ internal static class MissionRoutes
         if (sameTree && planChanged)
             return true;
 
-        if (!sameTree || p.Arrived != current.Arrived)
+        if (!sameTree || p.Arrived != current.Arrived || p.Completed != current.Completed)
             return !hasSelection || selectionFromMission;
         return false;
     }

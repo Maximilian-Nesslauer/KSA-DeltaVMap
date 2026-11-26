@@ -1757,7 +1757,8 @@ internal sealed class MapWindow : ImGuiWindow
     // lookups), and selects the route it asks for when MissionRoutes.ShouldApply says so: with the
     // Life Support rule on, on opening with nothing selected, when the mission itself changes, and
     // when another craft or an arrival changes it while the selection is empty or came from the
-    // mission. The mission block and its MISSION ROUTE button work with the rule off too.
+    // mission. Completing a return clears a mission-owned selection. The MISSION ROUTE button
+    // works with the rule off too.
     private void UpdateMissionRoute()
     {
         try
@@ -1776,8 +1777,19 @@ internal sealed class MapWindow : ImGuiWindow
                 Universe.Rules.LifeSupport);
             _missionKey = key;
             _missionOpening = false;
-            if (apply)
+            if (!apply)
+                return;
+            if (key.Completed)
+            {
+                _selectedId = null;
+                _selectionFromMission = false;
+                RecomputeRoute();
+                UpdateScene(anchorNodeId: null);
+            }
+            else
+            {
                 ApplyMissionRoute();
+            }
         }
         catch (Exception ex)
         {

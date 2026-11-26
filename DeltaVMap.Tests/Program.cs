@@ -1895,8 +1895,42 @@ static int RunMissionChecks()
     fails += Check("an arrival replaces a mission pick", MissionRoutes.ShouldApply(key, arrivedKey, false, true, true, true));
     fails += Check("with the Life Support rule off an opening applies nothing", !MissionRoutes.ShouldApply(null, key, true, false, false, false));
     fails += Check("with the Life Support rule off a plan change applies nothing", !MissionRoutes.ShouldApply(key, otherBody, false, false, true, false));
+    MissionSnapshot completed = Plan(arrived: true) with { Returned = true };
+    MissionKey completedKey = MissionRoutes.KeyOf(treeA, completed);
+    MissionKey otherCompletedKey = MissionRoutes.KeyOf(treeB, completed);
+    fails += Check("a landed completed return offers no home orbit", MissionRoutes.DefaultRoute(completed, "Earth") == null);
+    fails += Check("opening with a completed return leaves empty and manual selections alone",
+        !MissionRoutes.ShouldApply(null, completedKey, true, false, false, true)
+        && !MissionRoutes.ShouldApply(null, completedKey, true, true, false, true));
+    fails += Check("completion clears a mission selection",
+        MissionRoutes.ShouldApply(arrivedKey, completedKey, false, true, true, true));
+    fails += Check("completion on the same map preserves a manual selection through subsequent frames and reopening",
+        !MissionRoutes.ShouldApply(arrivedKey, completedKey, false, true, false, true)
+        && !MissionRoutes.ShouldApply(completedKey, completedKey, false, true, false, true)
+        && !MissionRoutes.ShouldApply(completedKey, completedKey, true, true, false, true));
+    fails += Check("the completed return clears a mission selection only when Life Support is on",
+        !MissionRoutes.ShouldApply(arrivedKey, completedKey, false, true, true, false)
+        && MissionRoutes.ShouldApply(completedKey, completedKey, false, true, true, true));
+    fails += Check("switching to a completed craft on the same map clears only a mission selection",
+        MissionRoutes.ShouldApply(arrivedKey, otherCompletedKey, false, true, true, true)
+        && !MissionRoutes.ShouldApply(arrivedKey, otherCompletedKey, false, true, false, true)
+        && !MissionRoutes.ShouldApply(arrivedKey, otherCompletedKey, false, false, false, true));
+    fails += Check("a retarget after completion can select the new outbound route",
+        MissionRoutes.ShouldApply(completedKey, otherBody, false, false, false, true)
+        && MissionRoutes.ShouldApply(completedKey, key, false, false, false, true));
+    fails += Check("a timestamp on a one-way plan has no routing effect",
+        MissionRoutes.DefaultRoute(completed with { Return = false }, "Earth")
+            == new MissionRouteGoal("Luna", RouteEnd.Orbit, false, false)
+        && MissionRoutes.KeyOf(treeA, completed with { Return = false })
+            == MissionRoutes.KeyOf(treeA, completed with { Return = false, Returned = false }));
+    fails += Check("a custom plan with a completion timestamp offers no route and triggers no completion reset",
+        MissionRoutes.DefaultRoute(completed with { Custom = true }, "Earth") == null
+        && !MissionRoutes.KeyOf(treeA, completed with { Custom = true }).Completed);
+    fails += Check("low orbit ignores a stale return timestamp from a body mission",
+        MissionRoutes.DefaultRoute(completed with { Destination = MissionGoal.LowOrbit, BodyId = "", Arrived = false }, "Earth")
+            == new MissionRouteGoal("Earth", RouteEnd.Orbit, true, false));
     fails += Check("the key of no mission is empty and compares the tree by reference",
-        MissionRoutes.KeyOf(treeA, null) == new MissionKey(treeA, MissionGoal.None, "", RouteArrival.Orbit, false, false, false)
+        MissionRoutes.KeyOf(treeA, null) == new MissionKey(treeA, MissionGoal.None, "", RouteArrival.Orbit, false, false, false, false)
         && MissionRoutes.KeyOf(treeA, null) != MissionRoutes.KeyOf(treeB, null));
 
     var landGoal = new MissionRouteGoal("Luna", RouteEnd.Surface, true, false);
