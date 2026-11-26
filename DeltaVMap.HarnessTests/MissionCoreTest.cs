@@ -335,20 +335,15 @@ public sealed class MissionCoreTest : IHarnessTest
                 && MissionWriter.RefusalFor(home, RouteEnd.Flyby, (IParentBody)home) != null);
             ok &= Check("the home body read is the system's", ReferenceEquals(MissionReader.HomeBody(), home));
 
-            tree.Mission = new MissionPlan
-            {
-                Destination = MissionDestination.Body,
-                BodyId = home.Id,
-                ArrivedAt = new UniverseTime(1.0),
-                LeftAt = new UniverseTime(2.0),
-            };
+            tree.Mission = CompletedReturn(home.Id);
             MissionWrite body = MissionRoutes.PlanFor(target.Id, homeId, RouteEnd.Orbit, true, false, 3.0 * Day, 0.1);
             ok &= CheckOneWrite("a body with orbit and return", host, body,
-                new MissionSnapshot(MissionGoal.Body, target.Id, RouteArrival.Orbit, true, 3.0 * Day, 0.1, false, false));
+                new MissionSnapshot(MissionGoal.Body, target.Id, RouteArrival.Orbit, true, 3.0 * Day, 0.2, false, false));
 
+            tree.Mission = CompletedReturn(target.Id);
             MissionWrite lowOrbit = MissionRoutes.PlanFor(home.Id, homeId, RouteEnd.Orbit, false, false, Day, 0.1);
             ok &= CheckOneWrite("low orbit", host, lowOrbit,
-                new MissionSnapshot(MissionGoal.LowOrbit, "", RouteArrival.Orbit, false, Day, 0.1, false, false));
+                new MissionSnapshot(MissionGoal.LowOrbit, "", RouteArrival.Orbit, false, Day, 0.2, false, false));
 
             tree.Mission = null;
             MissionWrite landing = MissionRoutes.PlanFor(target.Id, homeId, RouteEnd.Surface, true, false, 2.0 * Day, 0.1);
@@ -362,12 +357,32 @@ public sealed class MissionCoreTest : IHarnessTest
         return ok;
     }
 
+    private static MissionPlan CompletedReturn(string bodyId)
+    {
+        return new MissionPlan
+        {
+            Destination = MissionDestination.Body,
+            BodyId = bodyId,
+            Arrival = MissionArrival.Land,
+            Trip = MissionTrip.Return,
+            Stay = new UniverseTime(4.0 * Day),
+            Custom = true,
+            CruiseSpeedC = 0.2,
+            ArrivedAt = new UniverseTime(Day),
+            LeftAt = new UniverseTime(6.0 * Day),
+            ReturnedAt = new UniverseTime(9.0 * Day),
+        };
+    }
+
     private static bool CheckOneWrite(string what, MissionHost host, MissionWrite plan, MissionSnapshot expected)
     {
         bool written = MissionWriter.Write(in host, in plan);
         MissionPlan? mission = host.Tree.Mission;
         MissionSnapshot? read = MissionReader.Read(host.Tree);
         bool ok = written && mission != null
+            && mission.BodyId == expected.BodyId
+            && mission.Arrival == (MissionArrival)expected.Arrival
+            && mission.Trip == (expected.Return ? MissionTrip.Return : MissionTrip.OneWay)
             && read is { } r
             && r.Destination == expected.Destination
             && r.BodyId == expected.BodyId
@@ -376,9 +391,11 @@ public sealed class MissionCoreTest : IHarnessTest
             && Near(r.StaySeconds, expected.StaySeconds)
             && Near(r.CruiseSpeedC, expected.CruiseSpeedC)
             && !r.Custom && !r.Arrived
-            && !mission.ArrivedAt.HasValue && !mission.LeftAt.HasValue
             && MissionPicker.ComputeLegs(mission).Status == MissionLegsStatus.Planned;
-        return Check($"the flight write of {what} reads back as written and plans in stock", ok);
+        ok = Check($"the flight write of {what} reads back as written and plans in stock", ok);
+        ok &= Check($"the flight write of {what} clears mission progress",
+            mission != null && !mission.ArrivedAt.HasValue && !mission.LeftAt.HasValue && !mission.ReturnedAt.HasValue);
+        return ok;
     }
 
     // With one circuit the whole-vessel balance is stock's per-circuit forecast of the probe core.
