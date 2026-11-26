@@ -1,5 +1,6 @@
 using System;
 using DeltaVMap.Core;
+using HarmonyLib;
 using KSA;
 
 namespace DeltaVMap.Mission;
@@ -11,6 +12,17 @@ internal readonly record struct MissionHost(PartTree Tree, Vehicle? Vehicle, boo
 // Reads the mission plan of a craft (PartTree.Mission) into a snapshot free of game types.
 internal static class MissionReader
 {
+    private static readonly AccessTools.FieldRef<MissionPlan, UniverseTime?>? ReturnedAt = BindReturnedAt();
+
+    private static AccessTools.FieldRef<MissionPlan, UniverseTime?>? BindReturnedAt()
+    {
+        // KSA 5901 does not report return completion.
+        var field = AccessTools.DeclaredField(typeof(MissionPlan), nameof(MissionPlan.ReturnedAt));
+        return field != null && field.FieldType == typeof(UniverseTime?) && !field.IsStatic
+            ? AccessTools.FieldRefAccess<MissionPlan, UniverseTime?>(field)
+            : null;
+    }
+
     // The craft of the staged delta-v readout, so the mission and the delta-v bar describe one
     // craft.
     internal static MissionHost? ResolveHost()
@@ -51,7 +63,8 @@ internal static class MissionReader
                 mission.Stay.Seconds(),
                 mission.CruiseSpeedC,
                 mission.Custom,
-                arrived);
+                arrived,
+                Returned: ReturnedAt != null && ReturnedAt(mission).HasValue);
         }
         catch (Exception ex)
         {
